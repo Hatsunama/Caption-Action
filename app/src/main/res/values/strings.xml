@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Caption Action</string>
+    <string name="tagline">Same Audio. A Brighter World.</string>
+    <string name="privacy_promise">All processing stays on your device. No accounts, no ads, no telemetry, no cloud.</string>
+    <string name="start_live">Start live captions</string>
+    <string name="stop_live">Stop captions</string>
+    <string name="setup">First-run setup</string>
+    <string name="language_settings">Language settings</string>
+    <string name="model_manager">Model manager</string>
+    <string name="overlay_preview">Overlay preview</string>
+    <string name="permission_overlay">Allow display over other apps</string>
+    <string name="permission_audio">Allow microphone / audio capture</string>
+    <string name="permission_notification">Allow notifications (for live session)</string>
+    <string name="model_fast">Fast — Tiny multilingual (~31 MB)</string>
+    <string name="model_balanced">Balanced — Base multilingual (~57 MB)</string>
+    <string name="model_accurate">Accurate — Small multilingual (~182 MB)</string>
+    <string name="download_model">Download model</string>
+    <string name="model_ready">Model ready on device</string>
+    <string name="model_missing">Model not downloaded</string>
+    <string name="dual_subtitles">Dual subtitles (original + translated)</string>
+    <string name="passthrough_hint">Languages left unchanged (passthrough)</string>
+    <string name="target_language">Subtitle output language</string>
+    <string name="next">Next</string>
+    <string name="back">Back</string>
+    <string name="finish">Start live captions</string>
+    <string name="error_permission">Permission missing. Open settings to grant it.</string>
+    <string name="error_storage">Not enough storage for the model.</string>
+    <string name="error_model">Model missing. Download it in Model manager.</string>
+    <string name="error_capture">Audio capture unavailable. Check permissions or try mic mode.</string>
+    <string name="error_memory">Low memory. Try the Fast model tier.</string>
+    <string name="notif_channel">Live captions</string>
+    <string name="notif_title">Caption Action is running</string>
+    <string name="notif_text">Live subtitles overlay active</string>
+    <string name="demo_mode">Demo captions (engine stub)</string>
+    <string name="offline_ready">Works offline after model download</string>
+</resources>

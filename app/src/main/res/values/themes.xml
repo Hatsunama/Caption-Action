@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CaptionAction" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/ca_primary</item>
+        <item name="colorPrimaryDark">@color/ca_primary_dark</item>
+        <item name="colorAccent">@color/ca_accent</item>
+        <item name="android:statusBarColor">@color/ca_primary</item>
+        <item name="android:navigationBarColor">@color/ca_bg</item>
+        <item name="android:windowBackground">@color/ca_bg</item>
+        <item name="materialButtonStyle">@style/Widget.CaptionAction.Button</item>
+    </style>
+    <style name="Widget.CaptionAction.Button" parent="Widget.Material3.Button">
+        <item name="cornerRadius">12dp</item>
+    </style>
+    <style name="TextAppearance.CaptionAction.Title" parent="TextAppearance.Material3.HeadlineSmall">
+        <item name="android:textColor">@color/ca_text</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="TextAppearance.CaptionAction.Body" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/ca_text</item>
+    </style>
+</resources>

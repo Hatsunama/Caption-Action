@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ca_primary">#5B6CFF</color>
+    <color name="ca_primary_dark">#3D4AD1</color>
+    <color name="ca_accent">#FF8FAB</color>
+    <color name="ca_bg">#F7F5FF</color>
+    <color name="ca_surface">#FFFFFF</color>
+    <color name="ca_text">#1A1A2E</color>
+    <color name="ca_muted">#6B7280</color>
+    <color name="ca_overlay_bg">#CC000000</color>
+    <color name="ca_overlay_text">#FFFFFFFF</color>
+    <color name="ca_success">#22C55E</color>
+    <color name="ca_warning">#F59E0B</color>
+    <color name="ca_error">#EF4444</color>
+</resources>
