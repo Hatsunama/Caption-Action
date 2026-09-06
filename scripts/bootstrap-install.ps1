@@ -13,8 +13,7 @@ try {
     }
     if ($token) { $headers['Authorization'] = "Bearer $token" }
 
-    # Prefer main once merged; feature/android-mvp until then.
-    $Branch = 'feature/android-mvp'
+    $Branch = 'main'
     Invoke-WebRequest -UseBasicParsing `
         -Uri "https://raw.githubusercontent.com/Hatsunama/Caption-Action/$Branch/scripts/install-caption-action.ps1" `
         -Headers $headers `

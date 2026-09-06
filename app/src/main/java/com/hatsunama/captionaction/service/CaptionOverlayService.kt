@@ -28,7 +28,7 @@ import com.hatsunama.captionaction.data.ModelTier
 import com.hatsunama.captionaction.inference.InferenceEngineFactory
 import com.hatsunama.captionaction.inference.PassthroughTranslationEngine
 import com.hatsunama.captionaction.inference.SubtitleComposer
-import com.hatsunama.captionaction.ui.live.LiveSessionActivity
+import com.hatsunama.captionaction.ui.home.HomeActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -363,7 +363,7 @@ class CaptionOverlayService : Service() {
         val pi = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, LiveSessionActivity::class.java),
+            Intent(this, HomeActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val stopPi = PendingIntent.getService(

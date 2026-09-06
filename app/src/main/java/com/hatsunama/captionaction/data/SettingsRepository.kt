@@ -17,6 +17,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class SettingsRepository(private val context: Context) {
     private object Keys {
         val setupComplete = booleanPreferencesKey("setup_complete")
+        val permissionsWalkthrough = booleanPreferencesKey("permissions_walkthrough_complete")
         val modelTier = stringPreferencesKey("model_tier")
         val targetLang = stringPreferencesKey("target_lang")
         val passthrough = stringPreferencesKey("passthrough")
@@ -33,6 +34,7 @@ class SettingsRepository(private val context: Context) {
     val settingsFlow: Flow<AppSettings> = context.dataStore.data.map { p ->
         AppSettings(
             setupComplete = p[Keys.setupComplete] ?: false,
+            permissionsWalkthroughComplete = p[Keys.permissionsWalkthrough] ?: false,
             modelTierId = p[Keys.modelTier] ?: ModelTier.BALANCED.id,
             targetLanguage = p[Keys.targetLang] ?: "en",
             passthroughLanguages = (p[Keys.passthrough] ?: "en")
@@ -58,6 +60,7 @@ class SettingsRepository(private val context: Context) {
         val next = transform(cur)
         context.dataStore.edit { p ->
             p[Keys.setupComplete] = next.setupComplete
+            p[Keys.permissionsWalkthrough] = next.permissionsWalkthroughComplete
             p[Keys.modelTier] = next.modelTierId
             p[Keys.targetLang] = next.targetLanguage
             p[Keys.passthrough] = next.passthroughLanguages.joinToString(",")

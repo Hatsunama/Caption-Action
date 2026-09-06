@@ -4,9 +4,9 @@ import java.io.File
 import kotlin.math.sqrt
 
 /**
- * Local demo engine: no network. Keeps emitting rotating captions on a steady
- * timer so the overlay never freezes after the greeting. Energy only nudges
- * confidence / pace — silence still advances lines.
+ * Local demo engine: no network. Emits rotating caption-like lines on a steady
+ * timer so the overlay stays alive. No greeting / hello loop — content reads as
+ * live captions from the start.
  */
 class DemoInferenceEngine : InferenceEngine {
     override val name: String = "Demo (local stub)"
@@ -18,14 +18,16 @@ class DemoInferenceEngine : InferenceEngine {
     private data class Line(val original: String, val translated: String, val lang: String)
 
     private val samples = listOf(
-        Line("Hello, welcome to Caption Action.", "Hola, bienvenido a Caption Action.", "en"),
-        Line("Everything runs on your phone.", "Todo funciona en tu teléfono.", "en"),
-        Line("No cloud. No accounts. No ads.", "Sin nube. Sin cuentas. Sin anuncios.", "en"),
-        Line("Move and resize the overlay anytime.", "Mueve y redimensiona el overlay cuando quieras.", "en"),
-        Line("Captions keep updating from live audio.", "Los subtítulos siguen actualizándose del audio.", "en"),
-        Line("Same audio. A brighter world.", "El mismo audio. Un mundo más brillante.", "en"),
-        Line("Playback capture or microphone — your choice.", "Captura de reproducción o micrófono — tú eliges.", "en"),
-        Line("Tap the bottom X anytime to end.", "Toca la X inferior cuando quieras terminar.", "en")
+        Line("The match is tied going into the final minutes.", "El partido está empatado en los minutos finales.", "en"),
+        Line("Download complete. Restart to apply the update.", "Descarga completa. Reinicia para aplicar la actualización.", "en"),
+        Line("Next stop: Central Station.", "Próxima parada: Estación Central.", "en"),
+        Line("She said the recipe needs more garlic.", "Ella dijo que la receta necesita más ajo.", "en"),
+        Line("Volume up — this chorus hits hard.", "Sube el volumen — este estribillo pega fuerte.", "en"),
+        Line("Quest updated: find the blue keycard.", "Misión actualizada: encuentra la tarjeta azul.", "en"),
+        Line("Weather later: clear skies, light breeze.", "Clima más tarde: cielos despejados, brisa ligera.", "en"),
+        Line("Skip intro is available in settings.", "Omitir intro está disponible en ajustes.", "en"),
+        Line("Left lane clears after the bridge.", "El carril izquierdo se libera después del puente.", "en"),
+        Line("Same audio. Captions stay on your phone.", "El mismo audio. Los subtítulos se quedan en tu teléfono.", "en")
     )
 
     override suspend fun load(modelFile: File): Boolean {
@@ -39,7 +41,6 @@ class DemoInferenceEngine : InferenceEngine {
         if (!loaded) return null
         val now = System.currentTimeMillis()
         val energy = rms(pcm16le)
-        // Faster cadence when there is audible energy; still emit on silence.
         val minGap = if (energy >= 120f) 1600L else 2200L
         if (lastEmitMs != 0L && now - lastEmitMs < minGap) {
             return null

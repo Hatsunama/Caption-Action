@@ -55,7 +55,7 @@
         <activity
             android:name=".ui.permissions.PermissionStepActivity"
             android:exported="false"
-            android:parentActivityName=".ui.live.LiveSessionActivity" />
+            android:parentActivityName=".ui.home.HomeActivity" />
 
         <service
             android:name=".service.CaptionOverlayService"

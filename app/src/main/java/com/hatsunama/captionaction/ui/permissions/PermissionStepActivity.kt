@@ -13,69 +13,61 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
-import com.hatsunama.captionaction.service.CaptionOverlayService
+import kotlinx.coroutines.launch
 
 /**
- * One-at-a-time permission gate:
- * overlay → mic → notifications (API 33+) → media projection.
- * Never opens Settings and fires runtime popups in a pile.
+ * One-at-a-time permission gate for device playback captions:
+ * overlay → device audio → notifications (API 33+) → screen/audio capture.
+ *
+ * SETUP / MISSING modes never start the overlay service — they return to Home
+ * so the user taps Start again. MediaProjection is requested during the walkthrough
+ * for education/consent, then discarded; Start will request it again for real.
  */
 class PermissionStepActivity : AppCompatActivity() {
 
-    private enum class Step { OVERLAY, MIC, NOTIFICATIONS, PROJECTION }
+    private enum class Step { OVERLAY, AUDIO, NOTIFICATIONS, PROJECTION }
 
     private var step = Step.OVERLAY
-    private var preferPlayback = true
+    private var mode = MODE_SETUP
 
-    private val micLauncher = registerForActivityResult(
+    private val audioLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) advanceAfterMic()
+        if (granted) advanceAfterAudio()
         else Toast.makeText(this, getString(R.string.error_permission), Toast.LENGTH_LONG).show()
     }
 
     private val notifLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ ->
-        // Notifications are helpful but not hard-required for captions.
         goTo(Step.PROJECTION)
     }
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            CaptionOverlayService.start(this, result.resultCode, result.data)
-        } else {
-            CaptionOverlayService.start(this)
-            Toast.makeText(this, "Using microphone fallback", Toast.LENGTH_SHORT).show()
-        }
-        setResult(RESULT_OK)
-        finish()
+    ) { _ ->
+        // Walkthrough only — do not start captions. User taps Start again on Home.
+        finishWalkthrough()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_permission_step)
+        mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_SETUP
         findViewById<MaterialButton>(R.id.btnPermCancel).setOnClickListener { finish() }
         findViewById<MaterialButton>(R.id.btnPermPrimary).setOnClickListener { onPrimary() }
         findViewById<MaterialButton>(R.id.btnPermSecondary).setOnClickListener { onSecondary() }
-        lifecycleScope.launch {
-            preferPlayback = (application as CaptionActionApp).settings.current().preferPlaybackCapture
-        }
         resolveInitialStep()
         render()
     }
 
     override fun onResume() {
         super.onResume()
-        // Returning from overlay Settings — advance only if granted.
         if (step == Step.OVERLAY && canDrawOverlays()) {
             advanceAfterOverlay()
         }
@@ -84,7 +76,7 @@ class PermissionStepActivity : AppCompatActivity() {
     private fun resolveInitialStep() {
         step = when {
             !canDrawOverlays() -> Step.OVERLAY
-            !hasMic() -> Step.MIC
+            !hasAudio() -> Step.AUDIO
             needsNotif() -> Step.NOTIFICATIONS
             else -> Step.PROJECTION
         }
@@ -93,7 +85,7 @@ class PermissionStepActivity : AppCompatActivity() {
     private fun canDrawOverlays(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
 
-    private fun hasMic(): Boolean =
+    private fun hasAudio(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
@@ -108,6 +100,7 @@ class PermissionStepActivity : AppCompatActivity() {
         val body = findViewById<TextView>(R.id.permBody)
         val primary = findViewById<MaterialButton>(R.id.btnPermPrimary)
         val secondary = findViewById<MaterialButton>(R.id.btnPermSecondary)
+        val hint = findViewById<TextView>(R.id.permHint)
 
         when (step) {
             Step.OVERLAY -> {
@@ -116,13 +109,15 @@ class PermissionStepActivity : AppCompatActivity() {
                 body.setText(R.string.permission_overlay_why)
                 primary.setText(R.string.permission_overlay_action)
                 secondary.visibility = View.GONE
+                hint.text = "One permission at a time — no popup pile-ups."
             }
-            Step.MIC -> {
-                label.text = "Step 2 · Microphone"
-                title.setText(R.string.permission_mic_title)
-                body.setText(R.string.permission_mic_why)
-                primary.setText(R.string.permission_mic_action)
+            Step.AUDIO -> {
+                label.text = "Step 2 · Device audio"
+                title.setText(R.string.permission_audio_title)
+                body.setText(R.string.permission_audio_why)
+                primary.setText(R.string.permission_audio_action)
                 secondary.visibility = View.GONE
+                hint.text = "Required so Android can share sounds playing on the device."
             }
             Step.NOTIFICATIONS -> {
                 label.text = "Step 3 · Notifications"
@@ -131,14 +126,16 @@ class PermissionStepActivity : AppCompatActivity() {
                 primary.setText(R.string.permission_notif_action)
                 secondary.visibility = View.VISIBLE
                 secondary.text = getString(R.string.continue_label) + " without"
+                hint.text = "Optional but keeps the session stable."
             }
             Step.PROJECTION -> {
                 label.text = if (Build.VERSION.SDK_INT >= 33) "Step 4 · Screen audio" else "Step 3 · Screen audio"
                 title.setText(R.string.permission_projection_title)
                 body.setText(R.string.permission_projection_why)
                 primary.setText(R.string.permission_projection_action)
-                secondary.visibility = View.VISIBLE
-                secondary.setText(R.string.permission_skip_mic)
+                // No "mic only later" — playback capture is the product.
+                secondary.visibility = View.GONE
+                hint.text = "After this, you return to Home and tap Start again to begin."
             }
         }
     }
@@ -157,9 +154,9 @@ class PermissionStepActivity : AppCompatActivity() {
                     )
                 }
             }
-            Step.MIC -> {
-                if (hasMic()) advanceAfterMic()
-                else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            Step.AUDIO -> {
+                if (hasAudio()) advanceAfterAudio()
+                else audioLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
             Step.NOTIFICATIONS -> {
                 if (Build.VERSION.SDK_INT >= 33) {
@@ -168,27 +165,26 @@ class PermissionStepActivity : AppCompatActivity() {
                     goTo(Step.PROJECTION)
                 }
             }
-            Step.PROJECTION -> startProjectionOrMic(preferPlayback = preferPlayback)
+            Step.PROJECTION -> requestProjectionConsent()
         }
     }
 
     private fun onSecondary() {
         when (step) {
             Step.NOTIFICATIONS -> goTo(Step.PROJECTION)
-            Step.PROJECTION -> startProjectionOrMic(preferPlayback = false)
             else -> {}
         }
     }
 
     private fun advanceAfterOverlay() {
         when {
-            !hasMic() -> goTo(Step.MIC)
+            !hasAudio() -> goTo(Step.AUDIO)
             needsNotif() -> goTo(Step.NOTIFICATIONS)
             else -> goTo(Step.PROJECTION)
         }
     }
 
-    private fun advanceAfterMic() {
+    private fun advanceAfterAudio() {
         if (needsNotif()) goTo(Step.NOTIFICATIONS) else goTo(Step.PROJECTION)
     }
 
@@ -197,14 +193,28 @@ class PermissionStepActivity : AppCompatActivity() {
         render()
     }
 
-    private fun startProjectionOrMic(preferPlayback: Boolean) {
-        if (preferPlayback && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    private fun requestProjectionConsent() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projectionLauncher.launch(mpm.createScreenCaptureIntent())
         } else {
-            CaptionOverlayService.start(this)
+            finishWalkthrough()
+        }
+    }
+
+    private fun finishWalkthrough() {
+        lifecycleScope.launch {
+            (application as CaptionActionApp).settings.update {
+                it.copy(permissionsWalkthroughComplete = true, setupComplete = true)
+            }
             setResult(RESULT_OK)
             finish()
         }
+    }
+
+    companion object {
+        const val EXTRA_MODE = "mode"
+        const val MODE_SETUP = "setup"
+        const val MODE_MISSING = "missing"
     }
 }

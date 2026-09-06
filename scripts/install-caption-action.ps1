@@ -56,7 +56,7 @@ try {
     $assets = @($release.assets | Where-Object { $_.name -eq 'caption-action-android.apk' })
     if ($assets.Count -ne 1) { throw 'The release APK was not found.' }
 
-    $ExpectedHash = '4D5C00072580387AEDA5D279CE44578F97B447A47C0D3AC09A436C3586A640E5'
+    $ExpectedHash = 'BCC2BEEA50DEB9B4DBD126BA28D9F3870E40A37E7CF5026DD2EE08DFB556537A'
 
     $DownloadDir = Join-Path ([IO.Path]::GetTempPath()) ('caption-action-install-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $DownloadDir | Out-Null
