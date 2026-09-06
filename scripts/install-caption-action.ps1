@@ -62,7 +62,13 @@ try {
     New-Item -ItemType Directory -Path $DownloadDir | Out-Null
     $Apk = Join-Path $DownloadDir 'caption-action-android.apk'
 
-    Invoke-WebRequest -Uri $assets[0].url -Headers ($headers + @{ Accept = 'application/octet-stream' }) -OutFile $Apk -UseBasicParsing
+    $downloadHeaders = @{
+        'User-Agent' = 'CaptionAction-installer'
+        'Accept' = 'application/octet-stream'
+    }
+    if ($token) { $downloadHeaders['Authorization'] = "Bearer $token" }
+
+    Invoke-WebRequest -Uri $assets[0].url -Headers $downloadHeaders -OutFile $Apk -UseBasicParsing
 
     if ((Get-FileHash -LiteralPath $Apk -Algorithm SHA256).Hash -ne $ExpectedHash) {
         throw 'Checksum mismatch. Installation refused.'
