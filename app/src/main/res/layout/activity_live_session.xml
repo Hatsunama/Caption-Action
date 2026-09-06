@@ -1,34 +1,54 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="@color/ca_bg"
-    android:padding="24dp">
+    android:padding="20dp">
+
     <TextView
         style="@style/TextAppearance.CaptionAction.Title"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Live session" />
+        android:text="Live session"
+        android:textSize="26sp" />
+
     <TextView
         android:id="@+id/liveStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:textColor="@color/ca_muted" />
-    <TextView
-        android:id="@+id/lastCaption"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_pill_cyan"
+        android:padding="12dp"
+        android:text="Idle"
+        android:textColor="@color/ca_text" />
+
+    <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="16dp"
-        android:background="@color/ca_surface"
-        android:padding="16dp"
-        android:textSize="18sp"
-        android:gravity="center" />
+        android:layout_marginTop="14dp"
+        app:cardBackgroundColor="@color/ca_card_lavender"
+        app:cardCornerRadius="24dp"
+        app:cardElevation="2dp"
+        app:strokeColor="#D4B8FF"
+        app:strokeWidth="2dp">
+        <TextView
+            android:id="@+id/lastCaption"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="18dp"
+            android:textSize="18sp"
+            android:textColor="@color/ca_text"
+            android:gravity="center"
+            android:text="@string/listening" />
+    </com.google.android.material.card.MaterialCardView>
+
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnToggle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
         android:text="@string/start_live" />
 </LinearLayout>

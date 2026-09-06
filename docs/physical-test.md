@@ -4,14 +4,15 @@ Works on any Android phone with USB debugging (or wireless debugging). Examples 
 
 ## Preferred: promoted release installer
 
-Use the PowerShell installer for the signed release APK (preserves app data; private-repo auth supported):
+Use the short bootstrap (downloads the full installer, runs it, deletes the temp script):
 
 ```powershell
 $env:GH_TOKEN = (gh auth token)
-.\scripts\install-caption-action.ps1
+.\scripts\bootstrap-install.ps1
 ```
 
-- Script: [`scripts/install-caption-action.ps1`](../scripts/install-caption-action.ps1)
+- Bootstrap: [`scripts/bootstrap-install.ps1`](../scripts/bootstrap-install.ps1)
+- Full installer (fetched by bootstrap): [`scripts/install-caption-action.ps1`](../scripts/install-caption-action.ps1)
 - Release: https://github.com/Hatsunama/Caption-Action/releases/tags/v0.1.0-mvp
 - Package: `com.hatsunama.captionaction`
 
@@ -52,22 +53,19 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 
 ## 3. First-run flow
 
-1. Open **Caption Action**
-2. Run **First-run setup** (or jump via Home buttons)
-3. Accept privacy promise
-4. Grant overlay + mic (+ notifications on Android 13+)
-5. Pick model tier (Fast / Balanced / Accurate)
-6. Optionally download model (needs network once)
-7. Choose target + passthrough languages, dual mode
-8. Start live captions
+1. Open **Caption Action** — Home works immediately (no forced setup wizard)
+2. Optionally open **Models** / **Languages** / **Overlay** from Home anytime
+3. Tap **Start live captions** → one-at-a-time permission screens (overlay → mic → notifications → screen capture)
+4. Optionally download a model (dedicated progress UI with cancel)
+5. Confirm captions keep updating after the greeting; resize via corner handle; end with bottom ✕
 
 ## 4. Live session checks
 
 - Toggle **Start live captions**
 - Accept MediaProjection screen-capture consent for playback audio (Android 10+), or decline to use mic fallback
-- Confirm floating overlay appears; drag it; leave the app — overlay should remain
-- Speak near the mic (demo engine) — captions should refresh every ~2s when there is energy
-- Stop from notification action or Live session screen
+- Confirm floating overlay appears; drag it; resize via corner handle; leave the app — overlay should remain
+- Speak near the mic (demo engine) — captions should keep changing every ~2s (not freeze after greeting)
+- Stop via bottom ✕, notification action, or Live session screen
 - Kill/reopen app — overlay position/size and language/model settings should restore
 
 ## 5. Error paths to verify

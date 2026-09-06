@@ -10,73 +10,104 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="24dp">
+        android:padding="20dp">
 
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            style="@style/TextAppearance.CaptionAction.Title"
-            android:textSize="28sp" />
+            android:orientation="vertical"
+            android:background="@drawable/bg_home_header"
+            android:padding="20dp">
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/tagline"
-            android:textColor="@color/ca_muted" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/app_name"
+                android:textSize="30sp"
+                android:textStyle="bold"
+                android:textColor="@color/ca_primary_dark" />
 
-        <TextView
-            android:id="@+id/privacyBanner"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:background="@color/ca_surface"
-            android:padding="16dp"
-            android:text="@string/privacy_promise"
-            style="@style/TextAppearance.CaptionAction.Body" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/tagline"
+                android:textColor="@color/ca_muted"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/privacyBanner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/bg_pill_cyan"
+                android:gravity="center"
+                android:paddingHorizontal="14dp"
+                android:paddingVertical="10dp"
+                android:text="@string/privacy_promise"
+                android:textColor="@color/ca_text"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/statusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:textColor="@color/ca_muted" />
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card_lavender"
+            android:padding="14dp"
+            android:text="@string/home_status_ready"
+            android:textColor="@color/ca_text" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnStartLive"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="20dp"
             android:text="@string/start_live" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSetup"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/setup" />
+            android:layout_marginTop="20dp"
+            android:text="@string/settings_hub"
+            android:textColor="@color/ca_muted"
+            android:textSize="13sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnLanguages"
-            style="@style/Widget.Material3.Button.TextButton"
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/language_settings" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnModels"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/model_manager" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnPreview"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/overlay_preview" />
+            android:layout_marginTop="10dp"
+            app:cardBackgroundColor="@color/ca_card_pink"
+            app:cardCornerRadius="22dp"
+            app:cardElevation="2dp"
+            app:strokeColor="#FFB6D9"
+            app:strokeWidth="2dp">
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="8dp">
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLanguages"
+                    style="@style/Widget.CaptionAction.Button.Soft"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/language_settings" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnModels"
+                    style="@style/Widget.CaptionAction.Button.Soft"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/model_manager" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnPreview"
+                    style="@style/Widget.CaptionAction.Button.Soft"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/overlay_preview" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
     </LinearLayout>
 </ScrollView>

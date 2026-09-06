@@ -1,7 +1,7 @@
 package com.hatsunama.captionaction.data
 
 data class AppSettings(
-    val setupComplete: Boolean = false,
+    val setupComplete: Boolean = true,
     val modelTierId: String = ModelTier.BALANCED.id,
     val targetLanguage: String = "en",
     val passthroughLanguages: Set<String> = setOf("en"),

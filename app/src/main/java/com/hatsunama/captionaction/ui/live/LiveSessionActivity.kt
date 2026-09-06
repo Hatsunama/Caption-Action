@@ -1,46 +1,25 @@
 package com.hatsunama.captionaction.ui.live
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.media.projection.MediaProjectionManager
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.service.CaptionOverlayService
+import com.hatsunama.captionaction.ui.permissions.PermissionStepActivity
 import kotlinx.coroutines.launch
 
 class LiveSessionActivity : AppCompatActivity() {
     private var running = false
 
-    private val micPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) maybeStartProjection()
-        else Toast.makeText(this, getString(R.string.error_permission), Toast.LENGTH_LONG).show()
-    }
-
-    private val projectionLauncher = registerForActivityResult(
+    private val permissionFlow = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            CaptionOverlayService.start(this, result.resultCode, result.data)
-            markRunning(true)
-        } else {
-            // Fallback to mic-only
-            CaptionOverlayService.start(this)
-            markRunning(true)
-            Toast.makeText(this, "Using microphone fallback", Toast.LENGTH_SHORT).show()
-        }
+    ) {
+        // Service start is handled inside PermissionStepActivity on success.
+        markRunning(CaptionOverlayService.instance != null)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,11 +27,11 @@ class LiveSessionActivity : AppCompatActivity() {
         setContentView(R.layout.activity_live_session)
 
         findViewById<MaterialButton>(R.id.btnToggle).setOnClickListener {
-            if (running) {
+            if (running || CaptionOverlayService.instance != null) {
                 CaptionOverlayService.stop(this)
                 markRunning(false)
             } else {
-                ensureOverlayThenStart()
+                permissionFlow.launch(Intent(this, PermissionStepActivity::class.java))
             }
         }
 
@@ -62,7 +41,7 @@ class LiveSessionActivity : AppCompatActivity() {
                 val caption = findViewById<TextView>(R.id.lastCaption)
                 when (event) {
                     is CaptionOverlayService.SessionEvent.Started -> {
-                        status.text = "Running via ${event.source} · engine: ${event.engine}"
+                        status.text = "Running via ${event.source} · ${event.engine}"
                         markRunning(true)
                     }
                     is CaptionOverlayService.SessionEvent.Caption -> {
@@ -80,6 +59,7 @@ class LiveSessionActivity : AppCompatActivity() {
                     }
                     CaptionOverlayService.SessionEvent.Stopped -> {
                         status.text = "Stopped"
+                        findViewById<TextView>(R.id.lastCaption).text = getString(R.string.listening)
                         markRunning(false)
                     }
                 }
@@ -87,34 +67,9 @@ class LiveSessionActivity : AppCompatActivity() {
         }
     }
 
-    private fun ensureOverlayThenStart() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, getString(R.string.error_permission), Toast.LENGTH_LONG).show()
-            startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
-            )
-            return
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        maybeStartProjection()
-    }
-
-    private fun maybeStartProjection() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            projectionLauncher.launch(mpm.createScreenCaptureIntent())
-        } else {
-            CaptionOverlayService.start(this)
-            markRunning(true)
-        }
+    override fun onResume() {
+        super.onResume()
+        markRunning(CaptionOverlayService.instance != null)
     }
 
     private fun markRunning(value: Boolean) {

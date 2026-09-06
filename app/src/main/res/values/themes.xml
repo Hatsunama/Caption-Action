@@ -3,20 +3,67 @@
     <style name="Theme.CaptionAction" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorPrimary">@color/ca_primary</item>
         <item name="colorPrimaryDark">@color/ca_primary_dark</item>
+        <item name="colorPrimaryContainer">@color/ca_pink_soft</item>
+        <item name="colorSecondary">@color/ca_cyan</item>
+        <item name="colorSecondaryContainer">@color/ca_cyan_soft</item>
+        <item name="colorTertiary">@color/ca_accent</item>
         <item name="colorAccent">@color/ca_accent</item>
         <item name="android:statusBarColor">@color/ca_primary</item>
         <item name="android:navigationBarColor">@color/ca_bg</item>
         <item name="android:windowBackground">@color/ca_bg</item>
+        <item name="android:textColorPrimary">@color/ca_text</item>
         <item name="materialButtonStyle">@style/Widget.CaptionAction.Button</item>
+        <item name="materialCardViewStyle">@style/Widget.CaptionAction.Card</item>
     </style>
+
     <style name="Widget.CaptionAction.Button" parent="Widget.Material3.Button">
-        <item name="cornerRadius">12dp</item>
+        <item name="cornerRadius">28dp</item>
+        <item name="backgroundTint">@color/ca_primary</item>
+        <item name="android:textColor">@color/ca_white</item>
+        <item name="android:minHeight">52dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0.01</item>
     </style>
-    <style name="TextAppearance.CaptionAction.Title" parent="TextAppearance.Material3.HeadlineSmall">
+
+    <style name="Widget.CaptionAction.Button.Secondary" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="cornerRadius">28dp</item>
+        <item name="strokeColor">@color/ca_cyan</item>
+        <item name="strokeWidth">2dp</item>
         <item name="android:textColor">@color/ca_text</item>
-        <item name="android:textStyle">bold</item>
+        <item name="android:minHeight">52dp</item>
     </style>
+
+    <style name="Widget.CaptionAction.Button.Soft" parent="Widget.Material3.Button.TextButton">
+        <item name="cornerRadius">24dp</item>
+        <item name="android:textColor">@color/ca_primary_dark</item>
+        <item name="android:minHeight">48dp</item>
+    </style>
+
+    <style name="Widget.CaptionAction.Button.Danger" parent="Widget.Material3.Button">
+        <item name="cornerRadius">28dp</item>
+        <item name="backgroundTint">@color/ca_close</item>
+        <item name="android:textColor">@color/ca_white</item>
+        <item name="android:minHeight">52dp</item>
+    </style>
+
+    <style name="Widget.CaptionAction.Card" parent="Widget.Material3.CardView.Elevated">
+        <item name="cardCornerRadius">24dp</item>
+        <item name="cardElevation">4dp</item>
+        <item name="cardBackgroundColor">@color/ca_surface</item>
+    </style>
+
+    <style name="TextAppearance.CaptionAction.Title" parent="TextAppearance.Material3.HeadlineSmall">
+        <item name="android:textColor">@color/ca_primary_dark</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">-0.01</item>
+    </style>
+
     <style name="TextAppearance.CaptionAction.Body" parent="TextAppearance.Material3.BodyMedium">
         <item name="android:textColor">@color/ca_text</item>
+    </style>
+
+    <style name="TextAppearance.CaptionAction.Pill" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textColor">@color/ca_text</item>
+        <item name="android:textStyle">bold</item>
     </style>
 </resources>

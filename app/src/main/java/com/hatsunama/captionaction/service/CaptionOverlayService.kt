@@ -34,18 +34,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
+import kotlin.math.min
 
 class CaptionOverlayService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var pipelineJob: Job? = null
+    private var watchdogJob: Job? = null
 
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
+    private var closeFabView: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
 
     private lateinit var audioCapture: AudioCapture
@@ -53,6 +59,9 @@ class CaptionOverlayService : Service() {
     private val composer = SubtitleComposer()
     private val translation = PassthroughTranslationEngine()
     private val engine = InferenceEngineFactory.create()
+
+    @Volatile private var lastCaptionAt = 0L
+    private var fontIndex = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -87,7 +96,10 @@ class CaptionOverlayService : Service() {
     private suspend fun beginSession(resultCode: Int, data: Intent?) {
         val app = application as CaptionActionApp
         val settings = app.settings.current()
-        showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight, settings.fontIndex)
+        fontIndex = settings.fontIndex
+        showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
+        showCloseFab()
+        updateCaption(getString(R.string.loading_engine), null)
 
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
@@ -123,38 +135,78 @@ class CaptionOverlayService : Service() {
                 engine = engine.name
             )
         )
+        updateCaption(getString(R.string.listening), null)
+        lastCaptionAt = System.currentTimeMillis()
 
         pipelineJob?.cancel()
         pipelineJob = scope.launch(Dispatchers.IO) {
-            audioCapture.readLoop(chunkSamples = 16_000) { pcm ->
+            audioCapture.readLoop(chunkSamples = 8_000) { pcm ->
                 val raw = engine.transcribe(pcm, 16_000) ?: return@readLoop
                 val settingsNow = app.settings.current()
                 val policy = translation.applyPolicy(raw, settingsNow)
                 ringBuffer.add(policy)
-                val primary = composer.compose(policy.translatedText ?: policy.text)
+                // Fresh line each emit so dual/translated text visibly changes
+                composer.reset()
+                val primaryText = if (settingsNow.dualSubtitles) {
+                    policy.translatedText ?: policy.text
+                } else {
+                    policy.text
+                }
+                val primary = composer.compose(primaryText)
                 val secondary = if (settingsNow.dualSubtitles) policy.text else null
+                lastCaptionAt = System.currentTimeMillis()
                 withContext(Dispatchers.Main) {
                     updateCaption(primary, secondary)
                 }
                 _events.emit(SessionEvent.Caption(primary, secondary))
             }
         }
+
+        // Watchdog: if audio path stalls, keep demo lines flowing so UI never freezes
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(2500)
+                val idle = System.currentTimeMillis() - lastCaptionAt
+                if (idle > 3500) {
+                    val silence = ShortArray(1600)
+                    val raw = engine.transcribe(silence, 16_000) ?: continue
+                    val settingsNow = app.settings.current()
+                    val policy = translation.applyPolicy(raw, settingsNow)
+                    composer.reset()
+                    val primaryText = if (settingsNow.dualSubtitles) {
+                        policy.translatedText ?: policy.text
+                    } else {
+                        policy.text
+                    }
+                    val primary = composer.compose(primaryText)
+                    val secondary = if (settingsNow.dualSubtitles) policy.text else null
+                    lastCaptionAt = System.currentTimeMillis()
+                    withContext(Dispatchers.Main) { updateCaption(primary, secondary) }
+                    _events.emit(SessionEvent.Caption(primary, secondary))
+                }
+            }
+        }
     }
 
-    private fun showOverlay(x: Int, y: Int, w: Int, h: Int, fontIndex: Int) {
-        if (overlayView != null) return
-        val inflater = LayoutInflater.from(this)
-        val view = inflater.inflate(R.layout.overlay_caption, null)
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    private fun overlayType(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
             @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
+
+    private fun showOverlay(x: Int, y: Int, w: Int, h: Int) {
+        if (overlayView != null) return
+        val view = LayoutInflater.from(this).inflate(R.layout.overlay_caption, null)
+        val density = resources.displayMetrics.density
+        val minW = (160 * density).toInt()
+        val minH = (100 * density).toInt()
         val params = WindowManager.LayoutParams(
-            w,
-            h,
-            type,
+            max(w, minW),
+            max(h, minH),
+            overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
@@ -163,30 +215,97 @@ class CaptionOverlayService : Service() {
             this.x = x
             this.y = y
         }
-        applyFont(view, fontIndex)
-        var dragX = 0
-        var dragY = 0
-        view.setOnTouchListener { v, event ->
-            when (event.action) {
+        applyFont(view, params.height)
+        wireOverlayTouch(view, params, minW, minH)
+        view.findViewById<View>(R.id.btnCloseOverlay).setOnClickListener { stopSelfSafe() }
+        windowManager.addView(view, params)
+        overlayView = view
+        layoutParams = params
+    }
+
+    private fun showCloseFab() {
+        if (closeFabView != null) return
+        val density = resources.displayMetrics.density
+        val size = (56 * density).toInt()
+        val fab = TextView(this).apply {
+            text = "✕"
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            setBackgroundResource(R.drawable.bg_close_fab)
+            contentDescription = getString(R.string.close_overlay)
+            setOnClickListener { stopSelfSafe() }
+        }
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = (24 * density).toInt()
+        }
+        windowManager.addView(fab, params)
+        closeFabView = fab
+    }
+
+    private fun wireOverlayTouch(
+        view: View,
+        params: WindowManager.LayoutParams,
+        minW: Int,
+        minH: Int
+    ) {
+        val handle = view.findViewById<View>(R.id.resizeHandle)
+        var mode = TouchMode.NONE
+        var lastX = 0f
+        var lastY = 0f
+
+        val listener = View.OnTouchListener { v, event ->
+            when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    dragX = event.rawX.toInt()
-                    dragY = event.rawY.toInt()
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    val onHandle = v.id == R.id.resizeHandle || isNearHandle(view, event)
+                    mode = if (onHandle) TouchMode.RESIZE else TouchMode.MOVE
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX.toInt() - dragX
-                    val dy = event.rawY.toInt() - dragY
-                    dragX = event.rawX.toInt()
-                    dragY = event.rawY.toInt()
-                    params.x += dx
-                    params.y += dy
-                    windowManager.updateViewLayout(v, params)
+                    val dx = (event.rawX - lastX).toInt()
+                    val dy = (event.rawY - lastY).toInt()
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    when (mode) {
+                        TouchMode.MOVE -> {
+                            params.x += dx
+                            params.y += dy
+                        }
+                        TouchMode.RESIZE -> {
+                            val screenW = resources.displayMetrics.widthPixels
+                            val screenH = resources.displayMetrics.heightPixels
+                            params.width = min(screenW, max(minW, params.width + dx))
+                            params.height = min(screenH / 2, max(minH, params.height + dy))
+                            applyFont(view, params.height)
+                        }
+                        else -> {}
+                    }
+                    try {
+                        windowManager.updateViewLayout(view, params)
+                    } catch (_: Exception) {
+                    }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    mode = TouchMode.NONE
                     scope.launch {
                         (application as CaptionActionApp).settings.update {
-                            it.copy(overlayX = params.x, overlayY = params.y)
+                            it.copy(
+                                overlayX = params.x,
+                                overlayY = params.y,
+                                overlayWidth = params.width,
+                                overlayHeight = params.height
+                            )
                         }
                     }
                     true
@@ -194,13 +313,25 @@ class CaptionOverlayService : Service() {
                 else -> false
             }
         }
-        windowManager.addView(view, params)
-        overlayView = view
-        layoutParams = params
-        updateCaption("Listening…", null)
+        view.setOnTouchListener(listener)
+        handle.setOnTouchListener(listener)
     }
 
-    private fun applyFont(view: View, fontIndex: Int) {
+    private fun isNearHandle(view: View, event: MotionEvent): Boolean {
+        val handle = view.findViewById<View>(R.id.resizeHandle) ?: return false
+        val loc = IntArray(2)
+        handle.getLocationOnScreen(loc)
+        val hx = loc[0] + handle.width / 2f
+        val hy = loc[1] + handle.height / 2f
+        val slop = 64f * resources.displayMetrics.density
+        val dx = event.rawX - hx
+        val dy = event.rawY - hy
+        return dx * dx + dy * dy <= slop * slop
+    }
+
+    private enum class TouchMode { NONE, MOVE, RESIZE }
+
+    private fun applyFont(view: View, heightPx: Int) {
         val primary = view.findViewById<TextView>(R.id.captionPrimary)
         val secondary = view.findViewById<TextView>(R.id.captionSecondary)
         val tf = when (fontIndex) {
@@ -210,19 +341,17 @@ class CaptionOverlayService : Service() {
         }
         primary.typeface = tf
         secondary.typeface = tf
-        val lp = layoutParams
-        if (lp != null && lp.height > 0) {
-            val sp = (lp.height / 10f).coerceIn(14f, 36f)
-            primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
-            secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.8f)
-        }
+        val density = resources.displayMetrics.density
+        val sp = ((heightPx / density) / 7.5f).coerceIn(14f, 40f)
+        primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+        secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.78f)
     }
 
     private fun updateCaption(primary: String, secondary: String?) {
         val view = overlayView ?: return
         view.findViewById<TextView>(R.id.captionPrimary).text = primary
         val sec = view.findViewById<TextView>(R.id.captionSecondary)
-        if (secondary.isNullOrBlank()) {
+        if (secondary.isNullOrBlank() || secondary == primary) {
             sec.visibility = View.GONE
         } else {
             sec.visibility = View.VISIBLE
@@ -253,19 +382,26 @@ class CaptionOverlayService : Service() {
             .build()
     }
 
+    private fun removeOverlayViews() {
+        overlayView?.let {
+            try { windowManager.removeView(it) } catch (_: Exception) {}
+        }
+        overlayView = null
+        closeFabView?.let {
+            try { windowManager.removeView(it) } catch (_: Exception) {}
+        }
+        closeFabView = null
+        layoutParams = null
+    }
+
     private fun stopSelfSafe() {
         pipelineJob?.cancel()
+        watchdogJob?.cancel()
         audioCapture.stop()
         engine.release()
         ringBuffer.clear()
         composer.reset()
-        overlayView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {
-            }
-        }
-        overlayView = null
+        removeOverlayViews()
         scope.launch { _events.emit(SessionEvent.Stopped) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -273,16 +409,11 @@ class CaptionOverlayService : Service() {
 
     override fun onDestroy() {
         pipelineJob?.cancel()
+        watchdogJob?.cancel()
         audioCapture.stop()
         engine.release()
         ringBuffer.clear()
-        overlayView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {
-            }
-        }
-        overlayView = null
+        removeOverlayViews()
         instance = null
         scope.cancel()
         super.onDestroy()
@@ -306,7 +437,7 @@ class CaptionOverlayService : Service() {
         var instance: CaptionOverlayService? = null
             private set
 
-        private val _events = MutableSharedFlow<SessionEvent>(extraBufferCapacity = 32)
+        private val _events = MutableSharedFlow<SessionEvent>(extraBufferCapacity = 64)
         val events = _events.asSharedFlow()
 
         fun start(context: Context, resultCode: Int = 0, data: Intent? = null) {
@@ -315,21 +446,17 @@ class CaptionOverlayService : Service() {
                 putExtra(EXTRA_RESULT_CODE, resultCode)
                 if (data != null) putExtra(EXTRA_RESULT_DATA, data)
             }
-            ContextCompatStart(context, i)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(i)
+            } else {
+                context.startService(i)
+            }
         }
 
         fun stop(context: Context) {
             context.startService(
                 Intent(context, CaptionOverlayService::class.java).setAction(ACTION_STOP)
             )
-        }
-
-        private fun ContextCompatStart(context: Context, intent: Intent) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
         }
     }
 }

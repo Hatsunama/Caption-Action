@@ -33,11 +33,6 @@
         </activity>
 
         <activity
-            android:name=".ui.setup.SetupWizardActivity"
-            android:exported="false"
-            android:parentActivityName=".ui.home.HomeActivity" />
-
-        <activity
             android:name=".ui.settings.LanguageSettingsActivity"
             android:exported="false"
             android:parentActivityName=".ui.home.HomeActivity" />
@@ -56,6 +51,11 @@
             android:name=".ui.overlay.OverlayPreviewActivity"
             android:exported="false"
             android:parentActivityName=".ui.home.HomeActivity" />
+
+        <activity
+            android:name=".ui.permissions.PermissionStepActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.live.LiveSessionActivity" />
 
         <service
             android:name=".service.CaptionOverlayService"

@@ -1,15 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ca_primary">#5B6CFF</color>
-    <color name="ca_primary_dark">#3D4AD1</color>
-    <color name="ca_accent">#FF8FAB</color>
-    <color name="ca_bg">#F7F5FF</color>
+    <!-- Bubble-gum pop palette -->
+    <color name="ca_primary">#FF6BB5</color>
+    <color name="ca_primary_dark">#E84AA0</color>
+    <color name="ca_primary_gradient_end">#B57BFF</color>
+    <color name="ca_accent">#FFD166</color>
+    <color name="ca_cyan">#5CE1E6</color>
+    <color name="ca_cyan_soft">#D6F7F9</color>
+    <color name="ca_lavender">#E8D5FF</color>
+    <color name="ca_pink_soft">#FFE0F0</color>
+    <color name="ca_peach">#FFD6C9</color>
+    <color name="ca_mint">#C8F5D8</color>
+    <color name="ca_yellow_soft">#FFF3C4</color>
+    <color name="ca_bg">#FFF8FC</color>
+    <color name="ca_bg_gradient_end">#F0F9FF</color>
     <color name="ca_surface">#FFFFFF</color>
-    <color name="ca_text">#1A1A2E</color>
-    <color name="ca_muted">#6B7280</color>
-    <color name="ca_overlay_bg">#CC000000</color>
-    <color name="ca_overlay_text">#FFFFFFFF</color>
-    <color name="ca_success">#22C55E</color>
-    <color name="ca_warning">#F59E0B</color>
-    <color name="ca_error">#EF4444</color>
+    <color name="ca_card_pink">#FFF0F7</color>
+    <color name="ca_card_cyan">#EAFBFC</color>
+    <color name="ca_card_lavender">#F5EEFF</color>
+    <color name="ca_card_yellow">#FFF8E7</color>
+    <color name="ca_text">#2D2140</color>
+    <color name="ca_muted">#8B7A9A</color>
+    <color name="ca_overlay_bg">#E6FF6BB5</color>
+    <color name="ca_overlay_chrome">#F2FFFFFF</color>
+    <color name="ca_overlay_text">#2D2140</color>
+    <color name="ca_success">#34D399</color>
+    <color name="ca_warning">#FB923C</color>
+    <color name="ca_error">#F472B6</color>
+    <color name="ca_close">#FF8A7A</color>
+    <color name="ca_recommended">#FFD166</color>
+    <color name="ca_white">#FFFFFF</color>
+    <color name="ca_handle">#B57BFF</color>
 </resources>

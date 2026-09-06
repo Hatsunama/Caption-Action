@@ -1,7 +1,6 @@
 package com.hatsunama.captionaction.ui.home
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -17,7 +16,6 @@ import com.hatsunama.captionaction.ui.live.LiveSessionActivity
 import com.hatsunama.captionaction.ui.models.ModelManagerActivity
 import com.hatsunama.captionaction.ui.overlay.OverlayPreviewActivity
 import com.hatsunama.captionaction.ui.settings.LanguageSettingsActivity
-import com.hatsunama.captionaction.ui.setup.SetupWizardActivity
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -26,9 +24,11 @@ class HomeActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_home)
 
-        findViewById<MaterialButton>(R.id.btnSetup).setOnClickListener {
-            startActivity(Intent(this, SetupWizardActivity::class.java))
+        // Mark setup complete so nothing treats first-run as a gate.
+        lifecycleScope.launch {
+            (application as CaptionActionApp).settings.update { it.copy(setupComplete = true) }
         }
+
         findViewById<MaterialButton>(R.id.btnLanguages).setOnClickListener {
             startActivity(Intent(this, LanguageSettingsActivity::class.java))
         }
@@ -52,37 +52,12 @@ class HomeActivity : AppCompatActivity() {
                     Settings.canDrawOverlays(this@HomeActivity)
                 } else true
                 status.text = buildString {
-                    append(if (s.setupComplete) "Setup complete. " else "First-run setup recommended. ")
                     append("Model: ${tier.displayName}")
-                    append(if (present) " (on device). " else " (not downloaded). ")
-                    append(if (overlayOk) "Overlay OK." else "Overlay permission needed.")
+                    append(if (present) " ✓ on device. " else " · not downloaded (demo OK). ")
+                    append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
+                    append(" Dual: ").append(if (s.dualSubtitles) "on" else "off")
+                    append(" · Target: ").append(s.targetLanguage)
                 }
-                if (!s.setupComplete) {
-                    // Soft-nudge: open wizard once
-                }
-            }
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        val app = application as CaptionActionApp
-        lifecycleScope.launch {
-            val s = app.settings.current()
-            if (!s.setupComplete) {
-                // leave user on home; wizard is one tap away
-            }
-        }
-    }
-
-    companion object {
-        fun openOverlaySettings(activity: AppCompatActivity) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:${activity.packageName}")
-                )
-                activity.startActivity(intent)
             }
         }
     }

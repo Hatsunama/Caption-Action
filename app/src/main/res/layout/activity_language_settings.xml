@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/ca_bg"
-    android:padding="24dp">
+    android:padding="20dp">
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -13,22 +13,29 @@
             style="@style/TextAppearance.CaptionAction.Title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/language_settings" />
+            android:text="@string/language_settings"
+            android:textSize="26sp" />
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/target_language" />
+            android:text="@string/target_language"
+            android:textStyle="bold"
+            android:textColor="@color/ca_text" />
         <Spinner
             android:id="@+id/spinnerTarget"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp" />
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_card_pink"
+            android:padding="10dp" />
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="@string/passthrough_hint" />
+            android:text="@string/passthrough_hint"
+            android:textStyle="bold"
+            android:textColor="@color/ca_text" />
         <TextView
             android:id="@+id/passthroughSummary"
             android:layout_width="match_parent"
@@ -47,11 +54,17 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:text="@string/dual_subtitles" />
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchPreferPlayback"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/prefer_playback" />
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSave"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="Save" />
+            android:text="@string/save" />
     </LinearLayout>
 </ScrollView>
