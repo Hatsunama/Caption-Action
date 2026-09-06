@@ -7,6 +7,30 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)
 
+## Install (promoted)
+
+Primary install method for the signed MVP release on a physical arm64 Android phone:
+
+1. Install Android platform-tools (`adb` on PATH) and connect one unlocked device with USB debugging authorized.
+2. For this private repo, authenticate GitHub before running the installer:
+
+```powershell
+$env:GH_TOKEN = (gh auth token)
+```
+
+   (Or set `GH_TOKEN` / `GITHUB_TOKEN` another way. The script also tries `gh auth token` itself.)
+
+3. From the repo root (or any clone that includes the script):
+
+```powershell
+.\scripts\install-caption-action.ps1
+```
+
+The script downloads `caption-action-android.apk` from [v0.1.0-mvp](https://github.com/Hatsunama/Caption-Action/releases/tags/v0.1.0-mvp), verifies the SHA-256 checksum, installs with `adb install -r` (preserves app data), re-enables the package, and launches Home.
+
+Release: https://github.com/Hatsunama/Caption-Action/releases/tags/v0.1.0-mvp  
+Script: [`scripts/install-caption-action.ps1`](scripts/install-caption-action.ps1)
+
 ## What it does
 
 1. Capture streaming audio (playback capture via MediaProjection when available, microphone fallback)
@@ -32,7 +56,7 @@ Internal training details are not shown in the UI. Models land in app-private st
 - **Native path:** `InferenceEngine` + `WhisperCppBridge` / `InferenceEngineFactory` are ready. Recommended plug-ins: **whisper.cpp Android** (loads the same ggml files above) or **Sherpa-ONNX**. See [docs/physical-test.md](docs/physical-test.md).
 - **Translation:** Policy engine implements passthrough + dual-subtitle UI. Dedicated offline MT (Marian/OPUS-ONNX) is structured but not bundled yet — when ASR language ≠ target and not in passthrough, text is shown as-is (no cloud MT).
 
-## Build (low memory)
+## Build from source (low memory)
 
 ```bash
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64   # or JDK 17+

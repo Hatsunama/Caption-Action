@@ -40,9 +40,18 @@ try {
         throw 'This APK requires an arm64 Android device.'
     }
 
-    $release = Invoke-RestMethod -Uri $ReleaseUrl -Headers @{
+    $headers = @{
         'User-Agent' = 'CaptionAction-installer'
+        'Accept' = 'application/vnd.github+json'
     }
+    $token = $env:GH_TOKEN
+    if (-not $token) { $token = $env:GITHUB_TOKEN }
+    if (-not $token) {
+        try { $token = (gh auth token 2>$null) } catch { }
+    }
+    if ($token) { $headers['Authorization'] = "Bearer $token" }
+
+    $release = Invoke-RestMethod -Uri $ReleaseUrl -Headers $headers
 
     $assets = @($release.assets | Where-Object { $_.name -eq 'caption-action-android.apk' })
     if ($assets.Count -ne 1) { throw 'The release APK was not found.' }
@@ -53,7 +62,7 @@ try {
     New-Item -ItemType Directory -Path $DownloadDir | Out-Null
     $Apk = Join-Path $DownloadDir 'caption-action-android.apk'
 
-    Invoke-WebRequest -Uri $assets[0].browser_download_url -OutFile $Apk -UseBasicParsing
+    Invoke-WebRequest -Uri $assets[0].url -Headers ($headers + @{ Accept = 'application/octet-stream' }) -OutFile $Apk -UseBasicParsing
 
     if ((Get-FileHash -LiteralPath $Apk -Algorithm SHA256).Hash -ne $ExpectedHash) {
         throw 'Checksum mismatch. Installation refused.'

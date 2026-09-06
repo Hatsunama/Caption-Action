@@ -2,7 +2,22 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-## 1. Install debug APK
+## Preferred: promoted release installer
+
+Use the PowerShell installer for the signed release APK (preserves app data; private-repo auth supported):
+
+```powershell
+$env:GH_TOKEN = (gh auth token)
+.\scripts\install-caption-action.ps1
+```
+
+- Script: [`scripts/install-caption-action.ps1`](../scripts/install-caption-action.ps1)
+- Release: https://github.com/Hatsunama/Caption-Action/releases/tags/v0.1.0-mvp
+- Package: `com.hatsunama.captionaction`
+
+Only use the debug APK steps below when iterating on a local build.
+
+## 1. Install debug APK (local build / fallback)
 
 **bash / macOS / Linux**
 
