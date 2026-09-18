@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.1-overlay-drag** — drag anywhere on caption bubble moves overlay; purple handle resizes; stop-dot still works; full captions; junk/repeat filler loops suppressed.
+Current source: **0.3.2-mt-audio** — Live EN target shows English from ML Kit (not stuck Chinese); Quality with healthy capture RMS must not false-claim “No device audio”; drag still works; junk/repeat suppress kept.
 
 ## Preferred: promoted release installer
 
@@ -53,6 +53,8 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 - Dual on: original + translated when async ML Kit succeeds (whisper is single-pass on live)
 - Quality whisper: always language=auto; translate=true only for single-line EN target; dual/non-EN: ASR once + ML Kit
 - Filler loops (`yeah. yeah.`, 嗯, thank-you-for-watching) must **not** spam the overlay; identical/near-dup windows suppressed
+- Target EN + Chinese audio (Live): overlay primary becomes **English** when MT completes (not permanently Chinese); dual shows EN + source
+- Quality (Samsung etc.): with volume up / healthy capture RMS, must **not** show “No device audio signal”; behind whisper → catching-up / listening
 - Idle silence must keep the last real caption (status/spinner only); must **not** invent captions (no silence-fed ASR)
 - Projection revoke mid-session: Toast + session end (no silent mic fallback)
 - Home / Start should download MT language packs (status line shows progress); after packs ready, MT works offline

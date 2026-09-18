@@ -43,10 +43,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
@@ -55,7 +58,10 @@ class CaptionOverlayService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var asrJob: Job? = null
-    private var mtJob: Job? = null
+    /** Concurrent MT jobs — never cancel prior on new caption (seq guards apply). */
+    private val mtJobs = CopyOnWriteArrayList<Job>()
+    /** Subtitle file: append once per captionSeq (final primary, not ZH then EN dup). */
+    private var subtitleAppendSeq = -1L
 
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
@@ -73,7 +79,7 @@ class CaptionOverlayService : Service() {
     @Volatile private var hasRealCaption = false
     @Volatile private var tearingDown = false
     private var fontIndex = 0
-    private var captionSeq = 0L
+    @Volatile private var captionSeq = 0L
     /** Last published ASR primary (normalized) — suppress identical / near-dup loops. */
     private var lastPublishedNorm = ""
     private var lastPublishedAtMs = 0L
@@ -243,6 +249,7 @@ class CaptionOverlayService : Service() {
     private suspend fun runAsrConsumer(app: CaptionActionApp, activeEngine: InferenceEngine) {
         var shownTranscribing = false
         var lastOverruns = audioCapture.overrunCount()
+        var lastChunkCount = audioCapture.chunkCount()
         var quietSinceMs = 0L
         var lastCatchupStatusAt = 0L
         var lastQuietStatusAt = 0L
@@ -255,11 +262,19 @@ class CaptionOverlayService : Service() {
             val overrunsNow = audioCapture.overrunCount()
             val depthAfter = audioCapture.queueDepth()
             val rms = audioCapture.lastRms()
+            val chunksNow = audioCapture.chunkCount()
+            val chunksAdvancing = chunksNow > lastChunkCount
+            lastChunkCount = chunksNow
             val now = System.currentTimeMillis()
 
-            // Sustained near-zero RMS → honest "no signal" (wrong screen / mute mix).
+            // Sustained near-zero RMS with no pump/queue activity → honest "no signal".
+            // Healthy playback RMS or advancing chunks must never look like "no device audio".
             val quietGate = if (audioCapture.usingPlaybackCapture) 2f else 40f
-            if (rms < quietGate) {
+            val signalHealthy = rms >= quietGate ||
+                chunksAdvancing ||
+                depthBefore > 0 ||
+                (audioCapture.usingPlaybackCapture && overrunsNow > overrunsBefore)
+            if (!signalHealthy) {
                 if (quietSinceMs == 0L) quietSinceMs = now
             } else {
                 quietSinceMs = 0L
@@ -268,18 +283,26 @@ class CaptionOverlayService : Service() {
             val overrunsRising = overrunsNow > lastOverruns + 2 ||
                 (overrunsNow - overrunsBefore) > 0 ||
                 depthBefore >= 4
+            // Quality behind (overruns / backlog): catching-up — never "no audio".
+            val qualityBehind = overrunsRising || depthBefore >= 3
 
-            if (overrunsRising && now - lastCatchupStatusAt >= STATUS_THROTTLE_MS) {
+            if (qualityBehind && now - lastCatchupStatusAt >= STATUS_THROTTLE_MS) {
                 lastCatchupStatusAt = now
                 withContext(Dispatchers.Main) {
                     // Do not wipe last good caption — status/spinner only.
                     setSessionStatus(getString(R.string.status_catching_up), loading = true)
                 }
-            } else if (quietSustained && !hasRealCaption && now - lastQuietStatusAt >= STATUS_THROTTLE_MS) {
+            } else if (
+                quietSustained &&
+                !hasRealCaption &&
+                !signalHealthy &&
+                !qualityBehind &&
+                now - lastQuietStatusAt >= STATUS_THROTTLE_MS
+            ) {
                 lastQuietStatusAt = now
                 withContext(Dispatchers.Main) {
+                    // Status only — never replace Listening / last caption with no-audio text.
                     setSessionStatus(getString(R.string.status_no_audio_signal), loading = true)
-                    updateCaption(getString(R.string.status_no_audio_signal), null)
                 }
             } else if (!shownTranscribing && !hasRealCaption) {
                 shownTranscribing = true
@@ -310,11 +333,20 @@ class CaptionOverlayService : Service() {
                 DIAG_TAG,
                 "asr pcmMs=$pcmMs queueDepth=$depthBefore→$depthAfter " +
                     "overruns=$overrunsNow(+${overrunsNow - overrunsBefore}) " +
-                    "rms=$rms inferMs=$inferMs mode=$asrMode hasCaption=${raw != null} textPreview=$textPreview"
+                    "rms=$rms chunks=$chunksNow advancing=$chunksAdvancing " +
+                    "inferMs=$inferMs mode=$asrMode hasCaption=${raw != null} textPreview=$textPreview"
             )
             if (raw == null) {
-                // Keep Listening until a non-junk caption arrives; do not set hasRealCaption.
-                if (!hasRealCaption && !quietSustained && !overrunsRising) {
+                // Keep Listening / catching-up until a non-junk caption arrives; do not set hasRealCaption.
+                // Long whisper infer or overruns ⇒ behind, not "no audio".
+                if (qualityBehind || inferMs >= LONG_INFER_STATUS_MS) {
+                    if (now - lastCatchupStatusAt >= STATUS_THROTTLE_MS) {
+                        lastCatchupStatusAt = System.currentTimeMillis()
+                        withContext(Dispatchers.Main) {
+                            setSessionStatus(getString(R.string.status_catching_up), loading = true)
+                        }
+                    }
+                } else if (!hasRealCaption && !quietSustained) {
                     withContext(Dispatchers.Main) {
                         setSessionStatus(getString(R.string.listening), loading = true)
                         updateCaption(getString(R.string.listening), null)
@@ -322,7 +354,7 @@ class CaptionOverlayService : Service() {
                 }
                 continue
             }
-            val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
+            val (primaryRaw, _) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
             val norm = AsrJunkFilter.normalize(primaryRaw)
             val publishNow = System.currentTimeMillis()
             // Consecutive identical: don't re-show / re-append the same line every ~1s window.
@@ -343,47 +375,128 @@ class CaptionOverlayService : Service() {
             lastPublishedAtMs = publishNow
             val seq = ++captionSeq
             hasRealCaption = true
-            val primary = composer.compose(primaryRaw)
-            val secondary = secondaryRaw
-            if (subtitleRecorder.isRecording) {
-                subtitleRecorder.appendCaption(primary, secondary)
-            }
-            withContext(Dispatchers.Main) {
-                setSessionStatus(null, loading = false)
-                updateCaption(primary, secondary)
+
+            val mtEngine = translation
+            val needsMt = mtEngine != null && likelyNeedsMt(raw, settingsNow)
+            if (!needsMt || mtEngine == null) {
+                publishCaption(raw, dualNow, seq, appendSubtitle = true)
+                continue
             }
 
-            val mtEngine = translation ?: continue
-            mtJob?.cancel()
-            mtJob = scope.launch(Dispatchers.IO) {
-                enrichWithMt(mtEngine, raw, settingsNow, dualNow, seq)
+            // Prefer target-language primary: wait briefly for MT before painting source.
+            // Do NOT cancel in-flight MT — launch concurrent; seq guard applies the latest.
+            val deferred = scope.async(Dispatchers.IO) {
+                try {
+                    mtEngine.applyPolicy(raw, settingsNow)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "applyPolicy failed: ${t.message}")
+                    raw
+                }
+            }
+            val quick = withTimeoutOrNull(MT_PREFER_WAIT_MS) { deferred.await() }
+            if (seq != captionSeq) {
+                Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (superseded during wait)")
+                continue
+            }
+            if (quick != null && !quick.translatedText.isNullOrBlank()) {
+                publishCaption(quick, dualNow, seq, appendSubtitle = true)
+                Log.i(
+                    DIAG_TAG,
+                    "mt applied-quick seq=$seq primary=${quick.translatedText.orEmpty().take(48)}"
+                )
+                // Deferred already complete; no follow-up job.
+            } else {
+                // Timeout or no translation yet: paint source, then swap when MT arrives.
+                publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false)
+                val job = scope.launch(Dispatchers.IO) {
+                    val policy = quick ?: deferred.await()
+                    applyMtResult(policy, dualNow, seq, allowSourceAppend = true)
+                }
+                trackMtJob(job)
             }
         }
     }
 
-    private suspend fun enrichWithMt(
-        mtEngine: MlKitTranslationEngine,
+    private fun likelyNeedsMt(
         raw: CaptionResult,
-        settings: com.hatsunama.captionaction.data.AppSettings,
+        settings: com.hatsunama.captionaction.data.AppSettings
+    ): Boolean {
+        if (!raw.translatedText.isNullOrBlank()) return false
+        val target = MlKitTranslationEngine.normalizeLangStatic(settings.targetLanguage)
+        if (target.isEmpty()) return false
+        val detected = MlKitTranslationEngine.normalizeLangStatic(raw.language)
+        val passthrough = settings.passthroughLanguages
+            .map { MlKitTranslationEngine.normalizeLangStatic(it) }
+            .filter { it.isNotEmpty() }
+            .toSet()
+        if (detected.isNotEmpty() && detected in passthrough) return false
+        if (detected.isNotEmpty() && detected == target) return false
+        return true
+    }
+
+    private fun trackMtJob(job: Job) {
+        mtJobs.add(job)
+        job.invokeOnCompletion { mtJobs.remove(job) }
+    }
+
+    private fun cancelMtJobs() {
+        mtJobs.toList().forEach { it.cancel() }
+        mtJobs.clear()
+    }
+
+    /**
+     * Apply MT result when still latest [seq]. Appends subtitle once per seq (final primary).
+     * @param allowSourceAppend if MT yields no translation, still append source once.
+     */
+    private suspend fun applyMtResult(
+        policy: CaptionResult,
         dualNow: Boolean,
-        seq: Long
+        seq: Long,
+        allowSourceAppend: Boolean
     ) {
-        val policy = try {
-            mtEngine.applyPolicy(raw, settings)
-        } catch (t: Throwable) {
-            Log.w(TAG, "applyPolicy failed: ${t.message}")
+        if (seq != captionSeq) {
+            Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (seq mismatch)")
             return
         }
-        if (seq != captionSeq) return
-        if (policy.translatedText.isNullOrBlank()) return
-        val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(policy, dualNow)
+        val hasMt = !policy.translatedText.isNullOrBlank()
+        if (!hasMt && !allowSourceAppend) {
+            Log.i(DIAG_TAG, "mt skipped seq=$seq (no translation)")
+            return
+        }
+        if (hasMt) {
+            Log.i(
+                DIAG_TAG,
+                "mt applied seq=$seq primary=${policy.translatedText.orEmpty().take(48)}"
+            )
+        } else {
+            Log.i(DIAG_TAG, "mt applied-source seq=$seq (no translation; append source)")
+        }
+        publishCaption(policy, dualNow, seq, appendSubtitle = true)
+    }
+
+    private suspend fun publishCaption(
+        result: CaptionResult,
+        dualNow: Boolean,
+        seq: Long,
+        appendSubtitle: Boolean
+    ) {
+        if (seq != captionSeq) {
+            Log.i(DIAG_TAG, "publish skipped seq=$seq latest=$captionSeq")
+            return
+        }
+        val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(result, dualNow)
         val primary = composer.compose(primaryRaw)
         val secondary = secondaryRaw
-        if (subtitleRecorder.isRecording) {
+        if (appendSubtitle && subtitleRecorder.isRecording && subtitleAppendSeq != seq) {
             subtitleRecorder.appendCaption(primary, secondary)
+            subtitleAppendSeq = seq
         }
         withContext(Dispatchers.Main) {
-            if (seq != captionSeq) return@withContext
+            if (seq != captionSeq) {
+                Log.i(DIAG_TAG, "mt/ui skipped seq=$seq latest=$captionSeq (seq mismatch on main)")
+                return@withContext
+            }
+            setSessionStatus(null, loading = false)
             updateCaption(primary, secondary)
         }
     }
@@ -678,7 +791,7 @@ class CaptionOverlayService : Service() {
         if (tearingDown) return
         tearingDown = true
         asrJob?.cancel()
-        mtJob?.cancel()
+        cancelMtJobs()
         audioCapture.stop()
         engine?.release()
         engine = null
@@ -688,6 +801,9 @@ class CaptionOverlayService : Service() {
         composer.reset()
         lastPublishedNorm = ""
         lastPublishedAtMs = 0L
+        subtitleAppendSeq = -1L
+        captionSeq = 0L
+        hasRealCaption = false
         val savedPath = try {
             subtitleRecorder.stopSession()
         } catch (_: Exception) {
@@ -707,7 +823,7 @@ class CaptionOverlayService : Service() {
 
     override fun onDestroy() {
         asrJob?.cancel()
-        mtJob?.cancel()
+        cancelMtJobs()
         audioCapture.stop()
         engine?.release()
         engine = null
@@ -726,6 +842,10 @@ class CaptionOverlayService : Service() {
         private const val DIAG_TAG = "CaptionAction"
         private const val QUIET_STATUS_MS = 4_000L
         private const val STATUS_THROTTLE_MS = 2_500L
+        /** Prefer waiting this long for MT before painting source (EN/target primary). */
+        private const val MT_PREFER_WAIT_MS = 600L
+        /** Whisper/Quality long infer → show catching-up, not no-audio. */
+        private const val LONG_INFER_STATUS_MS = 3_000L
         /** Suppress near-duplicate captions inside this window (ms). */
         private const val NEAR_DUP_WINDOW_MS = 2_500L
         const val ACTION_START = "com.hatsunama.captionaction.START"

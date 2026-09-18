@@ -11,8 +11,8 @@ android {
         applicationId = "com.hatsunama.captionaction"
         minSdk = 26
         targetSdk = 34
-        versionCode = 24
-        versionName = "0.3.1-overlay-drag"
+        versionCode = 25
+        versionName = "0.3.2-mt-audio"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         ndk {
