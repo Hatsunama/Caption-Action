@@ -773,7 +773,7 @@ class CaptionOverlayService : Service() {
             Intent(this, CaptionOverlayService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CaptionActionApp.CHANNEL_ID)
+        return NotificationCompat.Builder(this, "caption_action_live")
             .setContentTitle(getString(R.string.notif_title))
             .setContentText(getString(R.string.notif_text))
             .setSmallIcon(R.drawable.ic_launcher_foreground)
