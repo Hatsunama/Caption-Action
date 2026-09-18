@@ -14,7 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Quality-path ASR via whisper.cpp (ffmpegkit AAR).
+ * Live continuous + Quality ASR via whisper.cpp (ffmpegkit AAR).
+ * Live default = Tiny (Balanced), language=auto for all Languages.all.
  *
  * Windows: ~1.5 s normally; ~1.125 s when [setKeepUpBehind] so mid-device passes finish nearer
  * realtime (still ≥1000 ms native min). Short PCM is silence-padded.

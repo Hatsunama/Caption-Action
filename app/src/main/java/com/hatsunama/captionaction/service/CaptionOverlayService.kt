@@ -537,7 +537,8 @@ class CaptionOverlayService : Service() {
                 }
                 continue
             }
-            val (primaryRaw, _) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
+            // Use ASR source for dedup / hold decisions (not gated display primary).
+            val primaryRaw = raw.text
             val norm = AsrJunkFilter.normalize(primaryRaw)
             val publishNow = System.currentTimeMillis()
             // Consecutive identical: don't re-show / re-append the same line every ~1s window.
@@ -570,7 +571,7 @@ class CaptionOverlayService : Service() {
                 val seqShort = ++captionSeq
                 hasRealCaption = true
                 withContext(Dispatchers.Main) { setCaptionDimmed(false) }
-                publishCaption(raw, dualNow, seqShort, appendSubtitle = true)
+                publishCaption(raw, dualNow, seqShort, appendSubtitle = true, targetLang = targetLang)
                 continue
             }
             lastPublishedNorm = norm
@@ -583,7 +584,7 @@ class CaptionOverlayService : Service() {
             // Force MT when scripts disagree even if ASR tag == target (mis-tag).
             val needsMt = mtEngine != null && (likelyNeedsMt(raw, settingsNow) || holdWrongScript)
             if (!needsMt || mtEngine == null) {
-                publishCaption(raw, dualNow, seq, appendSubtitle = true)
+                publishCaption(raw, dualNow, seq, appendSubtitle = true, targetLang = targetLang)
                 continue
             }
 
@@ -605,7 +606,7 @@ class CaptionOverlayService : Service() {
                 continue
             }
             if (quick != null && !quick.translatedText.isNullOrBlank()) {
-                publishCaption(quick, dualNow, seq, appendSubtitle = true)
+                publishCaption(quick, dualNow, seq, appendSubtitle = true, targetLang = targetLang)
                 Log.i(
                     DIAG_TAG,
                     "mt applied-quick seq=$seq primary=${quick.translatedText.orEmpty().take(48)}"
@@ -615,15 +616,15 @@ class CaptionOverlayService : Service() {
                 Log.i(DIAG_TAG, "holding wrong-script source pending MT seq=$seq")
                 val job = scope.launch(Dispatchers.IO) {
                     val policy = quick ?: deferred.await()
-                    applyMtResult(policy, dualNow, seq, allowSourceAppend = false)
+                    applyMtResult(policy, dualNow, seq, allowSourceAppend = false, targetLang = targetLang)
                 }
                 trackMtJob(job)
             } else {
                 // Same-script timeout: paint source, then swap when MT arrives.
-                publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false)
+                publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false, targetLang = targetLang)
                 val job = scope.launch(Dispatchers.IO) {
                     val policy = quick ?: deferred.await()
-                    applyMtResult(policy, dualNow, seq, allowSourceAppend = true)
+                    applyMtResult(policy, dualNow, seq, allowSourceAppend = true, targetLang = targetLang)
                 }
                 trackMtJob(job)
             }
@@ -667,7 +668,8 @@ class CaptionOverlayService : Service() {
         policy: CaptionResult,
         dualNow: Boolean,
         seq: Long,
-        allowSourceAppend: Boolean
+        allowSourceAppend: Boolean,
+        targetLang: String
     ) {
         if (seq != captionSeq) {
             Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (seq mismatch)")
@@ -686,22 +688,42 @@ class CaptionOverlayService : Service() {
         } else {
             Log.i(DIAG_TAG, "mt applied-source seq=$seq (no translation; append source)")
         }
-        publishCaption(policy, dualNow, seq, appendSubtitle = true)
+        publishCaption(policy, dualNow, seq, appendSubtitle = true, targetLang = targetLang)
     }
 
     private suspend fun publishCaption(
         result: CaptionResult,
         dualNow: Boolean,
         seq: Long,
-        appendSubtitle: Boolean
+        appendSubtitle: Boolean,
+        targetLang: String
     ) {
         if (seq != captionSeq) {
             Log.i(DIAG_TAG, "publish skipped seq=$seq latest=$captionSeq")
             return
         }
-        val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(result, dualNow)
+        val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
+            result,
+            dualNow,
+            targetLang
+        )
+        // Final script gate: never paint blank or wrong-script primary when target is set.
+        if (primaryRaw.isBlank()) {
+            Log.i(DIAG_TAG, "publishCaption blocked empty/wrong-script primary seq=$seq")
+            return
+        }
+        if (targetLang.isNotBlank() &&
+            AsrJunkFilter.shouldHoldSourceOffOverlay(primaryRaw, targetLang)
+        ) {
+            Log.i(
+                DIAG_TAG,
+                "publishCaption final script gate blocked seq=$seq primary=${primaryRaw.take(48)}"
+            )
+            return
+        }
+        // Dual off / EN-only: never show source as secondary.
+        val secondary = if (dualNow) secondaryRaw else null
         val primary = composer.compose(primaryRaw)
-        val secondary = secondaryRaw
         if (appendSubtitle && subtitleRecorder.isRecording && subtitleAppendSeq != seq) {
             subtitleRecorder.appendCaption(primary, secondary)
             subtitleAppendSeq = seq

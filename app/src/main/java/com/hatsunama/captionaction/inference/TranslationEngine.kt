@@ -326,17 +326,34 @@ object CaptionDisplay {
      * Target-language primary whenever MT filled [CaptionResult.translatedText].
      * Dual honesty: secondary (source) only when dual is on **and** a real translation exists —
      * never invent a dual pair from source-only captions.
+     *
+     * When [targetLang] is set and dual is off: never return wrong-script source as primary
+     * (blank primary → caller must not paint). Dual-on still allows source as secondary only.
      */
-    fun primaryAndSecondary(policy: CaptionResult, dualSubtitles: Boolean): Pair<String, String?> {
+    fun primaryAndSecondary(
+        policy: CaptionResult,
+        dualSubtitles: Boolean,
+        targetLang: String = ""
+    ): Pair<String, String?> {
         val original = policy.text
         val inTarget = policy.translatedText?.takeIf { it.isNotBlank() }
-        // Prefer translated (EN/target) as primary — never leave source stuck when MT succeeded.
-        val primary = inTarget ?: original
-        val dualOk = dualSubtitles && inTarget != null && inTarget != original
-        return if (dualOk) {
-            primary to original
-        } else {
-            primary to null
+        val target = targetLang.trim()
+        if (inTarget != null) {
+            val dualOk = dualSubtitles && inTarget != original
+            // If MT text itself is wrong-script for target, do not paint it as primary.
+            if (target.isNotEmpty() &&
+                AsrJunkFilter.shouldHoldSourceOffOverlay(inTarget, target)
+            ) {
+                return "" to null
+            }
+            return if (dualOk) inTarget to original else inTarget to null
         }
+        // No MT: only show source when same script as target (or no target set).
+        if (target.isNotEmpty() &&
+            AsrJunkFilter.shouldHoldSourceOffOverlay(original, target)
+        ) {
+            return "" to null
+        }
+        return original to null
     }
 }

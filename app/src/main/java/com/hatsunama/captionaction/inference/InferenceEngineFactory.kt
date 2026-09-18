@@ -31,7 +31,7 @@ object InferenceEngineFactory {
 
     fun create(
         context: Context,
-        tier: ModelTier = ModelTier.FAST,
+        tier: ModelTier = ModelTier.BALANCED,
         targetLanguage: String = "en"
     ): InferenceEngine? {
         return when (tier.engineFamily) {

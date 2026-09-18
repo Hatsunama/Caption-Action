@@ -2,7 +2,7 @@ package com.hatsunama.captionaction.data
 
 data class AppSettings(
     val permissionsWalkthroughComplete: Boolean = false,
-    val modelTierId: String = ModelTier.FAST.id,
+    val modelTierId: String = ModelTier.BALANCED.id,
     val targetLanguage: String = "en",
     val passthroughLanguages: Set<String> = setOf("en"),
     val dualSubtitles: Boolean = false,

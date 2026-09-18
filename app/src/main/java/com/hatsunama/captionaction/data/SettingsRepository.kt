@@ -32,7 +32,7 @@ class SettingsRepository(private val context: Context) {
     val settingsFlow: Flow<AppSettings> = context.dataStore.data.map { p ->
         AppSettings(
             permissionsWalkthroughComplete = p[Keys.permissionsWalkthrough] ?: false,
-            modelTierId = p[Keys.modelTier] ?: ModelTier.FAST.id,
+            modelTierId = p[Keys.modelTier] ?: ModelTier.BALANCED.id,
             targetLanguage = p[Keys.targetLang] ?: "en",
             passthroughLanguages = (p[Keys.passthrough] ?: "en")
                 .split(",")
