@@ -6,7 +6,15 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.8-silent-ok** (versionCode 31)
+Current source version: **0.3.9** (versionCode 32)
+
+## 0.3.9
+
+Minimal Start fix after Allow (regression from 0.3.7/0.3.8):
+
+- **Root cause:** `3750660` (0.3.7) dropped `microphone` from the overlay FGS type; AudioRecord playback-capture then failed after Allow on Seeker + Samsung → `error_capture`. `2ec8cb4` (0.3.8) added a VirtualDisplay keep-alive that **hard-failed** Start when createVirtualDisplay returned false — a second self-inflicted abort on the same path.
+- **Fix:** restore `microphone|mediaProjection|specialUse` FGS (0.3.6 capture start); keep-alive is best-effort only (`ProjectionCaptureStartGate`); keep 0.3.7 fresh screen-share prompt. No UX redesign.
+- versionName plain `0.3.9`, versionCode 32.
 
 ## 0.3.8-silent-ok
 
