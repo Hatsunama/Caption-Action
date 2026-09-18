@@ -10,7 +10,10 @@ import android.graphics.Typeface
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -28,9 +31,10 @@ import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
 import com.hatsunama.captionaction.data.SubtitleFileRecorder
 import com.hatsunama.captionaction.inference.CaptionDisplay
+import com.hatsunama.captionaction.inference.CaptionResult
+import com.hatsunama.captionaction.inference.EnsureResult
 import com.hatsunama.captionaction.inference.InferenceEngine
 import com.hatsunama.captionaction.inference.InferenceEngineFactory
-import com.hatsunama.captionaction.inference.EnsureResult
 import com.hatsunama.captionaction.inference.MlKitTranslationEngine
 import com.hatsunama.captionaction.inference.SubtitleComposer
 import com.hatsunama.captionaction.ui.home.HomeActivity
@@ -39,18 +43,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
 
 class CaptionOverlayService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var pipelineJob: Job? = null
-    private var idleJob: Job? = null
+    private var asrJob: Job? = null
+    private var mtJob: Job? = null
 
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
@@ -62,9 +66,13 @@ class CaptionOverlayService : Service() {
     private var translation: MlKitTranslationEngine? = null
     private lateinit var subtitleRecorder: SubtitleFileRecorder
     private var engine: InferenceEngine? = null
+    private var mediaProjection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
 
-    @Volatile private var lastCaptionAt = 0L
+    @Volatile private var hasRealCaption = false
+    @Volatile private var tearingDown = false
     private var fontIndex = 0
+    private var captionSeq = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -91,10 +99,8 @@ class CaptionOverlayService : Service() {
                     @Suppress("DEPRECATION")
                     intent?.getParcelableExtra(EXTRA_RESULT_DATA)
                 }
-                // Claim MediaProjection grant immediately (sync) before any slow work —
-                // the token can expire if we await MT packs / engine load first.
                 val projection = claimProjectionSync(resultCode, data)
-                scope.launch { beginSession(projection) }
+                scope.launch { beginSession(projection, wantedProjection = resultCode != 0 && data != null) }
             }
         }
         return START_STICKY
@@ -105,33 +111,56 @@ class CaptionOverlayService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         return try {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mpm.getMediaProjection(resultCode, data)
-        } catch (_: Exception) {
+            val projection = mpm.getMediaProjection(resultCode, data) ?: return null
+            val cb = object : MediaProjection.Callback() {
+                override fun onStop() {
+                    Log.w(TAG, "MediaProjection stopped by system")
+                    if (!tearingDown) {
+                        scope.launch(Dispatchers.Main) {
+                            failSession(getString(R.string.error_projection_stopped))
+                        }
+                    }
+                }
+            }
+            projection.registerCallback(cb, Handler(Looper.getMainLooper()))
+            projectionCallback = cb
+            mediaProjection = projection
+            projection
+        } catch (t: Exception) {
+            Log.e(TAG, "claimProjection failed", t)
             null
         }
     }
 
-    private suspend fun beginSession(projection: MediaProjection?) {
+    private suspend fun beginSession(projection: MediaProjection?, wantedProjection: Boolean) {
         val app = application as CaptionActionApp
         val settings = app.settings.current()
         fontIndex = settings.fontIndex
         showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
         showCloseFab()
-        setOverlayLoading(true)
-        updateCaption(getString(R.string.loading_engine), null)
+        setSessionStatus(getString(R.string.loading_engine), loading = true)
 
-        // Capture ASAP with the already-claimed projection (or mic fallback).
         var started = false
         if (projection != null) {
             started = audioCapture.startPlaybackCapture(projection)
         }
         if (!started) {
+            if (wantedProjection || projection != null) {
+                Toast.makeText(
+                    this,
+                    getString(R.string.permission_projection_declined_mic),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             started = audioCapture.startMic()
         }
         if (!started) {
             failSession(getString(R.string.error_capture))
             return
         }
+
+        audioCapture.startPump(scope)
+        setSessionStatus(getString(R.string.listening), loading = true)
 
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
@@ -152,7 +181,6 @@ class CaptionOverlayService : Service() {
         preferred.setTargetLanguage(settings.targetLanguage)
         val dualAllowed = preferred.canProvideDualSubtitles() && settings.dualSubtitles
         preferred.setDualSubtitles(dualAllowed)
-        // Playback path: engines must not drop quiet/muted PCM with mic RMS gates.
         preferred.setPlaybackCapture(audioCapture.usingPlaybackCapture)
         val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
         if (!loaded) {
@@ -164,7 +192,6 @@ class CaptionOverlayService : Service() {
 
         val mt = MlKitTranslationEngine(this)
         translation = mt
-        // MT packs: non-blocking after capture. Continue on fail — ASR still works.
         scope.launch(Dispatchers.IO) {
             val ensure = mt.ensureModels(
                 targetLanguage = settings.targetLanguage,
@@ -197,61 +224,80 @@ class CaptionOverlayService : Service() {
                 ).show()
             }
         }
-        setOverlayLoading(false)
-        updateCaption(getString(R.string.listening), null)
-        lastCaptionAt = System.currentTimeMillis()
 
-        pipelineJob?.cancel()
-        pipelineJob = scope.launch(Dispatchers.IO) {
-            var shownTranscribing = false
-            val pipelineStartedAt = System.currentTimeMillis()
-            audioCapture.readLoop(chunkSamples = 8_000) { pcm ->
-                // Accurate whisper first result is slow — keep status honest so overlay
-                // does not look dead while audio accumulates / model runs.
-                if (!shownTranscribing &&
-                    System.currentTimeMillis() - pipelineStartedAt > 1_200L
-                ) {
-                    shownTranscribing = true
-                    withContext(Dispatchers.Main) {
-                        setOverlayLoading(true)
-                        updateCaption(getString(R.string.transcribing), null)
-                    }
-                }
-                val settingsNow = app.settings.current()
-                activeEngine.setTargetLanguage(settingsNow.targetLanguage)
-                val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
-                activeEngine.setDualSubtitles(dualNow)
-                activeEngine.setPlaybackCapture(audioCapture.usingPlaybackCapture)
-                val raw = activeEngine.transcribe(pcm, 16_000) ?: return@readLoop
-                val mtEngine = translation ?: return@readLoop
-                val policy = mtEngine.applyPolicy(raw, settingsNow)
-                val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
-                    policy,
-                    dualNow
-                )
-                val primary = composer.compose(primaryRaw)
-                val secondary = secondaryRaw
-                lastCaptionAt = System.currentTimeMillis()
-                if (subtitleRecorder.isRecording) {
-                    subtitleRecorder.appendCaption(primary, secondary)
-                }
-                withContext(Dispatchers.Main) {
-                    setOverlayLoading(false)
-                    updateCaption(primary, secondary)
-                }
-            }
+        setSessionStatus(getString(R.string.listening), loading = false)
+        if (!hasRealCaption) {
+            updateCaption(getString(R.string.listening), null)
         }
 
-        idleJob?.cancel()
-        idleJob = scope.launch(Dispatchers.Main) {
-            while (isActive) {
-                delay(4_000)
-                val idle = System.currentTimeMillis() - lastCaptionAt
-                if (idle > 8_000 && overlayView != null) {
-                    setOverlayLoading(false)
-                    updateCaption(getString(R.string.listening), null)
+        asrJob?.cancel()
+        asrJob = scope.launch(Dispatchers.IO) {
+            runAsrConsumer(app, activeEngine)
+        }
+    }
+
+    private suspend fun runAsrConsumer(app: CaptionActionApp, activeEngine: InferenceEngine) {
+        var shownTranscribing = false
+        while (coroutineContext.isActive) {
+            val pcm = audioCapture.takeChunk() ?: break
+            if (!shownTranscribing) {
+                shownTranscribing = true
+                withContext(Dispatchers.Main) {
+                    setSessionStatus(getString(R.string.transcribing), loading = true)
                 }
             }
+            val settingsNow = app.settings.current()
+            activeEngine.setTargetLanguage(settingsNow.targetLanguage)
+            val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
+            activeEngine.setDualSubtitles(dualNow)
+            activeEngine.setPlaybackCapture(audioCapture.usingPlaybackCapture)
+
+            val raw = activeEngine.transcribe(pcm, AudioCapture.SAMPLE_RATE) ?: continue
+            val seq = ++captionSeq
+            hasRealCaption = true
+            val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
+            val primary = composer.compose(primaryRaw)
+            val secondary = secondaryRaw
+            if (subtitleRecorder.isRecording) {
+                subtitleRecorder.appendCaption(primary, secondary)
+            }
+            withContext(Dispatchers.Main) {
+                setSessionStatus(null, loading = false)
+                updateCaption(primary, secondary)
+            }
+
+            val mtEngine = translation ?: continue
+            mtJob?.cancel()
+            mtJob = scope.launch(Dispatchers.IO) {
+                enrichWithMt(mtEngine, raw, settingsNow, dualNow, seq)
+            }
+        }
+    }
+
+    private suspend fun enrichWithMt(
+        mtEngine: MlKitTranslationEngine,
+        raw: CaptionResult,
+        settings: com.hatsunama.captionaction.data.AppSettings,
+        dualNow: Boolean,
+        seq: Long
+    ) {
+        val policy = try {
+            mtEngine.applyPolicy(raw, settings)
+        } catch (t: Throwable) {
+            Log.w(TAG, "applyPolicy failed: ${t.message}")
+            return
+        }
+        if (seq != captionSeq) return
+        if (policy.translatedText.isNullOrBlank()) return
+        val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(policy, dualNow)
+        val primary = composer.compose(primaryRaw)
+        val secondary = secondaryRaw
+        if (subtitleRecorder.isRecording) {
+            subtitleRecorder.appendCaption(primary, secondary)
+        }
+        withContext(Dispatchers.Main) {
+            if (seq != captionSeq) return@withContext
+            updateCaption(primary, secondary)
         }
     }
 
@@ -430,10 +476,17 @@ class CaptionOverlayService : Service() {
         secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.78f)
     }
 
-    private fun setOverlayLoading(loading: Boolean) {
+    private fun setSessionStatus(status: String?, loading: Boolean) {
         val view = overlayView ?: return
         view.findViewById<ProgressBar>(R.id.captionLoading).visibility =
             if (loading) View.VISIBLE else View.GONE
+        val statusView = view.findViewById<TextView>(R.id.captionStatus)
+        if (status.isNullOrBlank()) {
+            statusView.visibility = View.GONE
+        } else {
+            statusView.visibility = View.VISIBLE
+            statusView.text = status
+        }
     }
 
     private fun updateCaption(primary: String, secondary: String?) {
@@ -483,14 +536,34 @@ class CaptionOverlayService : Service() {
         layoutParams = null
     }
 
+    private fun releaseProjection() {
+        val proj = mediaProjection
+        val cb = projectionCallback
+        mediaProjection = null
+        projectionCallback = null
+        if (proj != null) {
+            try {
+                if (cb != null) proj.unregisterCallback(cb)
+            } catch (_: Exception) {
+            }
+            try {
+                proj.stop()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun stopSelfSafe() {
-        pipelineJob?.cancel()
-        idleJob?.cancel()
+        if (tearingDown) return
+        tearingDown = true
+        asrJob?.cancel()
+        mtJob?.cancel()
         audioCapture.stop()
         engine?.release()
         engine = null
         translation?.release()
         translation = null
+        releaseProjection()
         composer.reset()
         val savedPath = try {
             subtitleRecorder.stopSession()
@@ -510,13 +583,14 @@ class CaptionOverlayService : Service() {
     }
 
     override fun onDestroy() {
-        pipelineJob?.cancel()
-        idleJob?.cancel()
+        asrJob?.cancel()
+        mtJob?.cancel()
         audioCapture.stop()
         engine?.release()
         engine = null
         translation?.release()
         translation = null
+        releaseProjection()
         try { subtitleRecorder.discard() } catch (_: Exception) {}
         removeOverlayViews()
         instance = null
@@ -525,6 +599,7 @@ class CaptionOverlayService : Service() {
     }
 
     companion object {
+        private const val TAG = "CaptionOverlayService"
         const val ACTION_START = "com.hatsunama.captionaction.START"
         const val ACTION_STOP = "com.hatsunama.captionaction.STOP"
         const val EXTRA_RESULT_CODE = "result_code"

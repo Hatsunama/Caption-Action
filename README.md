@@ -6,7 +6,7 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.2.5-mute-capture** (versionCode 18)
+Current source version: **0.2.6-capture-pipeline** (versionCode 19)
 
 ## Install (promoted release)
 
@@ -66,13 +66,15 @@ Downloads show progress % with cancel/resume via HTTP Range. Models land in `fil
 
 ## ASR / translation
 
-- **Pipeline:** audio → `InferenceEngine` (ASR) → `MlKitTranslationEngine` (policy + offline MT) → subtitle composer → overlay. Settings via DataStore (no ring buffer).
+- **Capture pipeline (0.2.6):** dedicated `AudioCapture` pump → bounded PCM queue (drop-oldest on overrun) → separate ASR consumer coroutine. **Never** block `AudioRecord.read` on whisper/Sherpa/MT. Large ~3 s `AudioRecord` buffer. Capture starts as soon as playback/mic recording starts (including during model load).
+- **Pipeline:** PCM queue → `InferenceEngine` (ASR, one pass) → show caption immediately → async `MlKitTranslationEngine` (policy + offline MT) → overlay update. Last real caption stays on screen; Listening/Transcribing are status/spinner only (idle does not wipe captions).
 - **Real ASR:** Fast → `SherpaInferenceEngine` (SenseVoice ONNX, accumulated ~3–12 s windows). Balanced/Accurate → `WhisperCppInferenceEngine` (prebuilt whisper.cpp AAR + ggml bins). No demo/stub caption mode.
-- **Offline MT:** Google ML Kit on-device Translate (`com.google.mlkit:translate`) for the `Languages.kt` set (en/es/fr/de/pt/it/ja/ko/zh/hi/ar/ru/tr/vi/id/nl/pl/uk). Language packs prepare in the background on Home and after capture starts (target + common sources) — **Start does not wait on MT packs**. After download, MT works offline.
-- **Whisper EN fast path:** when target is English, whisper.cpp `translate=true` (and dual two-pass) still applies; ML Kit covers Fast→any and whisper→non-EN.
-- **Dual:** available for any supported target when original `text` + `translatedText` exist (ML Kit or whisper). Home dual switch enabled accordingly.
-- **Session errors:** model-missing / engine-null / load-fail / capture-fail toast and tear down FGS + overlay (`stopSelfSafe`). MT pack download failure toast with retry; ASR still runs (spoken language until packs ready).
-- **Native / Play Services:** `app/libs/sherpa-onnx-1.13.8.aar` and `app/libs/whisper-android-1.0.0.aar` (arm64-v8a). ML Kit Translate typically needs Google Play services on the device.
+- **Offline MT:** Google ML Kit on-device Translate for the `Languages.kt` set. Packs prepare in the background — **Start does not wait**. Live hot path uses short MT timeouts (no 120 s `Tasks.await` downloads on the ASR path).
+- **Whisper live path:** **one pass only**. Dual / non-EN → ASR once + async ML Kit. Single-line EN (no dual) → one `translate=true` pass. No blocking dual two-pass whisper on live.
+- **MediaProjection:** held on `CaptionOverlayService` with `registerCallback`; `onStop` → visible `failSession` Toast; mic fallback always Toasts; projection stopped on teardown.
+- **Dual:** original + translated when MT supplies `translatedText`. Home dual switch enabled for supported targets.
+- **Session errors:** model-missing / engine-null / load-fail / capture-fail / projection-stopped toast and tear down FGS + overlay. MT pack failure toast; ASR still runs.
+- **Native / Play Services:** `app/libs/sherpa-onnx-1.13.8.aar` and `app/libs/whisper-android-1.0.0.aar` (arm64-v8a). ML Kit typically needs Google Play services.
 
 ## Build from source (low memory)
 
@@ -95,7 +97,7 @@ Release APK: `app/build/outputs/apk/release/app-release.apk`
 - **service:** `LiveCaptionStarter` (start/projection), `CaptionOverlayService` (session/overlay), `ModelDownloadManager`
 - **inference:** Engines + `InferenceEngineFactory` (Sherpa Fast / whisper.cpp Balanced·Accurate); `MlKitTranslationEngine` owns offline MT + language policy
 - **data:** Settings, `ModelCache`, `SubtitleFileRecorder`
-- **audio:** Capture only (playback or mic)
+- **audio:** Continuous capture pump + bounded PCM queue (playback or mic)
 
 ## Privacy
 
