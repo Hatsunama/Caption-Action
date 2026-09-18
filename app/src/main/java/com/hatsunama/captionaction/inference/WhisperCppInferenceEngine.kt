@@ -12,16 +12,9 @@ import java.nio.ByteOrder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Real ggml ASR via prebuilt whisper.cpp AAR (`dev.ffmpegkit-maintained:whisper-android` /
- * local `libs/whisper-android-1.0.0.aar`). Consumes Balanced/Accurate `ggml-*-q5_1.bin`.
- *
- * When [targetLanguage] is English, uses whisper **translate** so non-English speech
- * (e.g. Chinese) becomes English captions.
- */
 class WhisperCppInferenceEngine(
     private val appContext: Context,
-    @Volatile var targetLanguage: String = "en"
+    @Volatile private var targetLanguage: String = "en"
 ) : InferenceEngine {
     override val name: String = "whisper.cpp"
 
@@ -29,6 +22,12 @@ class WhisperCppInferenceEngine(
     private var model: WhisperModel? = null
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
+
+    override fun offlineTranslationTargets(): Set<String> = setOf("en")
+
+    override fun setTargetLanguage(code: String) {
+        targetLanguage = code
+    }
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
@@ -97,9 +96,8 @@ class WhisperCppInferenceEngine(
             val wav = writeTempWav(samples, sampleRateHz)
             try {
                 val target = normalizeLang(targetLanguage)
+                // Whisper translate task only targets English.
                 val translateToEn = target == "en"
-                // Whisper translate task only targets English. Use it when the
-                // user selected English so non-English speech becomes EN captions.
                 val config = WhisperConfig(
                     language = "auto",
                     translate = translateToEn,
@@ -111,10 +109,9 @@ class WhisperCppInferenceEngine(
                 val text = result.text.trim()
                 if (text.isEmpty()) return@withContext null
                 val end = System.currentTimeMillis()
-                // Translate task emits English; mark language=en so UI/policy show EN.
                 CaptionResult(
                     text = text,
-                    language = if (translateToEn) "en" else target.ifBlank { "auto" },
+                    language = if (translateToEn) "en" else "auto",
                     confidence = 0.8f,
                     startMs = end - (samples.size * 1000L / sampleRateHz),
                     endMs = end,

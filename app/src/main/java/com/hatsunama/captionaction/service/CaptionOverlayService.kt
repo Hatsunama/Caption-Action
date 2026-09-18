@@ -18,12 +18,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.audio.AudioCapture
-import android.widget.Toast
-import com.hatsunama.captionaction.data.CaptionRingBuffer
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
 import com.hatsunama.captionaction.data.SubtitleFileRecorder
@@ -59,7 +58,6 @@ class CaptionOverlayService : Service() {
     private var layoutParams: WindowManager.LayoutParams? = null
 
     private lateinit var audioCapture: AudioCapture
-    private val ringBuffer = CaptionRingBuffer()
     private val composer = SubtitleComposer()
     private val translation = PassthroughTranslationEngine()
     private lateinit var subtitleRecorder: SubtitleFileRecorder
@@ -127,9 +125,7 @@ class CaptionOverlayService : Service() {
             _events.emit(SessionEvent.Error(msg))
             return
         }
-        if (preferred is com.hatsunama.captionaction.inference.WhisperCppInferenceEngine) {
-            preferred.targetLanguage = settings.targetLanguage
-        }
+        preferred.setTargetLanguage(settings.targetLanguage)
         val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
         if (!loaded) {
             preferred.release()
@@ -140,7 +136,6 @@ class CaptionOverlayService : Service() {
         }
         engine = preferred
 
-        // Playback capture is the intended source; mic only if projection missing/fails.
         var started = false
         if (resultCode != 0 && data != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -191,12 +186,9 @@ class CaptionOverlayService : Service() {
         pipelineJob = scope.launch(Dispatchers.IO) {
             audioCapture.readLoop(chunkSamples = 8_000) { pcm ->
                 val settingsNow = app.settings.current()
-                (activeEngine as? com.hatsunama.captionaction.inference.WhisperCppInferenceEngine)
-                    ?.let { it.targetLanguage = settingsNow.targetLanguage }
+                activeEngine.setTargetLanguage(settingsNow.targetLanguage)
                 val raw = activeEngine.transcribe(pcm, 16_000) ?: return@readLoop
                 val policy = translation.applyPolicy(raw, settingsNow)
-                ringBuffer.add(policy)
-                composer.reset()
                 val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
                     policy,
                     settingsNow.dualSubtitles
@@ -223,8 +215,8 @@ class CaptionOverlayService : Service() {
                     val silence = ShortArray(1600)
                     val raw = activeEngine.transcribe(silence, 16_000) ?: continue
                     val settingsNow = app.settings.current()
+                    activeEngine.setTargetLanguage(settingsNow.targetLanguage)
                     val policy = translation.applyPolicy(raw, settingsNow)
-                    composer.reset()
                     val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
                         policy,
                         settingsNow.dualSubtitles
@@ -270,7 +262,6 @@ class CaptionOverlayService : Service() {
         }
         applyFont(view, params.height)
         wireOverlayTouch(view, params, minW, minH)
-        view.findViewById<View>(R.id.btnCloseOverlay).setOnClickListener { stopAndReturnHome() }
         view.findViewById<View>(R.id.btnStopDot).setOnClickListener { stopAndReturnHome() }
         windowManager.addView(view, params)
         overlayView = view
@@ -379,7 +370,7 @@ class CaptionOverlayService : Service() {
                 else -> false
             }
         }
-        // Drag on the caption bubble only so the green stop dot / close keep click events.
+        // Drag on bubble only so the green stop-dot keeps click events.
         view.findViewById<View>(R.id.captionBubble).setOnTouchListener(listener)
         handle.setOnTouchListener(listener)
     }
@@ -467,7 +458,6 @@ class CaptionOverlayService : Service() {
         audioCapture.stop()
         engine?.release()
         engine = null
-        ringBuffer.clear()
         composer.reset()
         val savedPath = try {
             subtitleRecorder.stopSession()
@@ -493,7 +483,6 @@ class CaptionOverlayService : Service() {
         audioCapture.stop()
         engine?.release()
         engine = null
-        ringBuffer.clear()
         try { subtitleRecorder.discard() } catch (_: Exception) {}
         removeOverlayViews()
         instance = null

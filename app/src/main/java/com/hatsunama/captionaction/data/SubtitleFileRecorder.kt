@@ -14,12 +14,7 @@ import java.util.Locale
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
-/**
- * Appends live caption lines to a plain UTF-8 .txt file in app-specific
- * external Documents storage (no extra storage permissions on minSdk 26 / target 34).
- *
- * One file per caption session. Thread-safe for service coroutine writers.
- */
+/** Session .txt captions under app Documents/captions. Thread-safe. */
 class SubtitleFileRecorder(private val context: Context) {
 
     private val lock = ReentrantLock()
@@ -27,17 +22,13 @@ class SubtitleFileRecorder(private val context: Context) {
     private var file: File? = null
     @Volatile private var active = false
 
-    /** Absolute path of the current session file, or null if not recording. */
     val currentPath: String?
         get() = lock.withLock { file?.absolutePath }
 
     val isRecording: Boolean
         get() = active
 
-    /**
-     * Opens a new timestamped session file and writes a short header.
-     * @return absolute path on success, or null on failure (caller should toast).
-     */
+    /** @return absolute path on success, or null on failure. */
     fun startSession(targetLanguage: String, dualSubtitles: Boolean): String? = lock.withLock {
         closeUnlocked()
         return try {
@@ -76,10 +67,6 @@ class SubtitleFileRecorder(private val context: Context) {
         }
     }
 
-    /**
-     * Appends one displayed caption line. If [secondary] is present and different,
-     * writes a readable dual line: "primary | secondary".
-     */
     fun appendCaption(primary: String, secondary: String?) {
         val line = formatLine(primary, secondary) ?: return
         lock.withLock {
@@ -95,10 +82,7 @@ class SubtitleFileRecorder(private val context: Context) {
         }
     }
 
-    /**
-     * Flushes and closes the session file.
-     * @return absolute path of the saved file, or null if nothing was open / empty failure.
-     */
+    /** @return saved path, or null if nothing was open. */
     fun stopSession(): String? = lock.withLock {
         val path = file?.absolutePath
         closeUnlocked()
@@ -131,7 +115,6 @@ class SubtitleFileRecorder(private val context: Context) {
         fun formatLine(primary: String, secondary: String?): String? {
             val p = primary.trim()
             if (p.isEmpty()) return null
-            // Skip transient UI status strings that are not real captions
             val s = secondary?.trim()?.takeIf { it.isNotEmpty() && it != p }
             return if (s != null) "$p | $s" else p
         }

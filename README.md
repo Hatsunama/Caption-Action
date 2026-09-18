@@ -73,7 +73,7 @@ Downloads show a dedicated bubble-gum loading UI with progress % and cancel. Int
 - **Errors:** If native fails to load or the selected model file is missing/incomplete, Start shows a clear error and does not emit fake captions.
 - **Native dependencies:** `app/libs/sherpa-onnx-1.13.8.aar` (~48 MiB) and `app/libs/whisper-android-1.0.0.aar` (~1.1 MiB, arm64-v8a `libwhisper.so` from [ffmpegkit-maintained/whisper v1.0.0](https://github.com/ffmpegkit-maintained/whisper/releases/tag/v1.0.0) / Maven `dev.ffmpegkit-maintained:whisper-android:1.0.0`).
 - **English target + whisper:** When `targetLanguage` is `en`, whisper.cpp runs with **translate=true** so non-English speech (e.g. Chinese) becomes English captions.
-- **Translation:** Passthrough + dual-subtitle UI. Whisper translate covers EN target for ggml tiers; dedicated offline MT for other pairs is not bundled yet.
+- **Translation:** Policy-only passthrough + dual UI. Whisper translate covers **EN** target for ggml tiers; Fast SenseVoice has no offline MT. Non-EN targets stay in the spoken language (UI states this honestly).
 
 ## Build from source (low memory)
 
@@ -90,9 +90,11 @@ Release APK: `app/build/outputs/apk/release/app-release.apk`
 
 ## Modules
 
-- **UI:** Single Home screen (languages / models / overlay sections + sticky Start), sequential Permission steps
-- **Service:** `CaptionOverlayService` (SYSTEM_ALERT_WINDOW + FGS + bottom ✕ + resize handle), audio capture, model download, inference orchestration
-- **Data:** DataStore settings (incl. save-subtitles toggle), optional `SubtitleFileRecorder` session `.txt` files, model file cache, in-memory caption ring buffer (cleared on session end)
+- **ui:** Home + PermissionStep + ThankYou — events/presentation only; start path goes through `LiveCaptionStarter`
+- **service:** `LiveCaptionStarter` (start/projection orchestration), `CaptionOverlayService` (session/overlay wiring), `ModelDownloadManager`
+- **inference:** Engines + `InferenceEngineFactory` (Sherpa Fast / whisper.cpp Balanced·Accurate); `PassthroughTranslationEngine` is policy only (no fake MT)
+- **data:** Settings, `ModelCache` readiness, `SubtitleFileRecorder`
+- **audio:** Capture only (playback or mic)
 
 ## Privacy
 

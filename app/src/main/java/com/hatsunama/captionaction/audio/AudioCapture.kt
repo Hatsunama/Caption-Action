@@ -16,10 +16,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
-/**
- * Primary: AudioPlaybackCapture (MediaProjection) on API 29+.
- * Fallback: microphone [MediaRecorder.AudioSource.VOICE_RECOGNITION].
- */
+/** Capture only: playback (MediaProjection) or mic. No session/policy decisions. */
 class AudioCapture(private val context: Context) {
 
     @Volatile

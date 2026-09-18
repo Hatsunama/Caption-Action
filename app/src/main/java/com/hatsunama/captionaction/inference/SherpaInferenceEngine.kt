@@ -12,11 +12,6 @@ import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * On-device ASR via sherpa-onnx OfflineRecognizer + SenseVoice (int8).
- * Expects [modelFile] to be SenseVoice `model.int8.onnx`; tokens come from
- * assets (`sherpa/sensevoice-tokens.txt`) copied beside the model on first load.
- */
 class SherpaInferenceEngine(
     private val appContext: Context
 ) : InferenceEngine {
@@ -25,13 +20,14 @@ class SherpaInferenceEngine(
     private var recognizer: OfflineRecognizer? = null
     private val lock = Any()
 
+    override fun offlineTranslationTargets(): Set<String> = emptySet()
+
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
         if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
             Log.w(TAG, "SenseVoice model missing or too small: ${modelFile.absolutePath}")
             return@withContext false
         }
-        // ggml whisper.cpp bins are not usable by sherpa
         val nameLower = modelFile.name.lowercase()
         if (nameLower.endsWith(".bin") || nameLower.startsWith("ggml-")) {
             Log.w(TAG, "ggml model present but sherpa needs ONNX SenseVoice; refusing ${modelFile.name}")
@@ -54,7 +50,6 @@ class SherpaInferenceEngine(
                 ),
                 decodingMethod = "greedy_search"
             )
-            // null AssetManager → newFromFile (filesystem paths)
             val rec = OfflineRecognizer(assetManager = null, config = config)
             synchronized(lock) { recognizer = rec }
             Log.i(TAG, "Loaded SenseVoice from ${modelFile.absolutePath}")
@@ -70,7 +65,6 @@ class SherpaInferenceEngine(
         withContext(Dispatchers.Default) {
             val rec = synchronized(lock) { recognizer } ?: return@withContext null
             if (pcm16le.isEmpty()) return@withContext null
-            // Skip near-silence to save CPU
             if (rms(pcm16le) < 80f) return@withContext null
 
             val floats = FloatArray(pcm16le.size) { i -> pcm16le[i] / 32768.0f }

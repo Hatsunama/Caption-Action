@@ -63,7 +63,6 @@
     <string name="error_engine_load">Could not load on-device ASR. Re-download the selected model or reinstall the app.</string>
     <string name="resume_download">Resume download</string>
     <string name="model_partial">Partial download — can resume</string>
-    <string name="model_ggml_not_asr">Model file present but not ready for ASR — try re-downloading.</string>
     <string name="notif_channel">Live captions</string>
     <string name="notif_title">Caption Action is running</string>
     <string name="notif_text">Live subtitles overlay active — tap the green dot to end</string>
@@ -76,7 +75,6 @@
     <string name="overlay_sample_text">Sample live caption</string>
     <string name="save">Save</string>
     <string name="use_selected_tier">Use selected tier</string>
-    <string name="prefer_playback">Prefer capturing sounds playing on device</string>
     <string name="home_status_ready">Ready when you are</string>
     <string name="settings_saved">Settings saved</string>
     <string name="overlay_font">Caption font</string>
@@ -92,4 +90,7 @@
     <string name="download_in_progress">Downloading…</string>
     <string name="download_progress_mb">%1$d%% · %2$d / %3$d MB</string>
     <string name="download_already_on_device">Already on device</string>
+    <string name="translation_unavailable_hint">No offline translation to %1$s for %2$s — captions stay in the spoken language.</string>
+    <string name="model_no_offline_mt">Fast SenseVoice: ASR only (no offline MT).</string>
+    <string name="model_offline_mt_en_only">whisper.cpp: offline translate to English when target is EN.</string>
 </resources>

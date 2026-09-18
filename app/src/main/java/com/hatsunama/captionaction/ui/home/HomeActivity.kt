@@ -24,6 +24,7 @@ import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
+import com.hatsunama.captionaction.inference.InferenceEngineFactory
 import com.hatsunama.captionaction.service.CaptionOverlayService
 import com.hatsunama.captionaction.service.LiveCaptionStarter
 import com.hatsunama.captionaction.service.ModelDownloadManager
@@ -78,7 +79,6 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Returning to the app while captions run → stop overlay/session.
         if (CaptionOverlayService.instance != null) {
             CaptionOverlayService.stop(this)
         }
@@ -100,12 +100,24 @@ class HomeActivity : AppCompatActivity() {
                 val tier = ModelTier.fromId(s.modelTierId)
                 val present = cache.isPresent(tier)
                 val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
+                val mtTargets = InferenceEngineFactory.offlineTranslationTargets(tier)
+                val target = s.targetLanguage.trim().lowercase()
                 status.text = buildString {
                     append("Model: ${tier.displayName}")
-                    append(if (present) " ✓ on device. " else if (cache.isPartial(tier)) " · partial (can resume). " else " · not downloaded. ")
+                    append(
+                        when {
+                            present -> " ✓ on device. "
+                            cache.isPartial(tier) -> " · partial (can resume). "
+                            else -> " · not downloaded. "
+                        }
+                    )
                     append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
                     append(" Dual: ").append(if (s.dualSubtitles) "on" else "off")
                     append(" · Target: ").append(s.targetLanguage)
+                    if (target.isNotEmpty() && target !in mtTargets && target !in s.passthroughLanguages.map { it.lowercase() }) {
+                        append("\n")
+                        append(getString(R.string.translation_unavailable_hint, s.targetLanguage, tier.displayName))
+                    }
                 }
             }
         }
@@ -119,7 +131,6 @@ class HomeActivity : AppCompatActivity() {
 
     private fun bindStartButton() {
         findViewById<MaterialButton>(R.id.btnStartLive).setOnClickListener {
-            // Never toggle Stop on Home — model gate, then start.
             showModelGateThenStart()
         }
     }
@@ -144,14 +155,12 @@ class HomeActivity : AppCompatActivity() {
         fun refreshStatus() {
             val tier = selectedTier()
             val ready = cache.isReadyForAsr(tier)
-            val present = cache.isPresent(tier)
             val partial = cache.isPartial(tier)
             status.text = buildString {
                 append(tier.displayName)
                 append(": ")
                 when {
                     ready -> append(getString(R.string.model_ready))
-                    present -> append(getString(R.string.model_ggml_not_asr))
                     partial -> {
                         append(getString(R.string.model_partial))
                         append(" (")
@@ -162,17 +171,23 @@ class HomeActivity : AppCompatActivity() {
                 }
                 append("\n")
                 append(getString(R.string.model_gate_download_required))
+                val mt = InferenceEngineFactory.offlineTranslationTargets(tier)
+                if (mt.isEmpty()) {
+                    append("\n")
+                    append(getString(R.string.model_no_offline_mt))
+                } else {
+                    append("\n")
+                    append(getString(R.string.model_offline_mt_en_only))
+                }
             }
             btnUse.isEnabled = ready && !downloading
             btnUse.alpha = if (ready && !downloading) 1f else 0.45f
-            val onDevice = ready || present
             when {
                 downloading -> {
                     btnDownload.isEnabled = false
                     btnDownload.alpha = 0.45f
-                    // text set by click handler while in progress
                 }
-                onDevice -> {
+                ready -> {
                     btnDownload.isEnabled = false
                     btnDownload.alpha = 0.45f
                     btnDownload.text = getString(R.string.download_already_on_device)
@@ -229,7 +244,7 @@ class HomeActivity : AppCompatActivity() {
         btnDownload.setOnClickListener {
             if (downloading || !btnDownload.isEnabled) return@setOnClickListener
             val tier = selectedTier()
-            if (cache.isReadyForAsr(tier) || cache.isPresent(tier)) {
+            if (cache.isReadyForAsr(tier)) {
                 Toast.makeText(this, getString(R.string.download_already_on_device), Toast.LENGTH_SHORT).show()
                 refreshStatus()
                 return@setOnClickListener
@@ -241,7 +256,6 @@ class HomeActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.error_storage), Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
-            // Immediate, obvious feedback — do not wait for first network byte.
             progress.visibility = View.VISIBLE
             percent.visibility = View.VISIBLE
             progress.isIndeterminate = false
@@ -341,7 +355,6 @@ class HomeActivity : AppCompatActivity() {
             )
             return
         }
-        // Playback capture is the only intended source (mic only if projection fails/declined).
         if (LiveCaptionStarter.shouldRequestProjection()) {
             projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
         } else {
@@ -412,20 +425,17 @@ class HomeActivity : AppCompatActivity() {
                 it.copy(
                     targetLanguage = target,
                     passthroughLanguages = selectedPassthrough.toSet(),
-                    dualSubtitles = dual.isChecked,
-                    preferPlaybackCapture = true
+                    dualSubtitles = dual.isChecked
                 )
             }
         }
     }
-
 
     private fun bindCaptionsSection() {
         val saveSwitch = findViewById<MaterialSwitch>(R.id.switchSaveSubtitles)
         lifecycleScope.launch {
             val s = app().settings.current()
             saveSwitch.isChecked = s.saveSubtitlesToFile
-            // Attach after initial value so programmatic set does not write DataStore.
             saveSwitch.setOnCheckedChangeListener { _, checked ->
                 lifecycleScope.launch {
                     app().settings.update { it.copy(saveSubtitlesToFile = checked) }

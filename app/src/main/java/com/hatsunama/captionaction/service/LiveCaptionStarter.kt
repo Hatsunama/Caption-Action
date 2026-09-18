@@ -15,9 +15,8 @@ import com.hatsunama.captionaction.data.AppSettings
 import com.hatsunama.captionaction.ui.permissions.PermissionStepActivity
 
 /**
- * Shared start path for Home:
- * Q+ → MediaProjection prompt (playback capture is the intended source);
- * otherwise (or on decline) → mic-only CaptionOverlayService as emergency fallback.
+ * Owns start/projection orchestration.
+ * Q+ → MediaProjection (playback); decline/failure → mic fallback.
  * PermissionStepActivity never starts the foreground service.
  */
 object LiveCaptionStarter {
@@ -33,6 +32,11 @@ object LiveCaptionStarter {
 
     fun hasAudioPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    fun needsNotificationPermission(context: Context): Boolean =
+        Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
 
     fun permissionMode(settings: AppSettings): String =
@@ -51,13 +55,8 @@ object LiveCaptionStarter {
             mode
         )
 
-    /** Playback is always preferred; show screen-capture prompt on Q+. */
     fun shouldRequestProjection(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-
-    @Deprecated("Playback is always preferred; use shouldRequestProjection()", ReplaceWith("shouldRequestProjection()"))
-    fun shouldRequestProjection(preferPlaybackCapture: Boolean): Boolean =
-        preferPlaybackCapture && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
     fun createScreenCaptureIntent(context: Context): Intent {
         val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager

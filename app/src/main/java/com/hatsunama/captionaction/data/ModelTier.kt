@@ -1,18 +1,11 @@
 package com.hatsunama.captionaction.data
 
-/**
- * On-device ASR tiers.
- *
- * - Fast: sherpa-onnx SenseVoice int8 (multilingual zh/en/ja/ko/yue)
- * - Balanced / Accurate: ggml Whisper q5_1 via whisper.cpp (real ASR; English target uses translate)
- */
 enum class ModelTier(
     val id: String,
     val displayName: String,
     val fileName: String,
     val approxBytes: Long,
     val downloadUrl: String,
-    /** Engine family this file is meant for. */
     val engineFamily: EngineFamily
 ) {
     FAST(

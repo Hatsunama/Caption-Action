@@ -11,8 +11,8 @@ android {
         applicationId = "com.hatsunama.captionaction"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.2.0-whisper"
+        versionCode = 14
+        versionName = "0.2.1-audit"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         ndk {
@@ -23,8 +23,6 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Signed with the Android debug keystore for GitHub preview installs.
-            // Replace with a real upload key before Play Store.
             signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -58,17 +56,13 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
         jniLibs {
-            // whisper-android ships libc++_shared; pickFirst if another AAR adds it later
             pickFirsts += "**/libc++_shared.so"
         }
     }
 }
 
 dependencies {
-    // Local sherpa-onnx Android AAR (v1.13.8) — Fast SenseVoice ONNX
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
-    // Prebuilt whisper.cpp JNI AAR (arm64-v8a) — Balanced/Accurate ggml ASR + translate
-    // Source: Maven Central dev.ffmpegkit-maintained:whisper-android:1.0.0 / GitHub v1.0.0
     implementation(files("libs/whisper-android-1.0.0.aar"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
