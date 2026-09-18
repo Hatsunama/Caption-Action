@@ -285,18 +285,50 @@
         android:background="@color/ca_bg"
         android:elevation="8dp">
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/product_pick_label"
+            android:textColor="@color/ca_muted"
+            android:textSize="13sp"
+            android:paddingBottom="6dp" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnStartLive"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/start_live" />
+            android:text="@string/product_live_cta" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/product_live_blurb"
+            android:textColor="@color/ca_muted"
+            android:textSize="12sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnStartQuality"
+            style="@style/Widget.CaptionAction.Button.Secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/product_quality_cta" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/product_quality_blurb"
+            android:textColor="@color/ca_muted"
+            android:textSize="12sp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnThankYou"
             style="@style/Widget.CaptionAction.Button.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="12dp"
             android:text="@string/open_thank_you" />
     </LinearLayout>
 

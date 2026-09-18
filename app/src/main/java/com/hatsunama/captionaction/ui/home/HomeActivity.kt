@@ -210,13 +210,18 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
+    private enum class CaptionProduct { LIVE, QUALITY }
+
     private fun bindStartButton() {
         findViewById<MaterialButton>(R.id.btnStartLive).setOnClickListener {
-            showModelGateThenStart()
+            showModelGateThenStart(CaptionProduct.LIVE)
+        }
+        findViewById<MaterialButton>(R.id.btnStartQuality).setOnClickListener {
+            showModelGateThenStart(CaptionProduct.QUALITY)
         }
     }
 
-    private fun showModelGateThenStart() {
+    private fun showModelGateThenStart(product: CaptionProduct) {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_model_gate, null)
         val group = view.findViewById<RadioGroup>(R.id.modelGroup)
         val status = view.findViewById<TextView>(R.id.modelStatus)
@@ -226,11 +231,38 @@ class HomeActivity : AppCompatActivity() {
         val btnUse = view.findViewById<MaterialButton>(R.id.btnUseAndStart)
         val btnCancel = view.findViewById<MaterialButton>(R.id.btnCancelGate)
         var downloading = false
+        val radioFast = view.findViewById<RadioButton>(R.id.radioFast)
+        val radioBalanced = view.findViewById<RadioButton>(R.id.radioBalanced)
+        val radioAccurate = view.findViewById<RadioButton>(R.id.radioAccurate)
+        val titleView = view.findViewById<TextView>(R.id.modelGateTitle)
+        val bodyView = view.findViewById<TextView>(R.id.modelGateBody)
+        when (product) {
+            CaptionProduct.LIVE -> {
+                titleView?.setText(R.string.product_live_gate_title)
+                bodyView?.setText(R.string.product_live_gate_body)
+                radioFast.visibility = View.VISIBLE
+                radioBalanced.visibility = View.GONE
+                radioAccurate.visibility = View.GONE
+                radioFast.isChecked = true
+            }
+            CaptionProduct.QUALITY -> {
+                titleView?.setText(R.string.product_quality_gate_title)
+                bodyView?.setText(R.string.product_quality_gate_body)
+                radioFast.visibility = View.GONE
+                radioBalanced.visibility = View.VISIBLE
+                radioAccurate.visibility = View.VISIBLE
+                if (!radioBalanced.isChecked && !radioAccurate.isChecked) {
+                    radioBalanced.isChecked = true
+                }
+            }
+        }
 
-        fun selectedTier(): ModelTier = when (group.checkedRadioButtonId) {
-            R.id.radioFast -> ModelTier.FAST
-            R.id.radioAccurate -> ModelTier.ACCURATE
-            else -> ModelTier.BALANCED
+        fun selectedTier(): ModelTier = when (product) {
+            CaptionProduct.LIVE -> ModelTier.FAST
+            CaptionProduct.QUALITY -> when (group.checkedRadioButtonId) {
+                R.id.radioAccurate -> ModelTier.ACCURATE
+                else -> ModelTier.BALANCED
+            }
         }
 
         fun refreshStatus() {
@@ -282,10 +314,12 @@ class HomeActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             val s = app().settings.current()
-            when (ModelTier.fromId(s.modelTierId)) {
-                ModelTier.FAST -> view.findViewById<RadioButton>(R.id.radioFast).isChecked = true
-                ModelTier.BALANCED -> view.findViewById<RadioButton>(R.id.radioBalanced).isChecked = true
-                ModelTier.ACCURATE -> view.findViewById<RadioButton>(R.id.radioAccurate).isChecked = true
+            when (product) {
+                CaptionProduct.LIVE -> radioFast.isChecked = true
+                CaptionProduct.QUALITY -> when (ModelTier.fromId(s.modelTierId)) {
+                    ModelTier.ACCURATE -> radioAccurate.isChecked = true
+                    else -> radioBalanced.isChecked = true
+                }
             }
             refreshStatus()
         }

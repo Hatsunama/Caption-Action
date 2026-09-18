@@ -245,7 +245,8 @@ class CaptionOverlayService : Service() {
         while (coroutineContext.isActive) {
             val overrunsBefore = audioCapture.overrunCount()
             val depthBefore = audioCapture.queueDepth()
-            val pcm = audioCapture.drainToNewestWindow() ?: break
+            val windowSamples = activeEngine.preferredWindowSamples()
+            val pcm = audioCapture.drainToNewestWindow(windowSamples) ?: break
             val pcmMs = pcm.size * 1000L / AudioCapture.SAMPLE_RATE
             val overrunsNow = audioCapture.overrunCount()
             val depthAfter = audioCapture.queueDepth()

@@ -6,7 +6,14 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.2.8-live-latency** (versionCode 21)
+Current source version: **0.3.0-live-quality** (versionCode 23)
+
+## 0.3.0-live-quality
+
+- **Live vs Quality are separate products** on Home (not one buried model picker): Live = Fast/SenseVoice near real-time; Quality = Balanced/Accurate whisper.cpp.
+- **Whisper empty ~15 ms root cause:** whisper.cpp rejects audio under 1000 ms (`input is too short`). Quality now drains ~2.5 s windows, pads short PCM, logs `processingTimeMs` / wav size / window RMS / rawLen, and uses unique WAV names.
+- **Language path is systemic:** Quality always `language=auto`. `translate=true` only when the subtitle target is English (whisper translate-to-EN). Dual / non-EN stay auto + ML Kit. Removed brittle `en-direct` default that broke Chinese and other non-EN sources.
+- Live / Sherpa keeps ~1.0 s windows. Idle overlay still does not wipe real captions; full sentences (no `...`).
 
 ## Install (promoted release)
 

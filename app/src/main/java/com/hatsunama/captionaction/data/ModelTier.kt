@@ -38,8 +38,14 @@ enum class ModelTier(
         WHISPER_CPP_GGML
     }
 
+    val isLive: Boolean get() = engineFamily == EngineFamily.SHERPA_SENSEVOICE
+    val isQuality: Boolean get() = engineFamily == EngineFamily.WHISPER_CPP_GGML
+
     companion object {
         fun fromId(id: String): ModelTier =
             entries.firstOrNull { it.id == id } ?: FAST
+
+        val liveTiers: List<ModelTier> get() = entries.filter { it.isLive }
+        val qualityTiers: List<ModelTier> get() = entries.filter { it.isQuality }
     }
 }
