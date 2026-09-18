@@ -13,6 +13,7 @@ Current source version: **0.3.1-overlay-drag** (versionCode 24)
 - **Overlay drag restored:** touching the caption text / bubble moves the window again. Purple handle (or near it) still resizes only. Green stop-dot clicks unchanged.
 - Root cause: `ScrollingMovementMethod` on the primary TextView consumed touches so MOVE never fired on most of the box. Fix removes MovementMethod, keeps wrap + no ellipsize (resize the bubble for overflow), and wires the same touch listener on primary/secondary TextViews.
 - Geometry persist (`overlayX/Y/W/H`) and stop-dot layout margins unchanged.
+- **ASR junk / repeat suppress:** expand `AsrJunkFilter` for SenseVoice/whisper filler loops (`yeah. yeah.`, `oh`, `hmm`, `thank you for watching`, `subscribe`, 嗯/啊/哦, 谢谢观看, …). Overlay consumer skips consecutive-identical captions and near-duplicates within ~2.5 s so Live does not re-paint the same hallucination every window.
 
 ## 0.3.0-live-quality
 

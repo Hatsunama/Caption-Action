@@ -30,6 +30,7 @@ import com.hatsunama.captionaction.audio.AudioCapture
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
 import com.hatsunama.captionaction.data.SubtitleFileRecorder
+import com.hatsunama.captionaction.inference.AsrJunkFilter
 import com.hatsunama.captionaction.inference.CaptionDisplay
 import com.hatsunama.captionaction.inference.CaptionResult
 import com.hatsunama.captionaction.inference.EnsureResult
@@ -73,6 +74,9 @@ class CaptionOverlayService : Service() {
     @Volatile private var tearingDown = false
     private var fontIndex = 0
     private var captionSeq = 0L
+    /** Last published ASR primary (normalized) — suppress identical / near-dup loops. */
+    private var lastPublishedNorm = ""
+    private var lastPublishedAtMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -318,9 +322,27 @@ class CaptionOverlayService : Service() {
                 }
                 continue
             }
+            val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
+            val norm = AsrJunkFilter.normalize(primaryRaw)
+            val publishNow = System.currentTimeMillis()
+            // Consecutive identical: don't re-show / re-append the same line every ~1s window.
+            if (norm.isNotEmpty() && norm == lastPublishedNorm) {
+                Log.i(DIAG_TAG, "suppressed identical caption norm=${norm.take(48)}")
+                continue
+            }
+            // Near-duplicate within a short window (SenseVoice filler drift / echo).
+            if (norm.isNotEmpty() &&
+                lastPublishedNorm.isNotEmpty() &&
+                publishNow - lastPublishedAtMs <= NEAR_DUP_WINDOW_MS &&
+                AsrJunkFilter.isNearDuplicate(norm, lastPublishedNorm)
+            ) {
+                Log.i(DIAG_TAG, "suppressed near-dup caption norm=${norm.take(48)}")
+                continue
+            }
+            lastPublishedNorm = norm
+            lastPublishedAtMs = publishNow
             val seq = ++captionSeq
             hasRealCaption = true
-            val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
             val primary = composer.compose(primaryRaw)
             val secondary = secondaryRaw
             if (subtitleRecorder.isRecording) {
@@ -664,6 +686,8 @@ class CaptionOverlayService : Service() {
         translation = null
         releaseProjection()
         composer.reset()
+        lastPublishedNorm = ""
+        lastPublishedAtMs = 0L
         val savedPath = try {
             subtitleRecorder.stopSession()
         } catch (_: Exception) {
@@ -702,6 +726,8 @@ class CaptionOverlayService : Service() {
         private const val DIAG_TAG = "CaptionAction"
         private const val QUIET_STATUS_MS = 4_000L
         private const val STATUS_THROTTLE_MS = 2_500L
+        /** Suppress near-duplicate captions inside this window (ms). */
+        private const val NEAR_DUP_WINDOW_MS = 2_500L
         const val ACTION_START = "com.hatsunama.captionaction.START"
         const val ACTION_STOP = "com.hatsunama.captionaction.STOP"
         const val EXTRA_RESULT_CODE = "result_code"
