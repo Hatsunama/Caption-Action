@@ -6,7 +6,15 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.9** (versionCode 32)
+Current source version: **0.3.10** (versionCode 33)
+
+## 0.3.10
+
+Start-fail diagnostics only (no capture behavior change):
+
+- Every `beginSession` / `startPlaybackCapture` / VirtualDisplay keep-alive / `getMediaProjection` / `startForeground` return-false and catch path now `Log.e` with tag **CaptionAction**, reason string, and exception when present.
+- Also logs FGS types used, `projectionNull`, AudioRecord state, `keepAlive created`, `captureMode`.
+- versionName plain `0.3.10`, versionCode 33. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.9
 
