@@ -295,15 +295,17 @@ class CaptionOverlayService : Service() {
             }
 
             val t0 = System.currentTimeMillis()
-            val raw = activeEngine.transcribe(pcm, AudioCapture.SAMPLE_RATE)
+            // Force-flush: each drained window is a complete utterance — no re-accum across calls.
+            val raw = activeEngine.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = true)
             val inferMs = System.currentTimeMillis() - t0
+            val asrMode = activeEngine.lastAsrMode().ifBlank { "-" }
             val textPreview = raw?.text?.take(48)?.replace('\n', ' ') ?: ""
-            // Junk filter logs CaptionAction filtered=true separately; null here also means "not flushed yet".
+            // Junk filter logs CaptionAction filtered=true separately; null here also means "too short / quiet".
             Log.i(
                 DIAG_TAG,
                 "asr pcmMs=$pcmMs queueDepth=$depthBefore→$depthAfter " +
                     "overruns=$overrunsNow(+${overrunsNow - overrunsBefore}) " +
-                    "rms=$rms inferMs=$inferMs hasCaption=${raw != null} textPreview=$textPreview"
+                    "rms=$rms inferMs=$inferMs mode=$asrMode hasCaption=${raw != null} textPreview=$textPreview"
             )
             if (raw == null) {
                 // Keep Listening until a non-junk caption arrives; do not set hasRealCaption.
@@ -533,9 +535,16 @@ class CaptionOverlayService : Service() {
         primary.typeface = tf
         secondary.typeface = tf
         val density = resources.displayMetrics.density
-        val sp = ((heightPx / density) / 7.5f).coerceIn(14f, 40f)
+        // Slightly denser scale so multi-line full sentences fit the overlay height.
+        val sp = ((heightPx / density) / 8.5f).coerceIn(13f, 36f)
         primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
         secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.78f)
+        // Primary must never ellipsize — full caption wraps inside the bubble.
+        primary.maxLines = 16
+        primary.ellipsize = null
+        primary.setHorizontallyScrolling(false)
+        secondary.maxLines = 8
+        secondary.ellipsize = null
     }
 
     private fun setSessionStatus(status: String?, loading: Boolean) {
@@ -553,7 +562,10 @@ class CaptionOverlayService : Service() {
 
     private fun updateCaption(primary: String, secondary: String?) {
         val view = overlayView ?: return
-        view.findViewById<TextView>(R.id.captionPrimary).text = primary
+        val primaryView = view.findViewById<TextView>(R.id.captionPrimary)
+        primaryView.text = primary
+        // Allow vertical scroll inside the bubble when caption exceeds visible lines.
+        primaryView.movementMethod = android.text.method.ScrollingMovementMethod.getInstance()
         val sec = view.findViewById<TextView>(R.id.captionSecondary)
         if (secondary.isNullOrBlank() || secondary == primary) {
             sec.visibility = View.GONE

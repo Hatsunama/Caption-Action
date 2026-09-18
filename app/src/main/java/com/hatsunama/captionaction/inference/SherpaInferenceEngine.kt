@@ -22,6 +22,7 @@ class SherpaInferenceEngine(
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
     @Volatile private var playbackCapture: Boolean = false
+    @Volatile private var lastMode: String = ""
 
     // MT / dual owned by MlKitTranslationEngine; ASR stays ASR-only here.
     override fun offlineTranslationTargets(): Set<String> =
@@ -32,6 +33,8 @@ class SherpaInferenceEngine(
     override fun setPlaybackCapture(enabled: Boolean) {
         playbackCapture = enabled
     }
+
+    override fun lastAsrMode(): String = lastMode
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
@@ -75,7 +78,11 @@ class SherpaInferenceEngine(
         }
     }
 
-    override suspend fun transcribe(pcm16le: ShortArray, sampleRateHz: Int): CaptionResult? =
+    override suspend fun transcribeWindow(
+        pcm16le: ShortArray,
+        sampleRateHz: Int,
+        forceFlush: Boolean
+    ): CaptionResult? =
         withContext(Dispatchers.Default) {
             val rec = synchronized(lock) { recognizer } ?: return@withContext null
             if (pcm16le.isEmpty()) return@withContext null
@@ -89,45 +96,57 @@ class SherpaInferenceEngine(
             val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
             val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_SPEECH
 
-            val shouldFlush: Boolean
-            val chunk: ShortArray?
-            synchronized(lock) {
-                for (s in pcm16le) pcmAccum.add(s)
-                while (pcmAccum.size > MAX_SAMPLES) {
-                    pcmAccum.removeAt(0)
+            val samples: ShortArray?
+            if (forceFlush) {
+                synchronized(lock) { pcmAccum.clear() }
+                samples = when {
+                    pcm16le.size >= minSamples -> pcm16le
+                    pcm16le.size >= minSamples / 2 -> pcm16le
+                    else -> null
                 }
-                val n = pcmAccum.size
-                shouldFlush = if (playbackCapture) {
-                    // Time-window flush only — muted volume must still caption.
-                    when {
-                        n >= MAX_SAMPLES -> true
-                        n >= minSamples -> true
-                        else -> false
+            } else {
+                val shouldFlush: Boolean
+                val chunk: ShortArray?
+                synchronized(lock) {
+                    for (s in pcm16le) pcmAccum.add(s)
+                    while (pcmAccum.size > MAX_SAMPLES) {
+                        pcmAccum.removeAt(0)
                     }
-                } else {
-                    when {
-                        n >= MAX_SAMPLES -> true
-                        n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
-                        n >= flushAt -> true
-                        else -> false
+                    val n = pcmAccum.size
+                    shouldFlush = if (playbackCapture) {
+                        // Time-window flush only — muted volume must still caption.
+                        when {
+                            n >= MAX_SAMPLES -> true
+                            n >= minSamples -> true
+                            else -> false
+                        }
+                    } else {
+                        when {
+                            n >= MAX_SAMPLES -> true
+                            n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
+                            n >= flushAt -> true
+                            else -> false
+                        }
+                    }
+                    if (!shouldFlush) {
+                        chunk = null
+                    } else if (pcmAccum.size < minSamples / 2) {
+                        chunk = null
+                    } else {
+                        val arr = ShortArray(pcmAccum.size)
+                        for (i in pcmAccum.indices) arr[i] = pcmAccum[i]
+                        pcmAccum.clear()
+                        chunk = arr
                     }
                 }
-                if (!shouldFlush) {
-                    chunk = null
-                } else if (pcmAccum.size < minSamples / 2) {
-                    chunk = null
-                } else {
-                    val arr = ShortArray(pcmAccum.size)
-                    for (i in pcmAccum.indices) arr[i] = pcmAccum[i]
-                    pcmAccum.clear()
-                    chunk = arr
-                }
+                samples = chunk
             }
-            val samples = chunk ?: return@withContext null
+            val pcm = samples ?: return@withContext null
             val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
-            if (rms(samples) < discardGate) return@withContext null
+            if (rms(pcm) < discardGate) return@withContext null
 
-            val floats = FloatArray(samples.size) { i -> samples[i] / 32768.0f }
+            lastMode = "auto-translate"
+            val floats = FloatArray(pcm.size) { i -> pcm[i] / 32768.0f }
             val stream = try {
                 rec.createStream()
             } catch (t: Throwable) {
@@ -139,13 +158,13 @@ class SherpaInferenceEngine(
                 rec.decode(stream)
                 val result = rec.getResult(stream)
                 val text = AsrJunkFilter.sanitizeOrNull(result.text) ?: return@withContext null
-                val end = System.currentTimeMillis()
+                val endMs = System.currentTimeMillis()
                 CaptionResult(
                     text = text,
                     language = result.lang.ifBlank { "auto" },
                     confidence = 0.85f,
-                    startMs = end - (samples.size * 1000L / sampleRateHz),
-                    endMs = end,
+                    startMs = endMs - (pcm.size * 1000L / sampleRateHz),
+                    endMs = endMs,
                     translatedText = null
                 )
             } catch (t: Throwable) {
@@ -172,6 +191,7 @@ class SherpaInferenceEngine(
             recognizer = null
             pcmAccum.clear()
         }
+        lastMode = ""
     }
 
     private fun ensureTokensBeside(modelFile: File): File {
@@ -200,11 +220,11 @@ class SherpaInferenceEngine(
 
     companion object {
         private const val TAG = "SherpaInferenceEngine"
-        private const val MIN_SAMPLES_MIC = 16_000 * 3
-        private const val MIN_SAMPLES_PLAYBACK = 16_000 * 2
+        private const val MIN_SAMPLES_MIC = 16_000 * 3 / 2
+        private const val MIN_SAMPLES_PLAYBACK = 16_000 + 4_000
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
-        private const val MAX_SAMPLES = 16_000 * 12
+        private const val MAX_SAMPLES = 16_000 * 8
         private const val MIC_SPEECH_RMS = 80f
         private const val MIC_DISCARD_RMS = 80f
         private const val PLAYBACK_SPEECH_RMS = 4f

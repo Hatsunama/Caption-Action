@@ -23,7 +23,22 @@ interface InferenceEngine {
 
     suspend fun load(modelFile: File): Boolean
 
-    suspend fun transcribe(pcm16le: ShortArray, sampleRateHz: Int): CaptionResult?
+    /** Default path may accumulate across calls until a flush threshold. */
+    suspend fun transcribe(pcm16le: ShortArray, sampleRateHz: Int): CaptionResult? =
+        transcribeWindow(pcm16le, sampleRateHz, forceFlush = false)
+
+    /**
+     * Live consumer path. When [forceFlush] is true, clear the accumulator and run ASR on this
+     * PCM immediately (if long enough) — do not re-accumulate across calls returning null in 1–15ms.
+     */
+    suspend fun transcribeWindow(
+        pcm16le: ShortArray,
+        sampleRateHz: Int,
+        forceFlush: Boolean = false
+    ): CaptionResult?
+
+    /** Last ASR mode tag for diagnostics (`en-direct` / `auto-translate`). */
+    fun lastAsrMode(): String = ""
 
     /** Drop partial ASR accumulator so a newest-window catch-up call is not mixed with stale PCM. */
     fun discardPendingAudio() {}

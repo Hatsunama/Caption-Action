@@ -6,7 +6,7 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.2.7-asr-keepup** (versionCode 20)
+Current source version: **0.2.8-live-latency** (versionCode 21)
 
 ## Install (promoted release)
 
@@ -68,6 +68,7 @@ Downloads show progress % with cancel/resume via HTTP Range. Models land in `fil
 
 - **Capture pipeline (0.2.6 → 0.2.7):** dedicated `AudioCapture` pump → bounded PCM queue (~10–12 s, drop-oldest on overrun) → separate ASR consumer. **Never** block `AudioRecord.read` on whisper/Sherpa/MT. Large ~3 s `AudioRecord` buffer. Capture starts as soon as playback/mic recording starts (including during model load).
 - **ASR keep-up (0.2.7):** when the queue is behind, `drainToNewestWindow` skips intermediate chunks and feeds a contiguous newest ~2–4 s window so Balanced/Accurate stay live (not sparse). Whisper live threads 2→4. Junk hallucinations (`[BLANK_AUDIO]`, `[Silence]`, `[Music]`, bracket-only) are filtered — never published as captions; status stays Listening until a real caption. Sustained overruns → “Device busy — dropping old audio…”; sustained near-zero RMS → “No device audio signal” (wrong screen / mute mix). Diagnostics: `Log.i("CaptionAction", …)` with pcmMs, queueDepth, overruns, inferMs, filtered, textPreview.
+- **Live latency + full captions (0.2.8):** ASR consumer force-flushes each `drainToNewestWindow` PCM (no re-accumulate returning null in 1–15 ms). Playback live min window ~1.25 s (was 2–3 s); drain target ~1.5 s; max keep ~8 s. EN target → whisper `language=en`, `translate=false` (`mode=en-direct`) — skips auto-detect + translate tax on English audio; dual/non-EN stays `auto` + ML Kit (`mode=auto-translate`). Whisper live threads 4→6. Overlay primary caption no longer ellipsizes: wraps up to 16 lines inside the bubble (status line may still ellipsize). Diagnostics include `mode=` + `inferMs`.
 - **Pipeline:** PCM queue → `InferenceEngine` (ASR, one pass) → show caption immediately → async `MlKitTranslationEngine` (policy + offline MT) → overlay update. Last real caption stays on screen; Listening/Transcribing are status/spinner only (idle does not wipe captions).
 - **Real ASR:** Fast → `SherpaInferenceEngine` (SenseVoice ONNX, accumulated ~3–12 s windows). Balanced/Accurate → `WhisperCppInferenceEngine` (prebuilt whisper.cpp AAR + ggml bins). No demo/stub caption mode.
 - **Offline MT:** Google ML Kit on-device Translate for the `Languages.kt` set. Packs prepare in the background — **Start does not wait**. Live hot path uses short MT timeouts (no 120 s `Tasks.await` downloads on the ASR path).
