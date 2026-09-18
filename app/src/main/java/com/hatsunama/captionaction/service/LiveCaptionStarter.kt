@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.data.AppSettings
@@ -81,26 +82,48 @@ object LiveCaptionStarter {
         // Keep handoff window; do not clear here — Home may still resume briefly on Seeker.
     }
 
-    fun startMicAndMinimize(activity: Activity) {
-        beginStartHandoff()
-        CaptionOverlayService.start(activity)
-        goToLauncherHome(activity)
-    }
-
     fun startWithProjectionAndMinimize(activity: Activity, resultCode: Int, data: Intent) {
         beginStartHandoff()
         CaptionOverlayService.start(activity, resultCode, data)
         goToLauncherHome(activity)
     }
 
-    fun startMicFallbackAfterDecline(activity: Activity) {
-        beginStartHandoff()
-        CaptionOverlayService.start(activity)
-        Toast.makeText(
+    /**
+     * Projection declined — stay on Home (main menu), explain screen share is required.
+     * Never starts the overlay service or microphone.
+     */
+    fun failProjectionDeclined(activity: Activity) {
+        endStartHandoff()
+        showCaptureRequiredDialog(
             activity,
-            activity.getString(R.string.permission_projection_declined_mic),
-            Toast.LENGTH_LONG
-        ).show()
-        goToLauncherHome(activity)
+            activity.getString(R.string.error_projection_required)
+        )
+    }
+
+    /** Pre-Q: AudioPlaybackCapture unavailable — fail honestly (no mic). */
+    fun failRequiresAndroid10(activity: Activity) {
+        endStartHandoff()
+        showCaptureRequiredDialog(
+            activity,
+            activity.getString(R.string.error_requires_android_10)
+        )
+    }
+
+    private fun showCaptureRequiredDialog(activity: Activity, message: String) {
+        if (activity.isFinishing) {
+            Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
+            return
+        }
+        try {
+            AlertDialog.Builder(activity)
+                .setTitle(R.string.permission_projection_title)
+                .setMessage(message)
+                .setPositiveButton(android.R.string.ok, null)
+                .setCancelable(true)
+                .show()
+        } catch (_: Exception) {
+            Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
+        }
     }
 }
+

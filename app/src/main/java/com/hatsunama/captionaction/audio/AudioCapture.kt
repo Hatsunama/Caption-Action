@@ -59,6 +59,7 @@ class AudioCapture(private val context: Context) {
     /** Most recent pump-chunk RMS (PCM16 mono). */
     fun lastRms(): Float = lastRms.get()
 
+    /** Mic path retained for RECORD_AUDIO plumbing tests only — Live/Quality sessions must not call this. */
     fun startMic(): Boolean {
         stopPumpAndRecord()
         if (!hasMicPermission()) return false
@@ -169,7 +170,7 @@ class AudioCapture(private val context: Context) {
         }
     }
 
-    /** Start the non-blocking capture pump. Call after [startMic] / [startPlaybackCapture]. */
+    /** Start the non-blocking capture pump. Call after [startPlaybackCapture] (device audio). */
     fun startPump(scope: CoroutineScope) {
         pumpJob?.cancel()
         pcmQueue.clear()
@@ -192,8 +193,10 @@ class AudioCapture(private val context: Context) {
                         lastDiagAt = now
                         Log.d(
                             TAG,
-                            "capture chunks=$c overruns=${overrunCount.get()} " +
-                                "q=${pcmQueue.size} rms=${lastRms.get()}"
+                            "captureMode=${if (usingPlaybackCapture) "playback" else "mic"} " +
+                                "chunks=$c overruns=${overrunCount.get()} " +
+                                "q=${pcmQueue.size} rms=${lastRms.get()} " +
+                                "usingPlaybackCapture=$usingPlaybackCapture"
                         )
                     }
                 } else if (n < 0) {

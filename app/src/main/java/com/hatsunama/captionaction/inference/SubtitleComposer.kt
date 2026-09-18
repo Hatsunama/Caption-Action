@@ -7,7 +7,7 @@ package com.hatsunama.captionaction.inference
 class SubtitleComposer(
     private val maxCharsPerLine: Int = 42,
     /** Soft wrap line budget; high enough for full sentences in the overlay. */
-    private val maxLines: Int = 12,
+    private val maxLines: Int = 20,
     /** Rolling buffer of recent text (chars); keeps last utterances readable. */
     private val maxBufferChars: Int = 480
 ) {

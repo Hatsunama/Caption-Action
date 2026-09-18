@@ -146,31 +146,33 @@ class CaptionOverlayService : Service() {
         val app = application as CaptionActionApp
         val settings = app.settings.current()
         fontIndex = settings.fontIndex
-        showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
-        showCloseFab()
-        setSessionStatus(getString(R.string.loading_engine), loading = true)
 
-        var started = false
-        if (projection != null) {
-            started = audioCapture.startPlaybackCapture(projection)
-        }
-        if (!started) {
-            if (wantedProjection || projection != null) {
-                Toast.makeText(
-                    this,
-                    getString(R.string.permission_projection_declined_mic),
-                    Toast.LENGTH_LONG
-                ).show()
+        // Device audio only — never mic. Fail before overlay if capture unavailable.
+        if (projection == null) {
+            val msg = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                getString(R.string.error_requires_android_10)
+            } else {
+                getString(R.string.error_projection_required)
             }
-            started = audioCapture.startMic()
-        }
-        if (!started) {
-            failSession(getString(R.string.error_capture))
+            Log.w(DIAG_TAG, "captureMode=none wantedProjection=$wantedProjection api=${Build.VERSION.SDK_INT}")
+            failSessionReturnHome(msg)
             return
         }
+        val started = audioCapture.startPlaybackCapture(projection)
+        if (!started) {
+            Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true")
+            failSessionReturnHome(getString(R.string.error_projection_required))
+            return
+        }
+        Log.i(
+            DIAG_TAG,
+            "captureMode=playback usingPlaybackCapture=${audioCapture.usingPlaybackCapture}"
+        )
 
+        showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
+        showCloseFab()
         audioCapture.startPump(scope)
-        setSessionStatus(getString(R.string.listening), loading = true)
+        setSessionStatus(getString(R.string.listening_playback), loading = true)
 
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
@@ -524,6 +526,20 @@ class CaptionOverlayService : Service() {
         stopSelfSafe()
     }
 
+    /** Capture/projection failure: clear toast, tear down (no overlay), bring user to Home. */
+    private fun failSessionReturnHome(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        val home = Intent(this, HomeActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        }
+        startActivity(home)
+        stopSelfSafe()
+    }
+
     private fun overlayType(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -537,7 +553,7 @@ class CaptionOverlayService : Service() {
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_caption, null)
         val density = resources.displayMetrics.density
         val minW = (160 * density).toInt()
-        val minH = (100 * density).toInt()
+        val minH = (140 * density).toInt()
         val params = WindowManager.LayoutParams(
             max(w, minW),
             max(h, minH),
@@ -708,15 +724,16 @@ class CaptionOverlayService : Service() {
         primary.typeface = tf
         secondary.typeface = tf
         val density = resources.displayMetrics.density
-        // Slightly denser scale so multi-line full sentences fit the overlay height.
-        val sp = ((heightPx / density) / 8.5f).coerceIn(13f, 36f)
+        // Smaller type so full captions wrap and stay readable (prefer wrap over scroll).
+        // Do not use ScrollingMovementMethod — it steals drag touches.
+        val sp = ((heightPx / density) / 14f).coerceIn(11f, 22f)
         primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
-        secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.78f)
+        secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.85f)
         // Primary must never ellipsize — full caption wraps inside the bubble.
-        primary.maxLines = 16
+        primary.maxLines = 24
         primary.ellipsize = null
         primary.setHorizontallyScrolling(false)
-        secondary.maxLines = 8
+        secondary.maxLines = 12
         secondary.ellipsize = null
     }
 
@@ -773,7 +790,7 @@ class CaptionOverlayService : Service() {
             Intent(this, CaptionOverlayService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, "caption_action_live")
+        return NotificationCompat.Builder(this, CaptionActionApp.CHANNEL_ID)
             .setContentTitle(getString(R.string.notif_title))
             .setContentText(getString(R.string.notif_text))
             .setSmallIcon(R.drawable.ic_launcher_foreground)

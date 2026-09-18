@@ -67,7 +67,8 @@ class HomeActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK && result.data != null) {
             LiveCaptionStarter.startWithProjectionAndMinimize(this, result.resultCode, result.data!!)
         } else {
-            LiveCaptionStarter.startMicFallbackAfterDecline(this)
+            // Device audio only — never start mic when screen share is declined.
+            LiveCaptionStarter.failProjectionDeclined(this)
         }
     }
 
@@ -457,7 +458,7 @@ class HomeActivity : AppCompatActivity() {
 
     private suspend fun proceedAfterModelReady() {
         // Never gate Start on ML Kit packs — show loading UI, kick MT in background,
-        // then launch projection / mic immediately after ASR model is ready.
+        // then launch projection / playback capture immediately after ASR model is ready.
         showStartingDialog(getString(R.string.starting_captions))
         val settings = app().settings.current()
         // Home optional MT status only — do not await.
@@ -474,8 +475,9 @@ class HomeActivity : AppCompatActivity() {
             dismissStartingDialog()
             projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
         } else {
+            // Pre-Q: no AudioPlaybackCapture — product is device audio only.
             dismissStartingDialog()
-            LiveCaptionStarter.startMicAndMinimize(this)
+            LiveCaptionStarter.failRequiresAndroid10(this)
         }
     }
 
