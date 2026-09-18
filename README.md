@@ -6,7 +6,13 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.0-live-quality** (versionCode 23)
+Current source version: **0.3.1-overlay-drag** (versionCode 24)
+
+## 0.3.1-overlay-drag
+
+- **Overlay drag restored:** touching the caption text / bubble moves the window again. Purple handle (or near it) still resizes only. Green stop-dot clicks unchanged.
+- Root cause: `ScrollingMovementMethod` on the primary TextView consumed touches so MOVE never fired on most of the box. Fix removes MovementMethod, keeps wrap + no ellipsize (resize the bubble for overflow), and wires the same touch listener on primary/secondary TextViews.
+- Geometry persist (`overlayX/Y/W/H`) and stop-dot layout margins unchanged.
 
 ## 0.3.0-live-quality
 

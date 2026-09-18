@@ -507,7 +507,26 @@ class CaptionOverlayService : Service() {
                 else -> false
             }
         }
+        // Wire bubble + caption TextViews so drag isn't lost to children.
+        // Resize stays on purple handle (or near-handle hit test). Stop-dot is a
+        // sibling with its own click listener — do not attach MOVE here.
+        fun prepCaptionText(tv: TextView) {
+            tv.isClickable = false
+            tv.isFocusable = false
+            tv.isLongClickable = false
+            tv.isFocusableInTouchMode = false
+            tv.movementMethod = null
+            tv.setHorizontallyScrolling(false)
+            tv.setOnTouchListener(listener)
+        }
         view.findViewById<View>(R.id.captionBubble).setOnTouchListener(listener)
+        prepCaptionText(view.findViewById(R.id.captionPrimary))
+        prepCaptionText(view.findViewById(R.id.captionSecondary))
+        view.findViewById<TextView>(R.id.captionStatus)?.let { status ->
+            status.isClickable = false
+            status.isFocusable = false
+            status.setOnTouchListener(listener)
+        }
         handle.setOnTouchListener(listener)
     }
 
@@ -565,14 +584,19 @@ class CaptionOverlayService : Service() {
         val view = overlayView ?: return
         val primaryView = view.findViewById<TextView>(R.id.captionPrimary)
         primaryView.text = primary
-        // Allow vertical scroll inside the bubble when caption exceeds visible lines.
-        primaryView.movementMethod = android.text.method.ScrollingMovementMethod.getInstance()
+        // Do not use ScrollingMovementMethod — it consumes touch and blocks drag.
+        // Full sentences wrap (no ellipsize); user resizes the bubble if needed.
+        primaryView.movementMethod = null
+        primaryView.setHorizontallyScrolling(false)
+        primaryView.ellipsize = null
         val sec = view.findViewById<TextView>(R.id.captionSecondary)
         if (secondary.isNullOrBlank() || secondary == primary) {
             sec.visibility = View.GONE
         } else {
             sec.visibility = View.VISIBLE
             sec.text = secondary
+            sec.movementMethod = null
+            sec.ellipsize = null
         }
     }
 

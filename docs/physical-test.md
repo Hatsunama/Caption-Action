@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.0-live-quality** — separate Live vs Quality products; whisper auto+translate-to-EN; ~2.5 s Quality windows; full (non-ellipsized) overlay captions.
+Current source: **0.3.1-overlay-drag** — drag anywhere on caption bubble moves overlay; purple handle resizes; stop-dot still works; full (non-ellipsized) captions.
 
 ## Preferred: promoted release installer
 
@@ -44,7 +44,7 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 2. Tap **Live Captions** (Fast/SenseVoice) or **Quality Captions** (Balanced·Accurate whisper.cpp) — separate products on Home
 3. Download if needed → one-at-a-time permission walkthrough if required → return to Home → Start again
 4. On Android 10+: MediaProjection prompt; decline falls back to mic with a toast; app minimizes
-5. Confirm overlay updates on real audio; resize via corner handle; end with bottom ✕ or green stop-dot
+5. Confirm overlay updates on real audio; **drag by grabbing the caption text** to move; resize via purple corner handle only; end with bottom ✕ or green stop-dot
 
 ## 4. Live session checks
 
