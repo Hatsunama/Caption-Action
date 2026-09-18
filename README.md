@@ -6,7 +6,13 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.7-projection-fresh** (versionCode 30)
+Current source version: **0.3.8-silent-ok** (versionCode 31)
+
+## 0.3.8-silent-ok
+
+- **Silence ≠ capture failure:** After Allow (+ entire screen), idle / nothing playing must **not** end Start with `error_capture`. Session stays live with the existing overlay on launcher Home (`Listening (device audio)…`) until device audio arrives — no new idle UX.
+- **Keep-alive VirtualDisplay:** API 34+ stops MediaProjection without a display; a tiny audio-only VirtualDisplay is attached before `AudioRecord` so playback capture can init when silent. Hard fails only: uninitialized record, missing `RECORD_AUDIO`, security/unsupported, keep-alive display failure.
+- StartHandoffGate (0.3.6) and ProjectionFreshStart (0.3.7) unchanged. Device-audio-only unchanged.
 
 ## 0.3.7-projection-fresh
 

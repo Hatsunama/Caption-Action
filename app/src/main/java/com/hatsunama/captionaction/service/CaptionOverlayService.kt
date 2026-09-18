@@ -8,6 +8,8 @@ import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Typeface
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -76,6 +78,9 @@ class CaptionOverlayService : Service() {
     private var engine: InferenceEngine? = null
     private var mediaProjection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
+    /** Tiny VirtualDisplay keeps MediaProjection alive (required API 34+; audio-only). */
+    private var projectionVirtualDisplay: VirtualDisplay? = null
+    private var projectionImageReader: ImageReader? = null
 
     @Volatile private var hasRealCaption = false
     @Volatile private var tearingDown = false
@@ -191,18 +196,33 @@ class CaptionOverlayService : Service() {
             failSessionReturnHome(msg)
             return
         }
+        // API 34+: MediaProjection stops without a VirtualDisplay → false error_capture.
+        // Attach a 2×2 keep-alive display before AudioRecord so silence/idle still works.
+        if (!ensureProjectionKeepAliveDisplay(projection)) {
+            Log.w(DIAG_TAG, "captureMode=none keepAliveDisplayFailed=true")
+            failSessionReturnHome(getString(R.string.error_capture))
+            return
+        }
         val started = audioCapture.startPlaybackCapture(projection)
-        if (!started) {
-            Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true")
-            // Already Allowed — real capture failure (not decline / not "allow sharing").
+        // Hard init only — silence / zero energy must not fail Start (PlaybackCaptureStartGate).
+        val hardFail = !started
+        if (PlaybackCaptureStartGate.shouldFailStartAfterInit(
+                hardInitFailed = hardFail,
+                samplesRead = 0,
+                rms = 0f
+            )
+        ) {
+            Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true hardInit=true")
+            // Already Allowed — real capture failure (not decline / not "allow sharing" / not silence).
             failSessionReturnHome(getString(R.string.error_capture))
             return
         }
         Log.i(
             DIAG_TAG,
-            "captureMode=playback usingPlaybackCapture=${audioCapture.usingPlaybackCapture}"
+            "captureMode=playback usingPlaybackCapture=${audioCapture.usingPlaybackCapture} silentOk=true"
         )
 
+        // Existing product path: overlay on launcher Home, Listening… awaiting device audio.
         showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
         showCloseFab()
         audioCapture.startPump(scope)
@@ -885,7 +905,54 @@ class CaptionOverlayService : Service() {
         layoutParams = null
     }
 
+    /**
+     * Tiny VirtualDisplay so MediaProjection stays valid for AudioPlaybackCapture.
+     * Android 14+ stops projections that never create a display — that looked like
+     * "could not capture" even when nothing was playing (silence is fine).
+     */
+    private fun ensureProjectionKeepAliveDisplay(projection: MediaProjection): Boolean {
+        if (projectionVirtualDisplay != null) return true
+        return try {
+            val density = resources.displayMetrics.densityDpi.coerceAtLeast(1)
+            val reader = ImageReader.newInstance(2, 2, PixelFormat.RGBA_8888, 2)
+            val display = projection.createVirtualDisplay(
+                "caption-action-audio-keepalive",
+                2,
+                2,
+                density,
+                0,
+                reader.surface,
+                null,
+                null
+            )
+            if (display == null) {
+                reader.close()
+                return false
+            }
+            projectionImageReader = reader
+            projectionVirtualDisplay = display
+            true
+        } catch (t: Exception) {
+            Log.e(TAG, "ensureProjectionKeepAliveDisplay failed", t)
+            false
+        }
+    }
+
+    private fun releaseKeepAliveDisplay() {
+        try {
+            projectionVirtualDisplay?.release()
+        } catch (_: Exception) {
+        }
+        projectionVirtualDisplay = null
+        try {
+            projectionImageReader?.close()
+        } catch (_: Exception) {
+        }
+        projectionImageReader = null
+    }
+
     private fun releaseProjection() {
+        releaseKeepAliveDisplay()
         val proj = mediaProjection
         val cb = projectionCallback
         mediaProjection = null
