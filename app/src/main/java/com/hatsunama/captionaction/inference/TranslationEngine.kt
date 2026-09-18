@@ -5,8 +5,12 @@ import com.hatsunama.captionaction.data.AppSettings
 /**
  * Translation policy + optional local MT.
  *
- * MVP: Demo engine may supply [CaptionResult.translatedText]. Dedicated offline MT
- * is structured but not bundled — passthrough + dual UI are fully wired.
+ * Contract after [applyPolicy]:
+ * - [CaptionResult.text] = original ASR / source language text
+ * - [CaptionResult.translatedText] = text in the user's **target** language when
+ *   translation is required; null when passthrough / already-target / no MT
+ *
+ * Overlay should show [translatedText] ?: [text] as the primary (target) line.
  */
 interface TranslationEngine {
     fun applyPolicy(result: CaptionResult, settings: AppSettings): CaptionResult
@@ -14,31 +18,60 @@ interface TranslationEngine {
 
 class PassthroughTranslationEngine : TranslationEngine {
     override fun applyPolicy(result: CaptionResult, settings: AppSettings): CaptionResult {
-        val detected = result.language.lowercase()
-        val target = settings.targetLanguage.lowercase()
-        val passthrough = settings.passthroughLanguages.map { it.lowercase() }.toSet()
-        val hasDemoTranslation = !result.translatedText.isNullOrBlank() &&
-            result.translatedText != result.text
+        val detected = normalizeLang(result.language)
+        val target = normalizeLang(settings.targetLanguage)
+        val passthrough = settings.passthroughLanguages.map { normalizeLang(it) }.toSet()
 
-        return when {
-            settings.dualSubtitles && hasDemoTranslation -> {
-                // Show translated as primary, original as secondary when dual is on.
-                result.copy(
-                    text = result.text,
-                    translatedText = result.translatedText
-                )
-            }
-            detected in passthrough || detected == target -> {
-                result.copy(translatedText = if (settings.dualSubtitles) result.text else null)
-            }
-            hasDemoTranslation -> {
-                result.copy(translatedText = result.translatedText)
-            }
-            else -> {
-                result.copy(
-                    translatedText = if (settings.dualSubtitles) result.text else null
-                )
-            }
+        // Passthrough languages: keep original; no forced translation.
+        if (detected.isNotEmpty() && detected in passthrough) {
+            return result.copy(translatedText = null)
+        }
+
+        // Already in the selected output language.
+        if (detected.isNotEmpty() && detected == target) {
+            return result.copy(translatedText = null)
+        }
+
+        // Need output in target language.
+        val towardTarget = result.translatedText
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.equals(result.text, ignoreCase = false) }
+
+        return if (towardTarget != null) {
+            // Engine already supplied a target-language line (if any).
+            result.copy(translatedText = towardTarget)
+        } else {
+            // No offline MT for this pair yet — keep original honestly.
+            result.copy(translatedText = null)
+        }
+    }
+
+    private fun normalizeLang(code: String): String {
+        val c = code.trim().lowercase()
+        if (c.isEmpty() || c == "auto" || c == "unknown") return ""
+        // SenseVoice / sherpa may return "en-US", "<|en|>", etc.
+        val cleaned = c
+            .removePrefix("<|")
+            .removeSuffix("|>")
+            .substringBefore('-')
+            .substringBefore('_')
+        return cleaned
+    }
+}
+
+/**
+ * Resolves what the overlay should show given policy output + dual mode.
+ * Primary is always the user-facing (target / passthrough) line.
+ */
+object CaptionDisplay {
+    fun primaryAndSecondary(policy: CaptionResult, dualSubtitles: Boolean): Pair<String, String?> {
+        val original = policy.text
+        val inTarget = policy.translatedText
+        val primary = inTarget?.takeIf { it.isNotBlank() } ?: original
+        return if (dualSubtitles && inTarget != null && inTarget != original) {
+            primary to original
+        } else {
+            primary to null
         }
     }
 }

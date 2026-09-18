@@ -148,23 +148,16 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="12dp"
                         android:text="@string/dual_subtitles" />
-
-                    <com.google.android.material.materialswitch.MaterialSwitch
-                        android:id="@+id/switchPreferPlayback"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="@string/prefer_playback" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Models section -->
+            <!-- Captions save section -->
             <TextView
                 style="@style/TextAppearance.CaptionAction.Title"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="22dp"
-                android:text="@string/section_models"
+                android:text="@string/section_captions"
                 android:textSize="20sp" />
 
             <com.google.android.material.card.MaterialCardView
@@ -174,7 +167,7 @@
                 app:cardBackgroundColor="@color/ca_card_cyan"
                 app:cardCornerRadius="22dp"
                 app:cardElevation="2dp"
-                app:strokeColor="#8FE8EC"
+                app:strokeColor="#7EDCE2"
                 app:strokeWidth="2dp">
 
                 <LinearLayout
@@ -183,73 +176,23 @@
                     android:orientation="vertical"
                     android:padding="16dp">
 
-                    <TextView
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/switchSaveSubtitles"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="@string/offline_ready"
-                        android:textColor="@color/ca_muted" />
-
-                    <RadioGroup
-                        android:id="@+id/modelGroup"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp">
-
-                        <RadioButton
-                            android:id="@+id/radioFast"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:background="@drawable/bg_card_cyan"
-                            android:layout_marginBottom="10dp"
-                            android:padding="14dp"
-                            android:text="@string/model_fast" />
-
-                        <RadioButton
-                            android:id="@+id/radioBalanced"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:background="@drawable/bg_card_yellow"
-                            android:layout_marginBottom="10dp"
-                            android:padding="14dp"
-                            android:text="@string/model_balanced"
-                            android:checked="true" />
-
-                        <RadioButton
-                            android:id="@+id/radioAccurate"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:background="@drawable/bg_card_lavender"
-                            android:padding="14dp"
-                            android:text="@string/model_accurate" />
-                    </RadioGroup>
+                        android:text="@string/save_subtitles_to_file" />
 
                     <TextView
-                        android:id="@+id/modelStatus"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:background="@drawable/bg_card_pink"
-                        android:padding="12dp"
-                        android:textColor="@color/ca_text" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnDownload"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:text="@string/download_model" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnSelectTier"
-                        style="@style/Widget.CaptionAction.Button.Secondary"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:text="@string/use_selected_tier" />
+                        android:text="@string/save_subtitles_hint"
+                        android:textColor="@color/ca_muted"
+                        android:textSize="13sp" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- Overlay section -->
+            <!-- Overlay section: font only (resize on live overlay) -->
             <TextView
                 style="@style/TextAppearance.CaptionAction.Title"
                 android:layout_width="match_parent"
@@ -278,7 +221,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="@string/resize_hint"
+                        android:text="@string/overlay_preview_hint"
                         android:textColor="@color/ca_muted" />
 
                     <TextView
@@ -297,12 +240,17 @@
                         android:background="@drawable/bg_card_cyan"
                         android:padding="10dp" />
 
-                    <FrameLayout
-                        android:id="@+id/previewArea"
+                    <TextView
+                        android:id="@+id/previewSample"
                         android:layout_width="match_parent"
-                        android:layout_height="220dp"
+                        android:layout_height="wrap_content"
                         android:layout_marginTop="14dp"
-                        android:background="@drawable/bg_card_lavender" />
+                        android:background="@drawable/bg_overlay_bubble"
+                        android:padding="16dp"
+                        android:text="@string/overlay_sample_text"
+                        android:textColor="@color/ca_overlay_text"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnSaveOverlay"
@@ -316,7 +264,7 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- Sticky Start footer -->
+    <!-- Sticky Start / thank-you footer -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -332,76 +280,15 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/start_live" />
-    </LinearLayout>
 
-    </LinearLayout>
-
-    <!-- Model download overlay -->
-    <FrameLayout
-        android:id="@+id/loadingOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#CCFFF8FC"
-        android:clickable="true"
-        android:focusable="true"
-        android:visibility="gone"
-        android:elevation="16dp">
-
-        <LinearLayout
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnThankYou"
+            style="@style/Widget.CaptionAction.Button.Secondary"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:layout_margin="24dp"
-            android:background="@drawable/bg_loading_card"
-            android:orientation="vertical"
-            android:padding="24dp"
-            android:elevation="8dp">
+            android:layout_marginTop="8dp"
+            android:text="@string/open_thank_you" />
+    </LinearLayout>
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/downloading_title"
-                android:textColor="@color/ca_primary_dark"
-                android:textSize="20sp"
-                android:textStyle="bold"
-                android:gravity="center" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/downloading_hint"
-                android:textColor="@color/ca_muted"
-                android:gravity="center" />
-
-            <ProgressBar
-                android:id="@+id/downloadProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="18dp"
-                android:layout_marginTop="18dp"
-                android:max="100"
-                android:progress="0"
-                android:progressDrawable="@drawable/bg_progress_fill" />
-
-            <TextView
-                android:id="@+id/downloadPercent"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:gravity="center"
-                android:text="0%"
-                android:textColor="@color/ca_text"
-                android:textSize="22sp"
-                android:textStyle="bold" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnCancelDownload"
-                style="@style/Widget.CaptionAction.Button.Danger"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/cancel_download" />
-        </LinearLayout>
-    </FrameLayout>
+    </LinearLayout>
 </FrameLayout>

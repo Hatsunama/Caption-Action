@@ -2,13 +2,17 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/overlayRoot"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false">
 
-    <!-- Caption bubble -->
+    <!-- Caption bubble inset so the stop-dot sits OUTSIDE the bubble chrome -->
     <LinearLayout
         android:id="@+id/captionBubble"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:layout_marginTop="16dp"
+        android:layout_marginStart="16dp"
         android:layout_marginBottom="40dp"
         android:layout_marginEnd="20dp"
         android:background="@drawable/bg_overlay_bubble"
@@ -37,7 +41,18 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- Resize handle (bottom-right of bubble) -->
+    <!-- Green stop/home dot — outside top-left corner of the bubble -->
+    <View
+        android:id="@+id/btnStopDot"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="0dp"
+        android:layout_marginStart="0dp"
+        android:background="@drawable/bg_green_dot"
+        android:contentDescription="@string/stop_dot_a11y"
+        android:elevation="12dp" />
+
     <View
         android:id="@+id/resizeHandle"
         android:layout_width="28dp"
@@ -45,9 +60,8 @@
         android:layout_gravity="bottom|end"
         android:layout_marginBottom="28dp"
         android:background="@drawable/bg_resize_handle"
-        android:contentDescription="Resize" />
+        android:contentDescription="@string/resize_a11y" />
 
-    <!-- Floating close (bottom center-ish of overlay chrome) -->
     <TextView
         android:id="@+id/btnCloseOverlay"
         android:layout_width="44dp"

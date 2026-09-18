@@ -25,6 +25,7 @@ class ModelManagerActivity : AppCompatActivity() {
     private lateinit var cache: ModelCache
     private var downloadJob: Job? = null
     private var activeDownloader: ModelDownloadManager? = null
+    private var downloading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,15 +67,28 @@ class ModelManagerActivity : AppCompatActivity() {
         }
 
         btnDownload.setOnClickListener {
+            if (downloading || !btnDownload.isEnabled) return@setOnClickListener
             val tier = selectedTier()
-            if (cache.freeBytes() < tier.approxBytes + 5L * 1024 * 1024) {
+            if (cache.isReadyForAsr(tier) || cache.isPresent(tier)) {
+                Toast.makeText(this, getString(R.string.download_already_on_device), Toast.LENGTH_SHORT).show()
+                refreshStatus(status)
+                return@setOnClickListener
+            }
+            val already = cache.partialBytes(tier)
+            val need = (tier.approxBytes - already).coerceAtLeast(0L)
+            if (cache.freeBytes() < need + 5L * 1024 * 1024) {
                 Toast.makeText(this, getString(R.string.error_storage), Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
             loading.visibility = View.VISIBLE
-            progress.progress = 0
-            percent.text = "0%"
+            val startPct = if (tier.approxBytes > 0 && already > 0) {
+                ((already * 100) / tier.approxBytes).toInt().coerceIn(0, 99)
+            } else 0
+            progress.progress = startPct
+            percent.text = "$startPct%"
+            downloading = true
             btnDownload.isEnabled = false
+            btnDownload.alpha = 0.45f
             val mgr = ModelDownloadManager(cache)
             activeDownloader = mgr
             downloadJob = lifecycleScope.launch {
@@ -87,7 +101,7 @@ class ModelManagerActivity : AppCompatActivity() {
                     }
                 }
                 loading.visibility = View.GONE
-                btnDownload.isEnabled = true
+                downloading = false
                 activeDownloader = null
                 when {
                     result.isSuccess -> {
@@ -95,7 +109,11 @@ class ModelManagerActivity : AppCompatActivity() {
                         Toast.makeText(this@ModelManagerActivity, getString(R.string.model_ready), Toast.LENGTH_SHORT).show()
                     }
                     result.exceptionOrNull() is ModelDownloadManager.CancelledException -> {
-                        Toast.makeText(this@ModelManagerActivity, "Download cancelled", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this@ModelManagerActivity,
+                            getString(R.string.download_can_resume),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                     else -> {
                         val msg = result.exceptionOrNull()?.message ?: getString(R.string.error_model)
@@ -121,14 +139,49 @@ class ModelManagerActivity : AppCompatActivity() {
 
     private fun refreshStatus(status: TextView) {
         val tier = selectedTier()
+        val ready = cache.isReadyForAsr(tier)
         val present = cache.isPresent(tier)
+        val partial = cache.isPartial(tier)
         status.text = buildString {
             append(tier.displayName)
             append(": ")
-            append(if (present) getString(R.string.model_ready) else getString(R.string.model_missing))
+            when {
+                ready -> append(getString(R.string.model_ready))
+                present -> append(getString(R.string.model_ggml_not_asr))
+                partial -> {
+                    append(getString(R.string.model_partial))
+                    append(" (")
+                    append(cache.partialBytes(tier) / (1024 * 1024))
+                    append(" MB) — ")
+                    append(getString(R.string.download_can_resume))
+                }
+                else -> append(getString(R.string.model_missing))
+            }
             append("\n")
-            append(getString(R.string.demo_mode))
-            append(" works without the file; download enables future native ASR.")
+            append("Fast = SenseVoice · Balanced/Accurate = whisper.cpp. Cancel keeps a partial for resume.")
+        }
+        val btn = findViewById<MaterialButton>(R.id.btnDownload)
+        val onDevice = ready || present
+        when {
+            downloading -> {
+                btn.isEnabled = false
+                btn.alpha = 0.45f
+            }
+            onDevice -> {
+                btn.isEnabled = false
+                btn.alpha = 0.45f
+                btn.text = getString(R.string.download_already_on_device)
+            }
+            partial -> {
+                btn.isEnabled = true
+                btn.alpha = 1f
+                btn.text = getString(R.string.resume_download)
+            }
+            else -> {
+                btn.isEnabled = true
+                btn.alpha = 1f
+                btn.text = getString(R.string.download_model)
+            }
         }
     }
 }

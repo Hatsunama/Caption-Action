@@ -5,14 +5,10 @@ import java.io.File
 /**
  * Pluggable on-device ASR. Implementations must run fully locally.
  *
- * MVP ships [DemoInferenceEngine] (timed demo + optional amplitude-driven stubs)
- * so the overlay / capture / settings pipeline is testable without native libs.
- *
- * To plug a real engine (recommended: whisper.cpp Android / Sherpa-ONNX):
- * 1. Add the native AAR or jniLibs for your chosen runtime.
- * 2. Implement this interface loading [modelFile] (ggml / onnx path from ModelCache).
- * 3. Swap the factory in [InferenceEngineFactory].
- * See docs/physical-test.md and README "Plugging a real ASR engine".
+ * Runtime selection ([InferenceEngineFactory]):
+ * - [SherpaInferenceEngine] for Fast SenseVoice ONNX
+ * - [WhisperCppInferenceEngine] for Balanced/Accurate ggml whisper.cpp
+ * No demo/stub fallback — if create/load fails the session must show an error and stop.
  */
 interface InferenceEngine {
     val name: String

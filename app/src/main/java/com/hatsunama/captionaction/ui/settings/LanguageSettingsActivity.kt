@@ -32,7 +32,6 @@ class LanguageSettingsActivity : AppCompatActivity() {
         )
         val chips = findViewById<ChipGroup>(R.id.passthroughChips)
         val dual = findViewById<MaterialSwitch>(R.id.switchDual)
-        val preferPlayback = findViewById<MaterialSwitch>(R.id.switchPreferPlayback)
         val summary = findViewById<TextView>(R.id.passthroughSummary)
 
         lifecycleScope.launch {
@@ -43,7 +42,6 @@ class LanguageSettingsActivity : AppCompatActivity() {
                 Languages.all.indexOfFirst { it.code == s.targetLanguage }.coerceAtLeast(0)
             )
             dual.isChecked = s.dualSubtitles
-            preferPlayback.isChecked = s.preferPlaybackCapture
             chips.removeAllViews()
             Languages.all.forEach { lang ->
                 val chip = Chip(this@LanguageSettingsActivity).apply {
@@ -69,7 +67,7 @@ class LanguageSettingsActivity : AppCompatActivity() {
                         targetLanguage = target,
                         passthroughLanguages = selectedPassthrough.toSet(),
                         dualSubtitles = dual.isChecked,
-                        preferPlaybackCapture = preferPlayback.isChecked
+                        preferPlaybackCapture = true
                     )
                 }
                 Toast.makeText(this@LanguageSettingsActivity, "Saved", Toast.LENGTH_SHORT).show()

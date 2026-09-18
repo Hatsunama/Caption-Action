@@ -1,15 +1,16 @@
 package com.hatsunama.captionaction.ui.live
 
-import android.content.Intent
 import android.os.Bundle
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.service.CaptionOverlayService
-import com.hatsunama.captionaction.ui.permissions.PermissionStepActivity
+import com.hatsunama.captionaction.service.LiveCaptionStarter
 import kotlinx.coroutines.launch
 
 class LiveSessionActivity : AppCompatActivity() {
@@ -18,8 +19,23 @@ class LiveSessionActivity : AppCompatActivity() {
     private val permissionFlow = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        // Service start is handled inside PermissionStepActivity on success.
+        // PermissionStep never starts the FGS — user must tap Start again.
         markRunning(CaptionOverlayService.instance != null)
+        if (it.resultCode == RESULT_OK) {
+            Toast.makeText(this, getString(R.string.permission_setup_done), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private val projectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            LiveCaptionStarter.startWithProjectionAndMinimize(this, result.resultCode, result.data!!)
+            markRunning(true)
+        } else {
+            LiveCaptionStarter.startMicFallbackAfterDecline(this)
+            markRunning(true)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,7 +47,7 @@ class LiveSessionActivity : AppCompatActivity() {
                 CaptionOverlayService.stop(this)
                 markRunning(false)
             } else {
-                permissionFlow.launch(Intent(this, PermissionStepActivity::class.java))
+                lifecycleScope.launch { onStartCaptions() }
             }
         }
 
@@ -70,6 +86,27 @@ class LiveSessionActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         markRunning(CaptionOverlayService.instance != null)
+    }
+
+    private fun app(): CaptionActionApp = application as CaptionActionApp
+
+    private suspend fun onStartCaptions() {
+        val settings = app().settings.current()
+        if (LiveCaptionStarter.needsPermissionWalkthrough(settings, this)) {
+            permissionFlow.launch(
+                LiveCaptionStarter.permissionStepIntent(
+                    this,
+                    LiveCaptionStarter.permissionMode(settings)
+                )
+            )
+            return
+        }
+        if (LiveCaptionStarter.shouldRequestProjection()) {
+            projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
+        } else {
+            LiveCaptionStarter.startMicAndMinimize(this)
+            markRunning(true)
+        }
     }
 
     private fun markRunning(value: Boolean) {

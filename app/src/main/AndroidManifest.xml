@@ -57,6 +57,11 @@
             android:exported="false"
             android:parentActivityName=".ui.home.HomeActivity" />
 
+        <activity
+            android:name=".ui.thanks.ThankYouActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.home.HomeActivity" />
+
         <service
             android:name=".service.CaptionOverlayService"
             android:exported="false"

@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:background="@color/ca_bg">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/model_gate_title"
+        android:textColor="@color/ca_primary_dark"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/model_gate_body"
+        android:textColor="@color/ca_muted"
+        android:textSize="14sp" />
+
+    <RadioGroup
+        android:id="@+id/modelGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp">
+
+        <RadioButton
+            android:id="@+id/radioFast"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card_cyan"
+            android:layout_marginBottom="8dp"
+            android:padding="12dp"
+            android:text="@string/model_fast"
+            android:checked="true" />
+
+        <RadioButton
+            android:id="@+id/radioBalanced"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card_yellow"
+            android:layout_marginBottom="8dp"
+            android:padding="12dp"
+            android:text="@string/model_balanced" />
+
+        <RadioButton
+            android:id="@+id/radioAccurate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card_lavender"
+            android:padding="12dp"
+            android:text="@string/model_accurate" />
+    </RadioGroup>
+
+    <TextView
+        android:id="@+id/modelStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_card_pink"
+        android:padding="10dp"
+        android:textColor="@color/ca_text"
+        android:textSize="13sp" />
+
+    <ProgressBar
+        android:id="@+id/downloadProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="18dp"
+        android:layout_marginTop="12dp"
+        android:max="100"
+        android:progress="0"
+        android:indeterminate="false"
+        android:visibility="gone"
+        android:progressDrawable="@drawable/bg_progress_fill" />
+
+    <TextView
+        android:id="@+id/downloadPercent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:textColor="@color/ca_text"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnDownload"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/download_model" />
+
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnUseAndStart"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/model_gate_use_start" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnCancelGate"
+        style="@style/Widget.CaptionAction.Button.Soft"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/back" />
+</LinearLayout>

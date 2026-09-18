@@ -54,12 +54,6 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:text="@string/dual_subtitles" />
-        <com.google.android.material.materialswitch.MaterialSwitch
-            android:id="@+id/switchPreferPlayback"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/prefer_playback" />
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnSave"
             android:layout_width="match_parent"

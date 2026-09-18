@@ -1,0 +1,223 @@
+package com.hatsunama.captionaction.inference
+
+import android.content.Context
+import android.util.Log
+import dev.ffmpegkit.whisper.Whisper
+import dev.ffmpegkit.whisper.WhisperConfig
+import dev.ffmpegkit.whisper.WhisperModel
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * Real ggml ASR via prebuilt whisper.cpp AAR (`dev.ffmpegkit-maintained:whisper-android` /
+ * local `libs/whisper-android-1.0.0.aar`). Consumes Balanced/Accurate `ggml-*-q5_1.bin`.
+ *
+ * When [targetLanguage] is English, uses whisper **translate** so non-English speech
+ * (e.g. Chinese) becomes English captions.
+ */
+class WhisperCppInferenceEngine(
+    private val appContext: Context,
+    @Volatile var targetLanguage: String = "en"
+) : InferenceEngine {
+    override val name: String = "whisper.cpp"
+
+    private val lock = Any()
+    private var model: WhisperModel? = null
+    private val pcmAccum = ArrayList<Short>(16_000 * 4)
+    private var lastSpeechAt = 0L
+
+    override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
+        release()
+        if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
+            Log.w(TAG, "ggml model missing or too small: ${modelFile.absolutePath}")
+            return@withContext false
+        }
+        val nameLower = modelFile.name.lowercase()
+        if (!nameLower.endsWith(".bin") && !nameLower.contains("ggml")) {
+            Log.w(TAG, "Expected ggml .bin, got ${modelFile.name}")
+            return@withContext false
+        }
+        return@withContext try {
+            val loaded = Whisper.loadModel(appContext, modelFile.absolutePath)
+            synchronized(lock) {
+                model = loaded
+                pcmAccum.clear()
+            }
+            Log.i(TAG, "Loaded whisper ggml from ${modelFile.absolutePath}")
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to load whisper model", t)
+            release()
+            false
+        }
+    }
+
+    override suspend fun transcribe(pcm16le: ShortArray, sampleRateHz: Int): CaptionResult? =
+        withContext(Dispatchers.Default) {
+            val m = synchronized(lock) { model } ?: return@withContext null
+            if (pcm16le.isEmpty()) return@withContext null
+
+            val now = System.currentTimeMillis()
+            val energy = rms(pcm16le)
+            val speaking = energy >= 80f
+            if (speaking) lastSpeechAt = now
+
+            val shouldFlush: Boolean
+            val chunk: ShortArray?
+            synchronized(lock) {
+                for (s in pcm16le) pcmAccum.add(s)
+                while (pcmAccum.size > MAX_SAMPLES) {
+                    pcmAccum.removeAt(0)
+                }
+                val n = pcmAccum.size
+                shouldFlush = when {
+                    n >= MAX_SAMPLES -> true
+                    n >= MIN_SAMPLES && !speaking && (now - lastSpeechAt) > 400L -> true
+                    n >= FLUSH_AT_SPEECH -> true
+                    else -> false
+                }
+                if (!shouldFlush) {
+                    chunk = null
+                } else if (pcmAccum.size < MIN_SAMPLES / 2) {
+                    chunk = null
+                } else {
+                    val arr = ShortArray(pcmAccum.size)
+                    for (i in pcmAccum.indices) arr[i] = pcmAccum[i]
+                    pcmAccum.clear()
+                    chunk = arr
+                }
+            }
+            val samples = chunk ?: return@withContext null
+            if (rms(samples) < 60f) return@withContext null
+
+            val wav = writeTempWav(samples, sampleRateHz)
+            try {
+                val target = normalizeLang(targetLanguage)
+                val translateToEn = target == "en"
+                // Whisper translate task only targets English. Use it when the
+                // user selected English so non-English speech becomes EN captions.
+                val config = WhisperConfig(
+                    language = "auto",
+                    translate = translateToEn,
+                    threads = 2,
+                    maxSegmentLength = 0,
+                    printTimestamps = false
+                )
+                val result = Whisper.transcribe(m, wav.absolutePath, config)
+                val text = result.text.trim()
+                if (text.isEmpty()) return@withContext null
+                val end = System.currentTimeMillis()
+                // Translate task emits English; mark language=en so UI/policy show EN.
+                CaptionResult(
+                    text = text,
+                    language = if (translateToEn) "en" else target.ifBlank { "auto" },
+                    confidence = 0.8f,
+                    startMs = end - (samples.size * 1000L / sampleRateHz),
+                    endMs = end,
+                    translatedText = null
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "whisper transcribe failed", t)
+                null
+            } finally {
+                wav.delete()
+            }
+        }
+
+    override fun release() {
+        synchronized(lock) {
+            try {
+                model?.let { Whisper.releaseModel(it) }
+            } catch (_: Throwable) {
+            }
+            model = null
+            pcmAccum.clear()
+        }
+    }
+
+    private fun writeTempWav(pcm: ShortArray, sampleRateHz: Int): File {
+        val file = File(appContext.cacheDir, "whisper_chunk_${Thread.currentThread().id}.wav")
+        val dataBytes = pcm.size * 2
+        RandomAccessFile(file, "rw").use { raf ->
+            raf.setLength(0)
+            raf.writeAscii("RIFF")
+            raf.writeIntLE(36 + dataBytes)
+            raf.writeAscii("WAVE")
+            raf.writeAscii("fmt ")
+            raf.writeIntLE(16)
+            raf.writeShortLE(1)
+            raf.writeShortLE(1)
+            raf.writeIntLE(sampleRateHz)
+            raf.writeIntLE(sampleRateHz * 2)
+            raf.writeShortLE(2)
+            raf.writeShortLE(16)
+            raf.writeAscii("data")
+            raf.writeIntLE(dataBytes)
+            val buf = ByteBuffer.allocate(pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+            for (s in pcm) buf.putShort(s)
+            raf.write(buf.array())
+        }
+        return file
+    }
+
+    private fun RandomAccessFile.writeIntLE(v: Int) {
+        write(
+            byteArrayOf(
+                (v and 0xff).toByte(),
+                ((v shr 8) and 0xff).toByte(),
+                ((v shr 16) and 0xff).toByte(),
+                ((v shr 24) and 0xff).toByte()
+            )
+        )
+    }
+
+    private fun RandomAccessFile.writeShortLE(v: Int) {
+        write(byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte()))
+    }
+
+    private fun RandomAccessFile.writeAscii(s: String) {
+        write(s.toByteArray(Charsets.US_ASCII))
+    }
+
+    private fun rms(samples: ShortArray): Float {
+        if (samples.isEmpty()) return 0f
+        var sum = 0.0
+        val step = (samples.size / 512).coerceAtLeast(1)
+        var n = 0
+        var i = 0
+        while (i < samples.size) {
+            val v = samples[i].toDouble()
+            sum += v * v
+            n++
+            i += step
+        }
+        return kotlin.math.sqrt(sum / n.coerceAtLeast(1)).toFloat()
+    }
+
+    private fun normalizeLang(code: String): String {
+        val c = code.trim().lowercase()
+        if (c.isEmpty() || c == "auto" || c == "unknown") return ""
+        return c.removePrefix("<|").removeSuffix("|>").substringBefore('-').substringBefore('_')
+    }
+
+    companion object {
+        private const val TAG = "WhisperCppEngine"
+        private const val MIN_SAMPLES = 16_000 * 3
+        private const val FLUSH_AT_SPEECH = 16_000 * 5
+        private const val MAX_SAMPLES = 16_000 * 12
+
+        fun isNativeAvailable(): Boolean {
+            return try {
+                Whisper.getSystemInfo()
+                true
+            } catch (t: Throwable) {
+                Log.w(TAG, "whisper native not loadable: ${t.message}")
+                false
+            }
+        }
+    }
+}
