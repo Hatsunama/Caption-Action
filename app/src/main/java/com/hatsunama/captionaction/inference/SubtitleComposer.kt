@@ -5,11 +5,11 @@ package com.hatsunama.captionaction.inference
  * the primary TextView must show the full current caption (wrap within overlay height).
  */
 class SubtitleComposer(
-    private val maxCharsPerLine: Int = 42,
+    private val maxCharsPerLine: Int = 40,
     /** Soft wrap line budget; high enough for full sentences in the overlay. */
-    private val maxLines: Int = 20,
+    private val maxLines: Int = 28,
     /** Rolling buffer of recent text (chars); keeps last utterances readable. */
-    private val maxBufferChars: Int = 480
+    private val maxBufferChars: Int = 560
 ) {
     private var current = StringBuilder()
     private var lastUpdate = 0L

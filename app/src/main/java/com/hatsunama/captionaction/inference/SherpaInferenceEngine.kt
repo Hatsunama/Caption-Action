@@ -23,6 +23,10 @@ class SherpaInferenceEngine(
     private var lastSpeechAt = 0L
     @Volatile private var playbackCapture: Boolean = false
     @Volatile private var lastMode: String = ""
+    /** Subtitle target (e.g. en) — ASR stays multilingual auto; used for diagnostics. */
+    @Volatile private var targetLanguage: String = "en"
+    /** Rolling CJK-vs-Latin bias from recent ASR text (positive ⇒ CJK-heavy). */
+    @Volatile private var scriptBias: Int = 0
 
     // MT / dual owned by MlKitTranslationEngine; ASR stays ASR-only here.
     override fun offlineTranslationTargets(): Set<String> =
@@ -32,6 +36,10 @@ class SherpaInferenceEngine(
 
     override fun setPlaybackCapture(enabled: Boolean) {
         playbackCapture = enabled
+    }
+
+    override fun setTargetLanguage(code: String) {
+        targetLanguage = code.trim().lowercase().ifBlank { "en" }
     }
 
     override fun lastAsrMode(): String = lastMode
@@ -161,7 +169,6 @@ class SherpaInferenceEngine(
                 return@withContext null
             }
 
-            lastMode = "auto-translate"
             val floats = FloatArray(pcm.size) { i -> pcm[i] / 32768.0f }
             val stream = try {
                 rec.createStream()
@@ -174,10 +181,18 @@ class SherpaInferenceEngine(
                 rec.decode(stream)
                 val result = rec.getResult(stream)
                 val text = AsrJunkFilter.sanitizeOrNull(result.text) ?: return@withContext null
+                val rawLang = result.lang.ifBlank { "auto" }
+                val lang = enrichLangFromScript(text, rawLang)
+                updateScriptBias(text)
+                // auto at load; bias tag helps logs when ZH→EN (target en, CJK speech).
+                lastMode = when {
+                    scriptBias >= 2 && targetLanguage == "en" -> "auto-zh-bias"
+                    else -> "auto-translate"
+                }
                 val endMs = System.currentTimeMillis()
                 CaptionResult(
                     text = text,
-                    language = result.lang.ifBlank { "auto" },
+                    language = lang,
                     confidence = 0.85f,
                     startMs = endMs - (pcm.size * 1000L / sampleRateHz),
                     endMs = endMs,
@@ -208,6 +223,7 @@ class SherpaInferenceEngine(
             pcmAccum.clear()
         }
         lastMode = ""
+        scriptBias = 0
     }
 
     private fun ensureTokensBeside(modelFile: File): File {
@@ -217,6 +233,54 @@ class SherpaInferenceEngine(
             FileOutputStream(dest).use { out -> input.copyTo(out) }
         }
         return dest
+    }
+
+    /**
+     * When SenseVoice reports auto/blank but the text is clearly CJK/JA/KO,
+     * stamp a concrete source lang so ML Kit MT does not guess wrong (ZH→EN crumbs).
+     * Does not force SenseVoice decode language (stays auto at load — preserves EN/JA/KO).
+     */
+    private fun enrichLangFromScript(text: String, rawLang: String): String {
+        val n = rawLang.trim().lowercase()
+        if (n.isNotEmpty() && n != "auto" && n != "unknown" && n != "und") return n
+        return guessScriptLang(text) ?: n.ifBlank { "auto" }
+    }
+
+    private fun guessScriptLang(text: String): String? {
+        var han = 0
+        var hiraKata = 0
+        var hangul = 0
+        var letters = 0
+        for (ch in text) {
+            when {
+                Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN -> {
+                    han++; letters++
+                }
+                ch.code in 0x3040..0x30FF -> {
+                    hiraKata++; letters++
+                }
+                ch.code in 0xAC00..0xD7AF -> {
+                    hangul++; letters++
+                }
+                ch.isLetter() -> letters++
+            }
+        }
+        if (letters == 0) return null
+        // Prefer the dominant non-Latin script when it is majority.
+        return when {
+            han * 2 >= letters -> "zh"
+            hiraKata * 2 >= letters -> "ja"
+            hangul * 2 >= letters -> "ko"
+            else -> null
+        }
+    }
+
+    private fun updateScriptBias(text: String) {
+        val guessed = guessScriptLang(text)
+        scriptBias = when (guessed) {
+            "zh", "ja", "ko" -> (scriptBias + 1).coerceAtMost(5)
+            else -> (scriptBias - 1).coerceAtLeast(-3)
+        }
     }
 
     private fun rms(samples: ShortArray): Float {
@@ -235,11 +299,11 @@ class SherpaInferenceEngine(
     }
 
     companion object {
-        /** ~2.25 s @ 16 kHz — phrase-level SenseVoice (was 1.0 s crumbs). */
-        const val LIVE_WINDOW_SAMPLES = 36_000
+        /** ~2.5 s @ 16 kHz — phrase-level SenseVoice (was 2.25 s; crumbs still dominated ZH→EN). */
+        const val LIVE_WINDOW_SAMPLES = 40_000
         private const val TAG = "SherpaInferenceEngine"
-        private const val MIN_SAMPLES_MIC = 28_000  // align with ~2.0–2.25 s live windows
-        private const val MIN_SAMPLES_PLAYBACK = 28_000
+        private const val MIN_SAMPLES_MIC = 32_000  // align with ~2.0–2.5 s live windows
+        private const val MIN_SAMPLES_PLAYBACK = 32_000
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 8

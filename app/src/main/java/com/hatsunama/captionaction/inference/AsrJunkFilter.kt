@@ -192,6 +192,36 @@ object AsrJunkFilter {
             .trim()
 
     /**
+     * Enough real phrase content to bother with publish / ML Kit MT.
+     * Keeps latency win: crumbs never hit MT (nonsense EN). Does **not** expand
+     * [EXACT_JUNK] — real short speech like multi-word lines still passes.
+     * CJK: ≥4 Han/content chars. Latin: ≥2 tokens or ≥8 letters.
+     */
+    fun hasEnoughContentForMt(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty() || isJunk(t)) return false
+        val stripped = t
+            .replace(Regex("""[\[\]{}()<>|]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        val normalized = normalize(stripped)
+        if (normalized.isEmpty()) return false
+        val compact = normalized.replace(Regex("""\s+"""), "")
+        val cjk = compact.count { ch ->
+            Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
+                (ch.code in 0x3040..0x30FF) || // Hiragana/Katakana
+                (ch.code in 0xAC00..0xD7AF)    // Hangul syllables
+        }
+        val mostlyCjk = compact.isNotEmpty() && cjk * 2 >= compact.length
+        return if (mostlyCjk) {
+            compact.length >= 4
+        } else {
+            val tokens = normalized.split(' ').filter { it.isNotEmpty() }
+            tokens.size >= 2 || compact.length >= 8
+        }
+    }
+
+    /**
      * True when [a] and [b] are the same caption or a near-duplicate (containment)
      * after normalize — used to suppress re-publishing within a short window.
      */

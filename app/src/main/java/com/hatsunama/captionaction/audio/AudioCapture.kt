@@ -343,13 +343,13 @@ class AudioCapture(private val context: Context) {
         private const val TAKE_TIMEOUT_MS = 250L
         private const val DIAG_INTERVAL_MS = 5_000L
         /** Default drain target; engines override via preferredWindowSamples(). */
-        const val DEFAULT_WINDOW_SAMPLES = 36_000
+        const val DEFAULT_WINDOW_SAMPLES = 40_000
         /** Quality / whisper ~1.5 s — shorter so mid-device passes finish nearer realtime. */
         const val QUALITY_WINDOW_SAMPLES = 24_000
         /** Quality when behind (~1.125 s) — still ≥ native 1000 ms min. */
         const val QUALITY_WINDOW_BEHIND_SAMPLES = 18_000
-        /** Live / Sherpa ~2.25 s — phrase-level SenseVoice (not 1.0 s crumbs). */
-        const val LIVE_WINDOW_SAMPLES = 36_000
+        /** Live / Sherpa ~2.5 s — phrase-level SenseVoice (not 1.0–2.25 s crumbs). */
+        const val LIVE_WINDOW_SAMPLES = 40_000
         /** If drained chunk count ≥ this, skip intermediate audio. */
         private const val BACKLOG_CHUNK_THRESHOLD = 4
     }

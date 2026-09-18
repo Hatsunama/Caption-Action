@@ -142,24 +142,40 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 return@withContext result.copy(translatedText = existing)
             }
 
+            // Prefer ASR lang; if auto/blank, script-guess (CJK→zh) before ML Kit language-id.
+            // Wrong source lang is a common cause of nonsense EN crumbs on Live ZH→EN.
             val sourceCode = when {
                 detected.isNotEmpty() && detected != target -> detected
-                else -> identifyLanguage(result.text) ?: ""
+                else -> guessScriptLang(result.text)
+                    ?: identifyLanguage(result.text)
+                    ?: ""
             }
             if (sourceCode.isEmpty() || sourceCode == target) {
                 return@withContext result.copy(translatedText = null)
             }
+            // Skip MT on crumbs — short source → nonsense target.
+            if (!AsrJunkFilter.hasEnoughContentForMt(result.text)) {
+                Log.i(TAG, "NMT skip $sourceCode→$target (insufficient content)")
+                return@withContext result.copy(translatedText = null)
+            }
 
             val translated = translateHotPath(result.text, sourceCode, target)
-            if (translated.isNullOrBlank() || translated == result.text) {
-                Log.i(TAG, "NMT skip $sourceCode→$target (empty or identical)")
+            val clean = AsrJunkFilter.sanitizeOrNull(translated)
+            if (clean.isNullOrBlank() || clean == result.text) {
+                Log.i(TAG, "NMT skip $sourceCode→$target (empty, identical, or junk EN)")
+                result.copy(translatedText = null)
+            } else if (!AsrJunkFilter.hasEnoughContentForMt(clean) &&
+                clean.length < result.text.length
+            ) {
+                // Tiny EN crumb from longer source is usually a failed MT — drop.
+                Log.i(TAG, "NMT skip $sourceCode→$target (crumb out=${clean.take(40)})")
                 result.copy(translatedText = null)
             } else {
                 Log.i(
                     TAG,
-                    "NMT ok $sourceCode→$target in=${result.text.take(40)} out=${translated.take(40)}"
+                    "NMT ok $sourceCode→$target in=${result.text.take(40)} out=${clean.take(40)}"
                 )
-                result.copy(translatedText = translated)
+                result.copy(translatedText = clean)
             }
         }
 
@@ -172,6 +188,35 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
         } catch (t: Throwable) {
             Log.w(TAG, "language-id failed: ${t.message}")
             null
+        }
+    }
+
+    /** Fast script→lang when ASR left language auto/blank (SenseVoice live). */
+    private fun guessScriptLang(text: String): String? {
+        var han = 0
+        var hiraKata = 0
+        var hangul = 0
+        var letters = 0
+        for (ch in text) {
+            when {
+                Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN -> {
+                    han++; letters++
+                }
+                ch.code in 0x3040..0x30FF -> {
+                    hiraKata++; letters++
+                }
+                ch.code in 0xAC00..0xD7AF -> {
+                    hangul++; letters++
+                }
+                ch.isLetter() -> letters++
+            }
+        }
+        if (letters == 0) return null
+        return when {
+            han * 2 >= letters -> "zh"
+            hiraKata * 2 >= letters -> "ja"
+            hangul * 2 >= letters -> "ko"
+            else -> null
         }
     }
 
@@ -263,6 +308,11 @@ private fun normalizeLang(code: String): String = MlKitTranslationEngine.normali
  * [CaptionResult.translatedText]. Dual = target primary + source secondary.
  */
 object CaptionDisplay {
+    /**
+     * Target-language primary whenever MT filled [CaptionResult.translatedText].
+     * Dual honesty: secondary (source) only when dual is on **and** a real translation exists —
+     * never invent a dual pair from source-only captions.
+     */
     fun primaryAndSecondary(policy: CaptionResult, dualSubtitles: Boolean): Pair<String, String?> {
         val original = policy.text
         val inTarget = policy.translatedText?.takeIf { it.isNotBlank() }
