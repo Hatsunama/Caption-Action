@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.6-start-handoff** — Seeker-safe Start handoff (45 s gate; onResume never kills mid-grant/minimize); Live ZH→EN readability (0.3.5) + device-audio-only (0.3.4) retained.
+Current source: **0.3.7-projection-fresh** — fresh MediaProjection every Start (no stale grant reuse); live prechecks before share UI; Seeker Start handoff (0.3.6) retained.
 
 ## Preferred: promoted release installer
 

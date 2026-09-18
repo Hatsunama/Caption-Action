@@ -69,8 +69,27 @@ object LiveCaptionStarter {
         Intent(context, PermissionStepActivity::class.java)
 
     fun shouldRequestProjection(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        ProjectionFreshStart.shouldLaunchSystemProjectionPrompt(
+            apiAtLeastQ = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+            // Never pass a remembered grant — always re-prompt.
+            hasCachedPriorGrant = false
+        )
 
+    /**
+     * Live overlay + RECORD_AUDIO against phone state — call BEFORE
+     * [createScreenCaptureIntent] so the share-one-app / entire-screen UI is
+     * not shown when capture would still fail after Allow.
+     */
+    fun liveCapturePrechecksOk(context: Context): Boolean =
+        ProjectionFreshStart.precheckAllowsShareUi(
+            overlayGranted = canDrawOverlays(context),
+            recordAudioGranted = hasAudioPermission(context)
+        )
+
+    /**
+     * Always a fresh [MediaProjectionManager.createScreenCaptureIntent] —
+     * never reuse a prior RESULT_OK data Intent across Starts.
+     */
     fun createScreenCaptureIntent(context: Context): Intent {
         val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         return mpm.createScreenCaptureIntent()

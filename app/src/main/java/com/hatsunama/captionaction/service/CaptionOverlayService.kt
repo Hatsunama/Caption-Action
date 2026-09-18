@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -101,7 +102,8 @@ class CaptionOverlayService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
-                startForeground(NOTIF_ID, buildNotification())
+                // mediaProjection FGS type required before getMediaProjection (API 34+).
+                startForegroundForProjection()
                 val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
                 val data = if (Build.VERSION.SDK_INT >= 33) {
                     intent?.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -109,19 +111,39 @@ class CaptionOverlayService : Service() {
                     @Suppress("DEPRECATION")
                     intent?.getParcelableExtra(EXTRA_RESULT_DATA)
                 }
+                // Fresh grant only — release any prior projection; never reuse a consumed token.
+                releaseProjection()
+                audioCapture.stop()
+                val wanted = StartHandoffGate.isProjectionResultGranted(resultCode, data != null)
                 val projection = claimProjectionSync(resultCode, data)
-                scope.launch { beginSession(projection, wantedProjection = resultCode != 0 && data != null) }
+                scope.launch { beginSession(projection, wantedProjection = wanted) }
+                // NOT sticky: sticky redelivery reuses a single-use MediaProjection Intent → false "allow".
+                return START_NOT_STICKY
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
+    }
+
+    private fun startForegroundForProjection() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIF_ID, notification)
+        }
     }
 
     private fun claimProjectionSync(resultCode: Int, data: Intent?): MediaProjection? {
-        if (resultCode == 0 || data == null) return null
+        if (!StartHandoffGate.isProjectionResultGranted(resultCode, data != null)) return null
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         return try {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val projection = mpm.getMediaProjection(resultCode, data) ?: return null
+            // Single-use token from this Start's createScreenCaptureIntent result only.
+            val projection = mpm.getMediaProjection(resultCode, data!!) ?: return null
             val cb = object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.w(TAG, "MediaProjection stopped by system")
@@ -132,6 +154,7 @@ class CaptionOverlayService : Service() {
                     }
                 }
             }
+            // API 34+: register before AudioPlaybackCaptureConfiguration / virtual display.
             projection.registerCallback(cb, Handler(Looper.getMainLooper()))
             projectionCallback = cb
             mediaProjection = projection
@@ -149,19 +172,29 @@ class CaptionOverlayService : Service() {
 
         // Device audio only — never mic. Fail before overlay if capture unavailable.
         if (projection == null) {
-            val msg = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                getString(R.string.error_requires_android_10)
-            } else {
-                getString(R.string.error_projection_required)
+            val kind = ProjectionFreshStart.failKind(
+                wantedProjection = wantedProjection,
+                projectionClaimed = false,
+                playbackCaptureStarted = false
+            )
+            val msg = when {
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ->
+                    getString(R.string.error_requires_android_10)
+                kind == ProjectionFreshStart.FailKind.CLAIM_FAILED_AFTER_ALLOW ->
+                    getString(R.string.error_projection_claim_failed)
+                else -> getString(R.string.error_projection_required)
             }
-            Log.w(DIAG_TAG, "captureMode=none wantedProjection=$wantedProjection api=${Build.VERSION.SDK_INT}")
+            Log.w(
+                DIAG_TAG,
+                "captureMode=none wantedProjection=$wantedProjection failKind=$kind api=${Build.VERSION.SDK_INT}"
+            )
             failSessionReturnHome(msg)
             return
         }
         val started = audioCapture.startPlaybackCapture(projection)
         if (!started) {
             Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true")
-            // Already Allowed — Toast clearly (not silent Home / not "allow sharing" copy).
+            // Already Allowed — real capture failure (not decline / not "allow sharing").
             failSessionReturnHome(getString(R.string.error_capture))
             return
         }

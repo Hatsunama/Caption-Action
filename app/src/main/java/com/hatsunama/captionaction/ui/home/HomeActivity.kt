@@ -472,10 +472,17 @@ class HomeActivity : AppCompatActivity() {
             permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
             return
         }
+        // Live phone state BEFORE share-one-app / entire-screen UI — never assume
+        // a prior grant still holds; if overlay/RECORD_AUDIO dropped, re-walk.
+        if (!LiveCaptionStarter.liveCapturePrechecksOk(this)) {
+            dismissStartingDialog()
+            permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
+            return
+        }
         showStartingDialog(getString(R.string.starting_requesting_capture))
         LiveCaptionStarter.beginStartHandoff()
         if (LiveCaptionStarter.shouldRequestProjection()) {
-            // Dismiss before system share-screen UI; handoff flag covers resume.
+            // Fresh createScreenCaptureIntent every Start — no stale RESULT_OK reuse.
             dismissStartingDialog()
             projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
         } else {

@@ -6,7 +6,13 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.6-start-handoff** (versionCode 29)
+Current source version: **0.3.7-projection-fresh** (versionCode 30)
+
+## 0.3.7-projection-fresh
+
+- **Fresh MediaProjection every Start:** never reuse a prior RESULT_OK Intent; always `createScreenCaptureIntent`. Live overlay + `RECORD_AUDIO` checked against phone state **before** the share-one-app / entire-screen UI.
+- **After Allow:** FGS starts with explicit `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`; claim failures use `error_projection_claim_failed` (not decline copy); real playback-capture failures use `error_capture` without “allow screen sharing”. `START_NOT_STICKY` so sticky redelivery cannot replay a consumed token.
+- **Walkthrough:** projection step is educational only (no early system prompt that wastes a single-use grant). StartHandoffGate / 0.3.6 handoff unchanged. Device-audio-only unchanged.
 
 ## 0.3.6-start-handoff
 
