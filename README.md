@@ -6,7 +6,14 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.5-live-readability** (versionCode 28)
+Current source version: **0.3.6-start-handoff** (versionCode 29)
+
+## 0.3.6-start-handoff
+
+- **Seeker Start handoff:** After model + Allow screen share, the session must stay up (not bounce to Home). `StartHandoffGate` extends a **45 s** suppress window on Start and again on projection grant; `HomeActivity.onResume` never auto-stops while handoff is active **or** the overlay service started within that window. Fixes the race where an 8 s window expired during the system share dialog / `goToLauncherHome` resume.
+- **Playback capture fail after Allow:** Toast uses `error_capture` (“Could not capture device playback audio…”) instead of the decline copy; decline still shows dialog + Home (no mic).
+- **RESULT_OK (-1):** grant path uses `resultCode != 0 && data != null` consistently with `CaptionOverlayService.start`’s `require(resultCode != 0)`.
+- Device-audio-only (0.3.4) unchanged.
 
 ## 0.3.5-live-readability
 

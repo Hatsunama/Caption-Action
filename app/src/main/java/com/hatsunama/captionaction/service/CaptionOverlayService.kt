@@ -161,7 +161,8 @@ class CaptionOverlayService : Service() {
         val started = audioCapture.startPlaybackCapture(projection)
         if (!started) {
             Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true")
-            failSessionReturnHome(getString(R.string.error_projection_required))
+            // Already Allowed — Toast clearly (not silent Home / not "allow sharing" copy).
+            failSessionReturnHome(getString(R.string.error_capture))
             return
         }
         Log.i(
@@ -528,6 +529,7 @@ class CaptionOverlayService : Service() {
 
     /** Fail session: Toast, tear down overlay/FGS, return to Home (main menu). Never starts mic. */
     private fun failSession(message: String) {
+        LiveCaptionStarter.endStartHandoff()
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         val home = Intent(this, HomeActivity::class.java).apply {
             addFlags(
@@ -870,6 +872,7 @@ class CaptionOverlayService : Service() {
     private fun stopSelfSafe() {
         if (tearingDown) return
         tearingDown = true
+        LiveCaptionStarter.endStartHandoff()
         asrJob?.cancel()
         cancelMtJobs()
         audioCapture.stop()

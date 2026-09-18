@@ -20,21 +20,29 @@ object LiveCaptionStarter {
 
     /**
      * Suppress HomeActivity.onResume auto-stop during Start → projection → launcher handoff.
-     * Windowed so a brief resume after the projection result cannot kill the new session.
+     * Windowed (see [StartHandoffGate.DEFAULT_WINDOW_MS]) so Seeker resume after grant/minimize
+     * cannot kill the new session.
      */
-    @Volatile
-    private var handoffUntilElapsed: Long = 0L
+    private val handoffGate = StartHandoffGate(clock = { SystemClock.elapsedRealtime() })
 
     fun beginStartHandoff() {
-        handoffUntilElapsed = SystemClock.elapsedRealtime() + 8_000L
+        handoffGate.begin()
     }
 
     fun endStartHandoff() {
-        handoffUntilElapsed = 0L
+        handoffGate.end()
+        handoffGate.clearServiceStarted()
+    }
+
+    fun markSessionStarted() {
+        handoffGate.markServiceStarted()
     }
 
     fun shouldSuppressHomeAutoStop(): Boolean =
-        SystemClock.elapsedRealtime() < handoffUntilElapsed
+        handoffGate.shouldSuppressHomeAutoStop()
+
+    fun shouldAutoStopOnHomeResume(serviceRunning: Boolean): Boolean =
+        handoffGate.shouldAutoStopOnHomeResume(serviceRunning)
 
     fun missingRequiredGrants(context: Context): Boolean {
         if (!canDrawOverlays(context)) return true
@@ -83,7 +91,9 @@ object LiveCaptionStarter {
     }
 
     fun startWithProjectionAndMinimize(activity: Activity, resultCode: Int, data: Intent) {
-        beginStartHandoff()
+        // Grant path: extend handoff + mark session so onResume cannot race-kill.
+        handoffGate.extend()
+        handoffGate.markServiceStarted()
         CaptionOverlayService.start(activity, resultCode, data)
         goToLauncherHome(activity)
     }
@@ -126,4 +136,3 @@ object LiveCaptionStarter {
         }
     }
 }
-

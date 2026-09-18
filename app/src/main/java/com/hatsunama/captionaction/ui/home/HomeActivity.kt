@@ -64,7 +64,12 @@ class HomeActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         dismissStartingDialog()
-        if (result.resultCode == RESULT_OK && result.data != null) {
+        // RESULT_OK is -1; StartHandoffGate treats any non-zero + data as granted.
+        if (com.hatsunama.captionaction.service.StartHandoffGate.isProjectionResultGranted(
+                result.resultCode,
+                result.data != null
+            )
+        ) {
             LiveCaptionStarter.startWithProjectionAndMinimize(this, result.resultCode, result.data!!)
         } else {
             // Device audio only — never start mic when screen share is declined.
@@ -87,12 +92,11 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Opening Home while captions run stops them — but not the resume that
-        // follows the MediaProjection result / Start handoff to launcher.
-        if (LiveCaptionStarter.shouldSuppressHomeAutoStop()) return
-        if (CaptionOverlayService.instance != null) {
-            CaptionOverlayService.stop(this)
-        }
+        // Opening Home while captions run stops them — but never during Start
+        // handoff / recently-started session (Seeker: goToLauncherHome → Home resume).
+        val running = CaptionOverlayService.instance != null
+        if (!LiveCaptionStarter.shouldAutoStopOnHomeResume(running)) return
+        CaptionOverlayService.stop(this)
     }
 
     override fun onDestroy() {
