@@ -76,18 +76,48 @@ class AudioCapture(private val context: Context) {
             )
             return false
         }
+        // API contract: only MEDIA|GAME|UNKNOWN are capturable. Extra matchers
+        // (VOICE_*/ASSIST*) are not capturable and have been implicated in OEM
+        // AudioRecord STATE_UNINITIALIZED after Allow (Seeker hardInit evidence).
+        val ok = buildAndStartPlayback(
+            projection,
+            usages = intArrayOf(
+                AudioAttributes.USAGE_MEDIA,
+                AudioAttributes.USAGE_GAME,
+                AudioAttributes.USAGE_UNKNOWN
+            ),
+            attemptLabel = "capturableUsages"
+        )
+        if (ok) return true
+        Log.e(
+            CA_TAG,
+            "EXCEPTION startPlaybackCapture capturableUsages failed — retry MEDIA-only"
+        )
+        return buildAndStartPlayback(
+            projection,
+            usages = intArrayOf(AudioAttributes.USAGE_MEDIA),
+            attemptLabel = "mediaOnly"
+        )
+    }
+
+    /**
+     * Build AudioPlaybackCaptureConfiguration + AudioRecord and startRecording.
+     * Returns false on hard init failure (never on silence). Always Log.e on fail.
+     */
+    private fun buildAndStartPlayback(
+        projection: MediaProjection,
+        usages: IntArray,
+        attemptLabel: String
+    ): Boolean {
         return try {
             val configBuilder = AudioPlaybackCaptureConfiguration.Builder(projection)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING)
-                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANT)
+            for (u in usages) configBuilder.addMatchingUsage(u)
             val config = configBuilder.build()
+            Log.i(
+                CA_TAG,
+                "playbackConfig built attempt=$attemptLabel usages=${usages.joinToString(",")} " +
+                    "projectionNull=false"
+            )
             val format = AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(SAMPLE_RATE)
@@ -98,104 +128,94 @@ class AudioCapture(private val context: Context) {
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             )
-            val ar = AudioRecord.Builder()
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(captureBufferBytes(minBuf))
-                .setAudioPlaybackCaptureConfig(config)
-                .build()
-            // Hard fail only on STATE_UNINITIALIZED — never on silence / zero energy.
-            if (ar.state != AudioRecord.STATE_INITIALIZED) {
+            if (minBuf == AudioRecord.ERROR || minBuf == AudioRecord.ERROR_BAD_VALUE) {
                 Log.e(
                     CA_TAG,
-                    "EXCEPTION startPlaybackCapture return-false reason=AudioRecord_STATE_UNINITIALIZED " +
-                        "audioRecordState=${ar.state} minBuf=$minBuf captureMode=none"
+                    "EXCEPTION buildAndStartPlayback return-false reason=minBuf_invalid " +
+                        "minBuf=$minBuf attempt=$attemptLabel captureMode=none"
+                )
+                return false
+            }
+            val bufBytes = captureBufferBytes(minBuf)
+            val builder = AudioRecord.Builder()
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(bufBytes)
+                .setAudioPlaybackCaptureConfig(config)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setContext(context)
+            }
+            val ar = builder.build()
+            val state = ar.state
+            // Hard fail only on STATE_UNINITIALIZED — never on silence / zero energy.
+            if (state != AudioRecord.STATE_INITIALIZED) {
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION buildAndStartPlayback return-false " +
+                        "reason=AudioRecord_STATE_UNINITIALIZED audioRecordState=$state " +
+                        "minBuf=$minBuf bufBytes=$bufBytes attempt=$attemptLabel captureMode=none"
                 )
                 ar.release()
                 return false
             }
             ar.startRecording()
             val recState = ar.recordingState
+            if (recState != AudioRecord.RECORDSTATE_RECORDING) {
+                // Log loudly but do not hard-fail solely on OEM recordingState quirks —
+                // STATE_INITIALIZED + startRecording without throw is the hard-init contract.
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION buildAndStartPlayback recordingState_unexpected " +
+                        "recordingState=$recState audioRecordState=$state attempt=$attemptLabel " +
+                        "(continuing; STATE_INITIALIZED)"
+                )
+            }
             // Do not probe first-read energy: idle silence is a valid live session.
             record = ar
             usingPlaybackCapture = true
             Log.i(
                 CA_TAG,
-                "startPlaybackCapture ok captureMode=playback audioRecordState=${ar.state} " +
-                    "recordingState=$recState usingPlaybackCapture=true"
+                "buildAndStartPlayback ok attempt=$attemptLabel captureMode=playback " +
+                    "audioRecordState=$state recordingState=$recState usingPlaybackCapture=true"
             )
             true
         } catch (e: SecurityException) {
-            Log.e(CA_TAG, "EXCEPTION startPlaybackCapture SecurityException captureMode=none", e)
+            Log.e(
+                CA_TAG,
+                "EXCEPTION buildAndStartPlayback SecurityException attempt=$attemptLabel " +
+                    "captureMode=none",
+                e
+            )
             false
         } catch (e: UnsupportedOperationException) {
             Log.e(
                 CA_TAG,
-                "EXCEPTION startPlaybackCapture UnsupportedOperationException captureMode=none",
+                "EXCEPTION buildAndStartPlayback UnsupportedOperationException " +
+                    "attempt=$attemptLabel captureMode=none",
                 e
             )
             false
         } catch (e: IllegalStateException) {
             Log.e(
                 CA_TAG,
-                "EXCEPTION startPlaybackCapture IllegalStateException captureMode=none",
+                "EXCEPTION buildAndStartPlayback IllegalStateException attempt=$attemptLabel " +
+                    "captureMode=none",
                 e
             )
             false
         } catch (e: IllegalArgumentException) {
             Log.e(
                 CA_TAG,
-                "EXCEPTION startPlaybackCapture IllegalArgumentException tryingCoreUsages",
+                "EXCEPTION buildAndStartPlayback IllegalArgumentException attempt=$attemptLabel " +
+                    "captureMode=none",
                 e
             )
-            tryStartPlaybackCore(projection)
-        }
-    }
-
-    private fun tryStartPlaybackCore(projection: MediaProjection): Boolean {
-        return try {
-            val config = AudioPlaybackCaptureConfiguration.Builder(projection)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .build()
-            val format = AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(SAMPLE_RATE)
-                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                .build()
-            val minBuf = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            val ar = AudioRecord.Builder()
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(captureBufferBytes(minBuf))
-                .setAudioPlaybackCaptureConfig(config)
-                .build()
-            if (ar.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(
-                    CA_TAG,
-                    "EXCEPTION tryStartPlaybackCore return-false reason=AudioRecord_STATE_UNINITIALIZED " +
-                        "audioRecordState=${ar.state} minBuf=$minBuf captureMode=none"
-                )
-                ar.release()
-                return false
-            }
-            ar.startRecording()
-            val recState = ar.recordingState
-            // Silence / nothing playing is OK — pump waits for device audio.
-            record = ar
-            usingPlaybackCapture = true
-            Log.i(
-                CA_TAG,
-                "tryStartPlaybackCore ok captureMode=playback audioRecordState=${ar.state} " +
-                    "recordingState=$recState usingPlaybackCapture=true"
-            )
-            true
+            false
         } catch (e: Exception) {
-            Log.e(CA_TAG, "EXCEPTION tryStartPlaybackCore catch captureMode=none", e)
+            Log.e(
+                CA_TAG,
+                "EXCEPTION buildAndStartPlayback catch attempt=$attemptLabel captureMode=none",
+                e
+            )
             false
         }
     }
