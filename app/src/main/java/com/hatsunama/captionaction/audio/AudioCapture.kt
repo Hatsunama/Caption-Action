@@ -89,17 +89,21 @@ class AudioCapture(private val context: Context) {
                 .setBufferSizeInBytes(captureBufferBytes(minBuf))
                 .setAudioPlaybackCaptureConfig(config)
                 .build()
+            // Hard fail only on STATE_UNINITIALIZED — never on silence / zero energy.
             if (ar.state != AudioRecord.STATE_INITIALIZED) {
                 ar.release()
                 return false
             }
             ar.startRecording()
+            // Do not probe first-read energy: idle silence is a valid live session.
             record = ar
             usingPlaybackCapture = true
             true
         } catch (_: SecurityException) {
             false
         } catch (_: UnsupportedOperationException) {
+            false
+        } catch (_: IllegalStateException) {
             false
         } catch (_: IllegalArgumentException) {
             tryStartPlaybackCore(projection)
@@ -134,6 +138,7 @@ class AudioCapture(private val context: Context) {
                 return false
             }
             ar.startRecording()
+            // Silence / nothing playing is OK — pump waits for device audio.
             record = ar
             usingPlaybackCapture = true
             true

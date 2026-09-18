@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.7-projection-fresh** — fresh MediaProjection every Start (no stale grant reuse); live prechecks before share UI; Seeker Start handoff (0.3.6) retained.
+Current source: **0.3.8-silent-ok** — silence after Allow must keep overlay on Home (Listening…); keep-alive VirtualDisplay; 0.3.7 fresh projection + 0.3.6 handoff retained.
 
 ## Preferred: promoted release installer
 
@@ -43,7 +43,7 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 1. Open **Caption Action** — single **Home** screen (languages, captions save, overlay font, status)
 2. Tap **Live Captions** (Fast/SenseVoice) or **Quality Captions** (Balanced·Accurate whisper.cpp) — separate products on Home
 3. Download if needed → one-at-a-time permission walkthrough if required → return to Home → Start again
-4. On Android 10+: MediaProjection prompt; **allow** → playback captions + minimize (session must **stay up** — not bounce to Home main). **Decline** → clear dialog (“Allow screen sharing…”) on Home; **no** overlay, **no** mic. Playback fail after Allow → Toast “Could not capture device playback audio…” + Home
+4. On Android 10+: MediaProjection prompt; **allow** → overlay on launcher Home with Listening… (session must **stay up** even if nothing is playing — silence is OK). **Decline** → clear dialog (“Allow screen sharing…”) on Home; **no** overlay, **no** mic. Hard playback-init fail after Allow only → Toast “Could not capture device playback audio…” + Home (never for silence)
 5. Confirm overlay updates on real audio; **drag by grabbing the caption text** to move; resize via purple corner handle only; end with bottom ✕ or green stop-dot
 
 ## 4. Live session checks
