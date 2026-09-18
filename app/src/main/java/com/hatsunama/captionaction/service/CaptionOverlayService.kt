@@ -137,25 +137,71 @@ class CaptionOverlayService : Service() {
             // Start began failing after Allow on Seeker + Samsung (AudioRecord playback
             // capture still needs the microphone FGS type alongside mediaProjection).
             var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            val typeNames = mutableListOf("mediaProjection")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                typeNames += "microphone"
             }
             if (Build.VERSION.SDK_INT >= 34) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                typeNames += "specialUse"
             }
-            startForeground(NOTIF_ID, notification, type)
+            Log.i(
+                DIAG_TAG,
+                "startForeground fgsTypes=${typeNames.joinToString("|")} " +
+                    "typeBits=0x${Integer.toHexString(type)} api=${Build.VERSION.SDK_INT}"
+            )
+            try {
+                startForeground(NOTIF_ID, notification, type)
+            } catch (t: Exception) {
+                Log.e(
+                    DIAG_TAG,
+                    "EXCEPTION startForeground failed fgsTypes=${typeNames.joinToString("|")} " +
+                        "typeBits=0x${Integer.toHexString(type)}",
+                    t
+                )
+                throw t
+            }
         } else {
-            startForeground(NOTIF_ID, notification)
+            Log.i(DIAG_TAG, "startForeground legacy(no type) api=${Build.VERSION.SDK_INT}")
+            try {
+                startForeground(NOTIF_ID, notification)
+            } catch (t: Exception) {
+                Log.e(DIAG_TAG, "EXCEPTION startForeground legacy failed", t)
+                throw t
+            }
         }
     }
 
     private fun claimProjectionSync(resultCode: Int, data: Intent?): MediaProjection? {
-        if (!StartHandoffGate.isProjectionResultGranted(resultCode, data != null)) return null
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        if (!StartHandoffGate.isProjectionResultGranted(resultCode, data != null)) {
+            Log.e(
+                DIAG_TAG,
+                "EXCEPTION getMediaProjection return-null reason=not_granted " +
+                    "resultCode=$resultCode dataNull=${data == null} projectionNull=true"
+            )
+            return null
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Log.e(
+                DIAG_TAG,
+                "EXCEPTION getMediaProjection return-null reason=api_below_Q " +
+                    "api=${Build.VERSION.SDK_INT} projectionNull=true"
+            )
+            return null
+        }
         return try {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             // Single-use token from this Start's createScreenCaptureIntent result only.
-            val projection = mpm.getMediaProjection(resultCode, data!!) ?: return null
+            val projection = mpm.getMediaProjection(resultCode, data!!)
+            if (projection == null) {
+                Log.e(
+                    DIAG_TAG,
+                    "EXCEPTION getMediaProjection return-null reason=MediaProjectionManager_null " +
+                        "resultCode=$resultCode projectionNull=true"
+                )
+                return null
+            }
             val cb = object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.w(TAG, "MediaProjection stopped by system")
@@ -170,9 +216,13 @@ class CaptionOverlayService : Service() {
             projection.registerCallback(cb, Handler(Looper.getMainLooper()))
             projectionCallback = cb
             mediaProjection = projection
+            Log.i(
+                DIAG_TAG,
+                "getMediaProjection ok projectionNull=false resultCode=$resultCode"
+            )
             projection
         } catch (t: Exception) {
-            Log.e(TAG, "claimProjection failed", t)
+            Log.e(DIAG_TAG, "EXCEPTION getMediaProjection catch claimProjection failed", t)
             null
         }
     }
@@ -181,6 +231,12 @@ class CaptionOverlayService : Service() {
         val app = application as CaptionActionApp
         val settings = app.settings.current()
         fontIndex = settings.fontIndex
+
+        Log.i(
+            DIAG_TAG,
+            "beginSession enter projectionNull=${projection == null} " +
+                "wantedProjection=$wantedProjection api=${Build.VERSION.SDK_INT}"
+        )
 
         // Device audio only — never mic. Fail before overlay if capture unavailable.
         if (projection == null) {
@@ -196,9 +252,11 @@ class CaptionOverlayService : Service() {
                     getString(R.string.error_projection_claim_failed)
                 else -> getString(R.string.error_projection_required)
             }
-            Log.w(
+            Log.e(
                 DIAG_TAG,
-                "captureMode=none wantedProjection=$wantedProjection failKind=$kind api=${Build.VERSION.SDK_INT}"
+                "EXCEPTION beginSession return-false reason=projection_null " +
+                    "projectionNull=true keepAliveCreated=false captureMode=none " +
+                    "wantedProjection=$wantedProjection failKind=$kind api=${Build.VERSION.SDK_INT}"
             )
             failSessionReturnHome(msg)
             return
@@ -207,9 +265,12 @@ class CaptionOverlayService : Service() {
         // 0.3.8 hard-failed Start when keep-alive returned false (error_capture after Allow).
         // Restore 0.3.6 path: only hard playback-capture init fails Start (ProjectionCaptureStartGate).
         val keepAliveFailed = !ensureProjectionKeepAliveDisplay(projection)
-        if (keepAliveFailed) {
-            Log.w(DIAG_TAG, "keepAliveDisplayFailed=true continuingCaptureInit=true")
-        }
+        val keepAliveCreated = !keepAliveFailed
+        Log.i(
+            DIAG_TAG,
+            "keepAlive created=$keepAliveCreated keepAliveFailed=$keepAliveFailed " +
+                "continuingCaptureInit=true"
+        )
         val started = audioCapture.startPlaybackCapture(projection)
         // Hard init only — silence / zero energy must not fail Start (PlaybackCaptureStartGate).
         val hardFail = !started
@@ -222,14 +283,22 @@ class CaptionOverlayService : Service() {
                 rms = 0f
             )
         ) {
-            Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true hardInit=true keepAliveFailed=$keepAliveFailed")
+            Log.e(
+                DIAG_TAG,
+                "EXCEPTION beginSession return-false reason=playbackCaptureFailed " +
+                    "hardInit=true keepAliveCreated=$keepAliveCreated keepAliveFailed=$keepAliveFailed " +
+                    "projectionNull=false captureMode=none " +
+                    "usingPlaybackCapture=${audioCapture.usingPlaybackCapture}"
+            )
             // Already Allowed — real capture failure (not decline / not "allow sharing" / not silence / not keep-alive).
             failSessionReturnHome(getString(R.string.error_capture))
             return
         }
         Log.i(
             DIAG_TAG,
-            "captureMode=playback usingPlaybackCapture=${audioCapture.usingPlaybackCapture} silentOk=true"
+            "beginSession ok captureMode=playback keepAliveCreated=$keepAliveCreated " +
+                "projectionNull=false usingPlaybackCapture=${audioCapture.usingPlaybackCapture} " +
+                "silentOk=true"
         )
 
         // Existing product path: overlay on launcher Home, Listening… awaiting device audio.
@@ -921,7 +990,10 @@ class CaptionOverlayService : Service() {
      * (0.3.8 regression). Android 14+ prefers a display; silence is still fine.
      */
     private fun ensureProjectionKeepAliveDisplay(projection: MediaProjection): Boolean {
-        if (projectionVirtualDisplay != null) return true
+        if (projectionVirtualDisplay != null) {
+            Log.i(DIAG_TAG, "keepAlive created=true alreadyPresent=true")
+            return true
+        }
         return try {
             val density = resources.displayMetrics.densityDpi.coerceAtLeast(1)
             val reader = ImageReader.newInstance(2, 2, PixelFormat.RGBA_8888, 2)
@@ -936,14 +1008,27 @@ class CaptionOverlayService : Service() {
                 null
             )
             if (display == null) {
+                Log.e(
+                    DIAG_TAG,
+                    "EXCEPTION ensureProjectionKeepAliveDisplay return-false " +
+                        "reason=createVirtualDisplay_null keepAliveCreated=false density=$density"
+                )
                 reader.close()
                 return false
             }
             projectionImageReader = reader
             projectionVirtualDisplay = display
+            Log.i(
+                DIAG_TAG,
+                "keepAlive created=true VirtualDisplay=ok density=$density"
+            )
             true
         } catch (t: Exception) {
-            Log.e(TAG, "ensureProjectionKeepAliveDisplay failed", t)
+            Log.e(
+                DIAG_TAG,
+                "EXCEPTION ensureProjectionKeepAliveDisplay catch keepAliveCreated=false",
+                t
+            )
             false
         }
     }

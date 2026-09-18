@@ -60,8 +60,22 @@ class AudioCapture(private val context: Context) {
 
     fun startPlaybackCapture(projection: MediaProjection): Boolean {
         stopPumpAndRecord()
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        if (!hasRecordAudioPermission()) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Log.e(
+                CA_TAG,
+                "EXCEPTION startPlaybackCapture return-false reason=api_below_Q " +
+                    "api=${Build.VERSION.SDK_INT} captureMode=none"
+            )
+            return false
+        }
+        if (!hasRecordAudioPermission()) {
+            Log.e(
+                CA_TAG,
+                "EXCEPTION startPlaybackCapture return-false reason=RECORD_AUDIO_denied " +
+                    "captureMode=none"
+            )
+            return false
+        }
         return try {
             val configBuilder = AudioPlaybackCaptureConfiguration.Builder(projection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
@@ -91,21 +105,48 @@ class AudioCapture(private val context: Context) {
                 .build()
             // Hard fail only on STATE_UNINITIALIZED — never on silence / zero energy.
             if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION startPlaybackCapture return-false reason=AudioRecord_STATE_UNINITIALIZED " +
+                        "audioRecordState=${ar.state} minBuf=$minBuf captureMode=none"
+                )
                 ar.release()
                 return false
             }
             ar.startRecording()
+            val recState = ar.recordingState
             // Do not probe first-read energy: idle silence is a valid live session.
             record = ar
             usingPlaybackCapture = true
+            Log.i(
+                CA_TAG,
+                "startPlaybackCapture ok captureMode=playback audioRecordState=${ar.state} " +
+                    "recordingState=$recState usingPlaybackCapture=true"
+            )
             true
-        } catch (_: SecurityException) {
+        } catch (e: SecurityException) {
+            Log.e(CA_TAG, "EXCEPTION startPlaybackCapture SecurityException captureMode=none", e)
             false
-        } catch (_: UnsupportedOperationException) {
+        } catch (e: UnsupportedOperationException) {
+            Log.e(
+                CA_TAG,
+                "EXCEPTION startPlaybackCapture UnsupportedOperationException captureMode=none",
+                e
+            )
             false
-        } catch (_: IllegalStateException) {
+        } catch (e: IllegalStateException) {
+            Log.e(
+                CA_TAG,
+                "EXCEPTION startPlaybackCapture IllegalStateException captureMode=none",
+                e
+            )
             false
-        } catch (_: IllegalArgumentException) {
+        } catch (e: IllegalArgumentException) {
+            Log.e(
+                CA_TAG,
+                "EXCEPTION startPlaybackCapture IllegalArgumentException tryingCoreUsages",
+                e
+            )
             tryStartPlaybackCore(projection)
         }
     }
@@ -134,15 +175,27 @@ class AudioCapture(private val context: Context) {
                 .setAudioPlaybackCaptureConfig(config)
                 .build()
             if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION tryStartPlaybackCore return-false reason=AudioRecord_STATE_UNINITIALIZED " +
+                        "audioRecordState=${ar.state} minBuf=$minBuf captureMode=none"
+                )
                 ar.release()
                 return false
             }
             ar.startRecording()
+            val recState = ar.recordingState
             // Silence / nothing playing is OK — pump waits for device audio.
             record = ar
             usingPlaybackCapture = true
+            Log.i(
+                CA_TAG,
+                "tryStartPlaybackCore ok captureMode=playback audioRecordState=${ar.state} " +
+                    "recordingState=$recState usingPlaybackCapture=true"
+            )
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(CA_TAG, "EXCEPTION tryStartPlaybackCore catch captureMode=none", e)
             false
         }
     }
@@ -335,6 +388,8 @@ class AudioCapture(private val context: Context) {
 
     companion object {
         private const val TAG = "AudioCapture"
+        /** Start-fail diagnostics — grep logcat for this tag. */
+        private const val CA_TAG = "CaptionAction"
         const val SAMPLE_RATE = 16_000
         private const val BYTES_PER_SAMPLE = 2
         private const val CAPTURE_SECONDS = 3
