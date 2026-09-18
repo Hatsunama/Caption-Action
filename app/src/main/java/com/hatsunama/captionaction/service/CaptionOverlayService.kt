@@ -238,21 +238,83 @@ class CaptionOverlayService : Service() {
 
     private suspend fun runAsrConsumer(app: CaptionActionApp, activeEngine: InferenceEngine) {
         var shownTranscribing = false
+        var lastOverruns = audioCapture.overrunCount()
+        var quietSinceMs = 0L
+        var lastCatchupStatusAt = 0L
+        var lastQuietStatusAt = 0L
         while (coroutineContext.isActive) {
-            val pcm = audioCapture.takeChunk() ?: break
-            if (!shownTranscribing) {
+            val overrunsBefore = audioCapture.overrunCount()
+            val depthBefore = audioCapture.queueDepth()
+            val pcm = audioCapture.drainToNewestWindow() ?: break
+            val pcmMs = pcm.size * 1000L / AudioCapture.SAMPLE_RATE
+            val overrunsNow = audioCapture.overrunCount()
+            val depthAfter = audioCapture.queueDepth()
+            val rms = audioCapture.lastRms()
+            val now = System.currentTimeMillis()
+
+            // Sustained near-zero RMS → honest "no signal" (wrong screen / mute mix).
+            val quietGate = if (audioCapture.usingPlaybackCapture) 2f else 40f
+            if (rms < quietGate) {
+                if (quietSinceMs == 0L) quietSinceMs = now
+            } else {
+                quietSinceMs = 0L
+            }
+            val quietSustained = quietSinceMs > 0L && (now - quietSinceMs) >= QUIET_STATUS_MS
+            val overrunsRising = overrunsNow > lastOverruns + 2 ||
+                (overrunsNow - overrunsBefore) > 0 ||
+                depthBefore >= 4
+
+            if (overrunsRising && now - lastCatchupStatusAt >= STATUS_THROTTLE_MS) {
+                lastCatchupStatusAt = now
+                withContext(Dispatchers.Main) {
+                    // Do not wipe last good caption — status/spinner only.
+                    setSessionStatus(getString(R.string.status_catching_up), loading = true)
+                }
+            } else if (quietSustained && !hasRealCaption && now - lastQuietStatusAt >= STATUS_THROTTLE_MS) {
+                lastQuietStatusAt = now
+                withContext(Dispatchers.Main) {
+                    setSessionStatus(getString(R.string.status_no_audio_signal), loading = true)
+                    updateCaption(getString(R.string.status_no_audio_signal), null)
+                }
+            } else if (!shownTranscribing && !hasRealCaption) {
                 shownTranscribing = true
                 withContext(Dispatchers.Main) {
-                    setSessionStatus(getString(R.string.transcribing), loading = true)
+                    setSessionStatus(getString(R.string.listening), loading = true)
                 }
             }
+
+            lastOverruns = overrunsNow
+
             val settingsNow = app.settings.current()
             activeEngine.setTargetLanguage(settingsNow.targetLanguage)
             val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
             activeEngine.setDualSubtitles(dualNow)
             activeEngine.setPlaybackCapture(audioCapture.usingPlaybackCapture)
+            if (overrunsRising) {
+                activeEngine.discardPendingAudio()
+            }
 
-            val raw = activeEngine.transcribe(pcm, AudioCapture.SAMPLE_RATE) ?: continue
+            val t0 = System.currentTimeMillis()
+            val raw = activeEngine.transcribe(pcm, AudioCapture.SAMPLE_RATE)
+            val inferMs = System.currentTimeMillis() - t0
+            val textPreview = raw?.text?.take(48)?.replace('\n', ' ') ?: ""
+            // Junk filter logs CaptionAction filtered=true separately; null here also means "not flushed yet".
+            Log.i(
+                DIAG_TAG,
+                "asr pcmMs=$pcmMs queueDepth=$depthBefore→$depthAfter " +
+                    "overruns=$overrunsNow(+${overrunsNow - overrunsBefore}) " +
+                    "rms=$rms inferMs=$inferMs hasCaption=${raw != null} textPreview=$textPreview"
+            )
+            if (raw == null) {
+                // Keep Listening until a non-junk caption arrives; do not set hasRealCaption.
+                if (!hasRealCaption && !quietSustained && !overrunsRising) {
+                    withContext(Dispatchers.Main) {
+                        setSessionStatus(getString(R.string.listening), loading = true)
+                        updateCaption(getString(R.string.listening), null)
+                    }
+                }
+                continue
+            }
             val seq = ++captionSeq
             hasRealCaption = true
             val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(raw, dualNow)
@@ -600,6 +662,9 @@ class CaptionOverlayService : Service() {
 
     companion object {
         private const val TAG = "CaptionOverlayService"
+        private const val DIAG_TAG = "CaptionAction"
+        private const val QUIET_STATUS_MS = 4_000L
+        private const val STATUS_THROTTLE_MS = 2_500L
         const val ACTION_START = "com.hatsunama.captionaction.START"
         const val ACTION_STOP = "com.hatsunama.captionaction.STOP"
         const val EXTRA_RESULT_CODE = "result_code"

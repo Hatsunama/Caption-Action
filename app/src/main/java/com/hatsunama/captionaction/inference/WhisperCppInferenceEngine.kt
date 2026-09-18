@@ -162,12 +162,18 @@ class WhisperCppInferenceEngine(
         val config = WhisperConfig(
             language = "auto",
             translate = translate,
-            threads = 2,
+            // Live keep-up: modest raise 2→4 so ASR finishes nearer real-time on mid phones.
+            threads = 4,
             maxSegmentLength = 0,
             printTimestamps = false
         )
         val result = Whisper.transcribe(m, wav.absolutePath, config)
-        return result.text.trim().takeIf { it.isNotEmpty() }
+        val raw = result.text.trim().takeIf { it.isNotEmpty() } ?: return null
+        return AsrJunkFilter.sanitizeOrNull(raw)
+    }
+
+    override fun discardPendingAudio() {
+        synchronized(lock) { pcmAccum.clear() }
     }
 
     override fun release() {
