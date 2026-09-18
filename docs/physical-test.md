@@ -82,6 +82,7 @@ adb logcat -s CaptionOverlayService:* AudioCapture:* WhisperCppEngine:* SherpaIn
 
 ## 7. Engines (current)
 
+- Wrong-script ASR must never stay as primary when target script differs (held until MT)
 - Fast → `SherpaInferenceEngine` (SenseVoice OfflineRecognizer), ~3–12 s accumulated windows
 - Balanced/Accurate → `WhisperCppInferenceEngine` (ggml via whisper-android AAR)
 - MT → `MlKitTranslationEngine` (ML Kit Translate + language-id when source unknown)

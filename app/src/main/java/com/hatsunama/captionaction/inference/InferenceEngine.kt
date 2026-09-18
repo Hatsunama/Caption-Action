@@ -46,8 +46,8 @@ interface InferenceEngine {
      */
     fun setKeepUpBehind(behind: Boolean) {}
 
-    /** Preferred PCM window for drain. Live ~2.5s; Quality ~1.5s (shorter when behind). */
-    fun preferredWindowSamples(): Int = 40_000
+    /** Preferred PCM window for drain. Live ~3.0s; Quality ~1.5s (shorter when behind). */
+    fun preferredWindowSamples(): Int = 48_000
 
     /** Drop partial ASR accumulator so a newest-window catch-up call is not mixed with stale PCM. */
     fun discardPendingAudio() {}

@@ -546,6 +546,7 @@ class CaptionOverlayService : Service() {
                 continue
             }
             // Near-duplicate within a short window (SenseVoice filler drift / echo).
+            // Phrase extensions are NOT near-dup (AsrJunkFilter) — keep fuller text.
             if (norm.isNotEmpty() &&
                 lastPublishedNorm.isNotEmpty() &&
                 publishNow - lastPublishedAtMs <= NEAR_DUP_WINDOW_MS &&
@@ -554,9 +555,22 @@ class CaptionOverlayService : Service() {
                 Log.i(DIAG_TAG, "suppressed near-dup caption norm=${norm.take(48)}")
                 continue
             }
-            // Reject crumbs before publish/MT — short SenseVoice fragments → nonsense EN.
-            if (!AsrJunkFilter.hasEnoughContentForMt(primaryRaw)) {
-                Log.i(DIAG_TAG, "suppressed short-for-mt caption norm=${norm.take(48)}")
+            val targetLang = settingsNow.targetLanguage
+            val holdWrongScript = AsrJunkFilter.shouldHoldSourceOffOverlay(primaryRaw, targetLang)
+            val enoughForMt = AsrJunkFilter.hasEnoughContentForMt(primaryRaw)
+            // Language-agnostic: never paint wrong-script crumbs; same-script short speech may publish.
+            if (!enoughForMt) {
+                if (holdWrongScript) {
+                    Log.i(DIAG_TAG, "held short wrong-script caption norm=${norm.take(48)}")
+                    continue
+                }
+                Log.i(DIAG_TAG, "publish short same-script without MT norm=${norm.take(48)}")
+                lastPublishedNorm = norm
+                lastPublishedAtMs = publishNow
+                val seqShort = ++captionSeq
+                hasRealCaption = true
+                withContext(Dispatchers.Main) { setCaptionDimmed(false) }
+                publishCaption(raw, dualNow, seqShort, appendSubtitle = true)
                 continue
             }
             lastPublishedNorm = norm
@@ -566,7 +580,8 @@ class CaptionOverlayService : Service() {
             withContext(Dispatchers.Main) { setCaptionDimmed(false) }
 
             val mtEngine = translation
-            val needsMt = mtEngine != null && likelyNeedsMt(raw, settingsNow)
+            // Force MT when scripts disagree even if ASR tag == target (mis-tag).
+            val needsMt = mtEngine != null && (likelyNeedsMt(raw, settingsNow) || holdWrongScript)
             if (!needsMt || mtEngine == null) {
                 publishCaption(raw, dualNow, seq, appendSubtitle = true)
                 continue
@@ -582,7 +597,9 @@ class CaptionOverlayService : Service() {
                     raw
                 }
             }
-            val quick = withTimeoutOrNull(MT_PREFER_WAIT_MS) { deferred.await() }
+            // Slightly longer prefer-wait when holding wrong-script source off the overlay.
+            val preferWait = if (holdWrongScript) MT_PREFER_WAIT_WRONG_SCRIPT_MS else MT_PREFER_WAIT_MS
+            val quick = withTimeoutOrNull(preferWait) { deferred.await() }
             if (seq != captionSeq) {
                 Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (superseded during wait)")
                 continue
@@ -593,9 +610,16 @@ class CaptionOverlayService : Service() {
                     DIAG_TAG,
                     "mt applied-quick seq=$seq primary=${quick.translatedText.orEmpty().take(48)}"
                 )
-                // Deferred already complete; no follow-up job.
+            } else if (holdWrongScript) {
+                // Language-agnostic: NEVER flash wrong-script ASR while MT pending.
+                Log.i(DIAG_TAG, "holding wrong-script source pending MT seq=$seq")
+                val job = scope.launch(Dispatchers.IO) {
+                    val policy = quick ?: deferred.await()
+                    applyMtResult(policy, dualNow, seq, allowSourceAppend = false)
+                }
+                trackMtJob(job)
             } else {
-                // Timeout or no translation yet: paint source, then swap when MT arrives.
+                // Same-script timeout: paint source, then swap when MT arrives.
                 publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false)
                 val job = scope.launch(Dispatchers.IO) {
                     val policy = quick ?: deferred.await()
@@ -613,6 +637,8 @@ class CaptionOverlayService : Service() {
         if (!raw.translatedText.isNullOrBlank()) return false
         val target = MlKitTranslationEngine.normalizeLangStatic(settings.targetLanguage)
         if (target.isEmpty()) return false
+        // Language-agnostic: wrong-script ASR vs target always needs MT.
+        if (AsrJunkFilter.shouldHoldSourceOffOverlay(raw.text, target)) return true
         val detected = MlKitTranslationEngine.normalizeLangStatic(raw.language)
         val passthrough = settings.passthroughLanguages
             .map { MlKitTranslationEngine.normalizeLangStatic(it) }
@@ -1123,6 +1149,8 @@ class CaptionOverlayService : Service() {
         private const val STATUS_THROTTLE_MS = 2_500L
         /** Prefer waiting this long for MT before painting source (EN/target primary). */
         private const val MT_PREFER_WAIT_MS = 850L
+        /** Extra prefer-wait when holding wrong-script ASR off overlay (any lang → any target). */
+        private const val MT_PREFER_WAIT_WRONG_SCRIPT_MS = 1_400L
         /** Auto-grow overlay up to this fraction of screen height (drag-safe; no scroll). */
         private const val OVERLAY_MAX_HEIGHT_FRACTION = 0.48f
         /** Whisper/Quality long infer → show catching-up, not no-audio. */

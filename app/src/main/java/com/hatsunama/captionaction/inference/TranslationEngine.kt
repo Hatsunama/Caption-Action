@@ -128,7 +128,11 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
             if (detected.isNotEmpty() && detected in passthrough) {
                 return@withContext result.copy(translatedText = null)
             }
-            if (detected.isNotEmpty() && detected == target) {
+            // Same ASR tag as target still needs MT when glyphs are a different script
+            // (language-agnostic: mis-tagged ASR must not skip MT and flash wrong script).
+            if (detected.isNotEmpty() && detected == target &&
+                !AsrJunkFilter.shouldHoldSourceOffOverlay(result.text, target)
+            ) {
                 return@withContext result.copy(translatedText = null)
             }
             if (target.isEmpty()) {
@@ -142,11 +146,21 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 return@withContext result.copy(translatedText = existing)
             }
 
-            // Prefer ASR lang; if auto/blank, script-guess (CJK→zh) before ML Kit language-id.
-            // Wrong source lang is a common cause of nonsense EN crumbs on Live ZH→EN.
+            // Language-agnostic source resolve:
+            // 1) Dominant script on ASR text beats contradictory / target-identical tags
+            //    (SenseVoice auto often mis-tags; wrong source ⇒ garbage MT).
+            // 2) Else trust ASR tag when it differs from target.
+            // 3) Else ML Kit language-id.
+            val script = guessScriptLang(result.text)
             val sourceCode = when {
+                script != null && (
+                    detected.isEmpty() ||
+                        detected == target ||
+                        (AsrJunkFilter.scriptFamilyForLang(detected) == AsrJunkFilter.ScriptFamily.LATIN &&
+                            AsrJunkFilter.scriptFamilyOf(result.text) == AsrJunkFilter.ScriptFamily.CJK)
+                    ) -> script
                 detected.isNotEmpty() && detected != target -> detected
-                else -> guessScriptLang(result.text)
+                else -> script
                     ?: identifyLanguage(result.text)
                     ?: ""
             }

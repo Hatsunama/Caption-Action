@@ -26,7 +26,7 @@ import kotlin.coroutines.coroutineContext
  * Continuous PCM capture. A dedicated pump reads AudioRecord into a bounded queue;
  * ASR consumers pull windows and must never block [AudioRecord.read].
  *
- * [drainToNewestWindow] accumulates a full engine window (Live ~2.25 s / Quality ~1.5 s)
+ * [drainToNewestWindow] accumulates a full engine window (Live ~3.0 s / Quality ~1.5 s)
  * before each ASR call (waiting on the queue while the pump is active). When behind, it
  * drops intermediate chunks and returns a contiguous newest window.
  */
@@ -271,7 +271,7 @@ class AudioCapture(private val context: Context) {
     }
 
     /**
-     * Pull a full ASR window (~[targetSamples] PCM; Live ~2.25 s / Quality ~1.5 s). Accumulates from
+     * Pull a full ASR window (~[targetSamples] PCM; Live ~3.0 s / Quality ~1.5 s). Accumulates from
      * the queue, waiting (poll with timeout) while the pump is still capturing, so live
      * windows are never a single READ_SAMPLES crumb. Only returns a short/partial window when capture
      * has ended and the queue is empty (final flush). When behind (depth ≥ threshold or
@@ -428,8 +428,8 @@ class AudioCapture(private val context: Context) {
         const val QUALITY_WINDOW_SAMPLES = 24_000
         /** Quality when behind (~1.125 s) — still ≥ native 1000 ms min. */
         const val QUALITY_WINDOW_BEHIND_SAMPLES = 18_000
-        /** Live / Sherpa ~2.5 s — phrase-level SenseVoice (not 1.0–2.25 s crumbs). */
-        const val LIVE_WINDOW_SAMPLES = 40_000
+        /** Live / Sherpa ~3.0 s — phrase-level SenseVoice (not 1.0–2.25 s crumbs). */
+        const val LIVE_WINDOW_SAMPLES = 48_000
         /** If drained chunk count ≥ this, skip intermediate audio. */
         private const val BACKLOG_CHUNK_THRESHOLD = 4
     }

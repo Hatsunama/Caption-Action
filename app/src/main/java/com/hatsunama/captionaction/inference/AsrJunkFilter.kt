@@ -145,12 +145,26 @@ object AsrJunkFilter {
 
         val normalized = normalize(strippedBrackets)
         if (normalized.isEmpty()) return true
-        // Ultra-short crumbs (≤2 chars after normalize) — SenseVoice 1s fragments / lone particles.
+        // Ultra-short crumbs — lone Latin particles / single CJK glyphs (exact junk covers 的/了/…).
+        // Keep 2-char CJK words (e.g. 你好) — language-agnostic; do not drop real speech.
         val compactNoSpace = normalized.replace(Regex("""\s+"""), "")
-        if (compactNoSpace.length <= 2) return true
-        // Require a bit of real content (non-punctuation) before publish/MT.
+        val cjkInCompact = compactNoSpace.count { ch ->
+            Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
+                (ch.code in 0x3040..0x30FF) ||
+                (ch.code in 0xAC00..0xD7AF)
+        }
+        val mostlyCjkCrumb = compactNoSpace.isNotEmpty() && cjkInCompact * 2 >= compactNoSpace.length
+        if (mostlyCjkCrumb) {
+            if (compactNoSpace.length <= 1) return true
+        } else if (compactNoSpace.length <= 2) {
+            return true
+        }
         val contentLen = strippedBrackets.replace(Regex("""[\s\p{Punct}]+"""), "").length
-        if (contentLen <= 2) return true
+        if (mostlyCjkCrumb) {
+            if (contentLen <= 1) return true
+        } else if (contentLen <= 2) {
+            return true
+        }
         if (normalized in EXACT_JUNK) return true
 
         // Common whisper silence / blank markers (with or without punctuation)
@@ -192,10 +206,9 @@ object AsrJunkFilter {
             .trim()
 
     /**
-     * Enough real phrase content to bother with publish / ML Kit MT.
-     * Keeps latency win: crumbs never hit MT (nonsense EN). Does **not** expand
-     * [EXACT_JUNK] — real short speech like multi-word lines still passes.
-     * CJK: ≥4 Han/content chars. Latin: ≥2 tokens or ≥8 letters.
+     * Enough real phrase content to bother with ML Kit MT.
+     * Language-agnostic: crumbs skip MT (nonsense target), real short speech still passes.
+     * CJK family: ≥2 content chars. Latin/other: ≥2 tokens or ≥6 letters.
      */
     fun hasEnoughContentForMt(text: String): Boolean {
         val t = text.trim()
@@ -207,17 +220,12 @@ object AsrJunkFilter {
         val normalized = normalize(stripped)
         if (normalized.isEmpty()) return false
         val compact = normalized.replace(Regex("""\s+"""), "")
-        val cjk = compact.count { ch ->
-            Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
-                (ch.code in 0x3040..0x30FF) || // Hiragana/Katakana
-                (ch.code in 0xAC00..0xD7AF)    // Hangul syllables
-        }
-        val mostlyCjk = compact.isNotEmpty() && cjk * 2 >= compact.length
-        return if (mostlyCjk) {
-            compact.length >= 4
-        } else {
-            val tokens = normalized.split(' ').filter { it.isNotEmpty() }
-            tokens.size >= 2 || compact.length >= 8
+        return when (scriptFamilyOf(t)) {
+            ScriptFamily.CJK -> compact.length >= 2
+            else -> {
+                val tokens = normalized.split(' ').filter { it.isNotEmpty() }
+                tokens.size >= 2 || compact.length >= 6
+            }
         }
     }
 
@@ -230,14 +238,82 @@ object AsrJunkFilter {
         val nb = normalize(b)
         if (na.isEmpty() || nb.isEmpty()) return false
         if (na == nb) return true
-        // Short containment: "yeah" vs "yeah yeah" already junk; for real text,
-        // suppress if one is a prefix/suffix of the other and both are short.
+        val shorter = if (na.length <= nb.length) na else nb
+        val longer = if (na.length <= nb.length) nb else na
+        // Phrase extension (partial window → fuller phrase): NOT a duplicate — keep fuller text.
+        // Language-agnostic fix for "parts and pieces" / dropped words across Live windows.
+        if (longer.length >= shorter.length + 6 &&
+            (longer.startsWith(shorter) || longer.endsWith(shorter))
+        ) {
+            return false
+        }
+        // Short containment / filler drift: suppress only when lengths are similar.
         if (na.length <= 48 && nb.length <= 48) {
-            if (na.startsWith(nb) || nb.startsWith(na)) return true
-            if (na.endsWith(nb) || nb.endsWith(na)) return true
+            val lenRatio = longer.length.toDouble() / shorter.length.coerceAtLeast(1)
+            if (lenRatio <= 1.25) {
+                if (na.startsWith(nb) || nb.startsWith(na)) return true
+                if (na.endsWith(nb) || nb.endsWith(na)) return true
+            }
         }
         return false
     }
+
+    /** Dominant writing system of [text] — used for language-agnostic MT/display gates. */
+    enum class ScriptFamily { CJK, LATIN, OTHER, EMPTY }
+
+    fun scriptFamilyOf(text: String): ScriptFamily {
+        var cjk = 0
+        var latin = 0
+        var other = 0
+        for (ch in text) {
+            when {
+                Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
+                    ch.code in 0x3040..0x30FF ||
+                    ch.code in 0xAC00..0xD7AF -> cjk++
+                ch in 'A'..'Z' || ch in 'a'..'z' ||
+                    Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.LATIN -> latin++
+                ch.isLetter() -> other++
+            }
+        }
+        val letters = cjk + latin + other
+        if (letters == 0) return ScriptFamily.EMPTY
+        return when {
+            cjk * 2 >= letters -> ScriptFamily.CJK
+            latin * 2 >= letters -> ScriptFamily.LATIN
+            other * 2 >= letters -> ScriptFamily.OTHER
+            cjk >= latin && cjk >= other -> ScriptFamily.CJK
+            latin >= other -> ScriptFamily.LATIN
+            else -> ScriptFamily.OTHER
+        }
+    }
+
+    /** Expected script family for a BCP-47-ish language code (language-agnostic table). */
+    fun scriptFamilyForLang(code: String): ScriptFamily {
+        val n = code.trim().lowercase()
+            .removePrefix("<|").removeSuffix("|>")
+            .substringBefore('-').substringBefore('_')
+        if (n.isEmpty() || n == "auto" || n == "und" || n == "unknown") return ScriptFamily.EMPTY
+        return when (n) {
+            "zh", "ja", "ko", "yue", "cmn", "wuu", "nan" -> ScriptFamily.CJK
+            "ar", "he", "fa", "ur", "yi" -> ScriptFamily.OTHER
+            "ru", "uk", "bg", "sr", "mk", "be" -> ScriptFamily.OTHER
+            "th", "hi", "bn", "ta", "te", "ml", "kn", "gu", "pa", "my", "km", "lo" -> ScriptFamily.OTHER
+            "el", "ka", "hy", "am" -> ScriptFamily.OTHER
+            else -> ScriptFamily.LATIN // en/es/fr/de/pt/it/nl/… and unknown Latin-script codes
+        }
+    }
+
+    /**
+     * True when painting ASR [sourceText] as primary would show the wrong script for [targetLang].
+     * Language-agnostic: any source/target script mismatch must wait for MT (never flash leftovers).
+     */
+    fun shouldHoldSourceOffOverlay(sourceText: String, targetLang: String): Boolean {
+        val src = scriptFamilyOf(sourceText)
+        val tgt = scriptFamilyForLang(targetLang)
+        if (src == ScriptFamily.EMPTY || tgt == ScriptFamily.EMPTY) return false
+        return src != tgt
+    }
+
 
     private fun isFillerOnlyLoop(normalized: String): Boolean {
         val tokens = normalized.split(' ').filter { it.isNotEmpty() }
