@@ -10,6 +10,6 @@ data class AppSettings(
     val overlayX: Int = 48,
     val overlayY: Int = 200,
     val overlayWidth: Int = 900,
-    val overlayHeight: Int = 280,
+    val overlayHeight: Int = 380,
     val fontIndex: Int = 0
 )

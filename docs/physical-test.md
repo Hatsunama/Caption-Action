@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.4-device-audio** — device audio only (no mic fallback); decline screen share → dialog + Home; smaller wrap-friendly overlay text; Live EN MT + Quality keep-up retained.
+Current source: **0.3.5-live-readability** — Live ZH→EN phrase MT (2.5 s windows, content gate, script→zh for MT); taller auto-grow overlay (~10–16 sp, 32 lines); device audio only (0.3.4) retained.
 
 ## Preferred: promoted release installer
 

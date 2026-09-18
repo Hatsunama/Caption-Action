@@ -44,7 +44,7 @@ class SettingsRepository(private val context: Context) {
             overlayX = p[Keys.overlayX] ?: 48,
             overlayY = p[Keys.overlayY] ?: 200,
             overlayWidth = p[Keys.overlayW] ?: 900,
-            overlayHeight = p[Keys.overlayH] ?: 280,
+            overlayHeight = p[Keys.overlayH] ?: 380,
             fontIndex = p[Keys.fontIndex] ?: 0
         )
     }

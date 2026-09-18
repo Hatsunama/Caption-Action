@@ -390,6 +390,11 @@ class CaptionOverlayService : Service() {
                 Log.i(DIAG_TAG, "suppressed near-dup caption norm=${norm.take(48)}")
                 continue
             }
+            // Reject crumbs before publish/MT — short SenseVoice fragments → nonsense EN.
+            if (!AsrJunkFilter.hasEnoughContentForMt(primaryRaw)) {
+                Log.i(DIAG_TAG, "suppressed short-for-mt caption norm=${norm.take(48)}")
+                continue
+            }
             lastPublishedNorm = norm
             lastPublishedAtMs = publishNow
             val seq = ++captionSeq
@@ -553,7 +558,7 @@ class CaptionOverlayService : Service() {
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_caption, null)
         val density = resources.displayMetrics.density
         val minW = (160 * density).toInt()
-        val minH = (140 * density).toInt()
+        val minH = (180 * density).toInt()
         val params = WindowManager.LayoutParams(
             max(w, minW),
             max(h, minH),
@@ -648,7 +653,8 @@ class CaptionOverlayService : Service() {
                             val screenW = resources.displayMetrics.widthPixels
                             val screenH = resources.displayMetrics.heightPixels
                             params.width = min(screenW, max(minW, params.width + dx))
-                            params.height = min(screenH / 2, max(minH, params.height + dy))
+                            val maxH = (screenH * OVERLAY_MAX_HEIGHT_FRACTION).toInt()
+                            params.height = min(maxH, max(minH, params.height + dy))
                             applyFont(view, params.height)
                         }
                         else -> {}
@@ -724,16 +730,16 @@ class CaptionOverlayService : Service() {
         primary.typeface = tf
         secondary.typeface = tf
         val density = resources.displayMetrics.density
-        // Smaller type so full captions wrap and stay readable (prefer wrap over scroll).
-        // Do not use ScrollingMovementMethod — it steals drag touches.
-        val sp = ((heightPx / density) / 14f).coerceIn(11f, 22f)
+        // Prefer smaller type + wrap so full captions fit (no ScrollingMovementMethod — drag).
+        // Flatter height→sp scale so auto-grow adds lines, not giant type.
+        val sp = ((heightPx / density) / 22f).coerceIn(10f, 16f)
         primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
         secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.85f)
         // Primary must never ellipsize — full caption wraps inside the bubble.
-        primary.maxLines = 24
+        primary.maxLines = 32
         primary.ellipsize = null
         primary.setHorizontallyScrolling(false)
-        secondary.maxLines = 12
+        secondary.maxLines = 16
         secondary.ellipsize = null
     }
 
@@ -762,7 +768,7 @@ class CaptionOverlayService : Service() {
         val primaryView = view.findViewById<TextView>(R.id.captionPrimary)
         primaryView.text = primary
         // Do not use ScrollingMovementMethod — it consumes touch and blocks drag.
-        // Full sentences wrap (no ellipsize); user resizes the bubble if needed.
+        // Full sentences wrap (no ellipsize); bubble auto-grows up to screen cap.
         primaryView.movementMethod = null
         primaryView.setHorizontallyScrolling(false)
         primaryView.ellipsize = null
@@ -774,6 +780,38 @@ class CaptionOverlayService : Service() {
             sec.text = secondary
             sec.movementMethod = null
             sec.ellipsize = null
+        }
+        autoGrowOverlayToContent(view)
+    }
+
+    /**
+     * Grow overlay height to fit wrapped caption text, capped at ~48% screen.
+     * Only grows (never shrinks) so user drag-resize down sticks. Drag preserved.
+     */
+    private fun autoGrowOverlayToContent(view: View) {
+        if (layoutParams == null) return
+        // Skip placeholder "Listening…" style short status lines.
+        val primaryView = view.findViewById<TextView>(R.id.captionPrimary) ?: return
+        val text = primaryView.text?.toString().orEmpty()
+        if (text.length < 8) return
+        view.post {
+            val p = layoutParams ?: return@post
+            val density = resources.displayMetrics.density
+            val screenH = resources.displayMetrics.heightPixels
+            val maxH = (screenH * OVERLAY_MAX_HEIGHT_FRACTION).toInt()
+            val minH = (180 * density).toInt()
+            val widthSpec = View.MeasureSpec.makeMeasureSpec(p.width, View.MeasureSpec.EXACTLY)
+            val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            view.measure(widthSpec, heightSpec)
+            val needed = view.measuredHeight.coerceIn(minH, maxH)
+            if (needed > p.height + (8 * density).toInt()) {
+                p.height = needed
+                applyFont(view, p.height)
+                try {
+                    windowManager.updateViewLayout(view, p)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -885,7 +923,9 @@ class CaptionOverlayService : Service() {
         private const val QUIET_STATUS_MS = 4_000L
         private const val STATUS_THROTTLE_MS = 2_500L
         /** Prefer waiting this long for MT before painting source (EN/target primary). */
-        private const val MT_PREFER_WAIT_MS = 600L
+        private const val MT_PREFER_WAIT_MS = 850L
+        /** Auto-grow overlay up to this fraction of screen height (drag-safe; no scroll). */
+        private const val OVERLAY_MAX_HEIGHT_FRACTION = 0.48f
         /** Whisper/Quality long infer → show catching-up, not no-audio. */
         private const val LONG_INFER_STATUS_MS = 3_000L
         /** Suppress near-duplicate captions inside this window (ms). */
