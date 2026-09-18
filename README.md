@@ -6,7 +6,13 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.3-accuracy-keepup** (versionCode 26)
+Current source version: **0.3.4-device-audio** (versionCode 27)
+
+## 0.3.4-device-audio
+
+- **Device audio only:** Live/Quality never fall back to the microphone. Declining screen share or failing AudioPlaybackCapture ends the start path with a clear dialog/Toast (“Allow screen sharing to caption device audio”) and returns to Home — no overlay, no mic captions. Pre-Android 10 fails with “requires Android 10+ for device audio”.
+- **Logs:** successful live sessions log `captureMode=playback` / `usingPlaybackCapture=true` (never `mic` for product sessions). `RECORD_AUDIO` remains required by Android for playback capture.
+- **Overlay readability:** smaller default caption type (~11–22 sp scaled by bubble height), taller default overlay (280 px), more wrap lines (primary 24 / secondary 12). Full captions wrap; drag still works (no ScrollingMovementMethod).
 
 ## 0.3.3-accuracy-keepup
 
@@ -65,7 +71,7 @@ For this private repo, authenticate first (`$env:GH_TOKEN = (gh auth token)`).
 
 ## What it does
 
-1. Capture **sounds playing on the device** (MediaProjection / AudioPlaybackCapture — primary path; mic fallback if declined). Captions use internal playback capture and work **independent of speaker volume** when projection is granted (volume can be muted).
+1. Capture **sounds playing on the device** (MediaProjection / AudioPlaybackCapture **only** — no microphone fallback). Declining screen share cancels start with a clear message. Captions use internal playback capture and work **independent of speaker volume** when projection is granted (volume can be muted).
 2. Run on-device ASR (SenseVoice or whisper.cpp)
 3. Translate via **ML Kit on-device** when target ≠ spoken/passthrough (optional dual = original + translated)
 4. Show a movable, **resizable** overlay above other apps
@@ -94,14 +100,14 @@ Downloads show progress % with cancel/resume via HTTP Range. Models land in `fil
 
 ## ASR / translation
 
-- **Capture pipeline (0.2.6 → 0.2.7):** dedicated `AudioCapture` pump → bounded PCM queue (~10–12 s, drop-oldest on overrun) → separate ASR consumer. **Never** block `AudioRecord.read` on whisper/Sherpa/MT. Large ~3 s `AudioRecord` buffer. Capture starts as soon as playback/mic recording starts (including during model load).
+- **Capture pipeline (0.2.6 → 0.2.7):** dedicated `AudioCapture` pump → bounded PCM queue (~10–12 s, drop-oldest on overrun) → separate ASR consumer. **Never** block `AudioRecord.read` on whisper/Sherpa/MT. Large ~3 s `AudioRecord` buffer. Capture starts only after playback capture succeeds (overlay shown after capture is live).
 - **ASR keep-up (0.2.7):** when the queue is behind, `drainToNewestWindow` skips intermediate chunks and feeds a contiguous newest ~2–4 s window so Balanced/Accurate stay live (not sparse). Whisper live threads 2→4. Junk hallucinations (`[BLANK_AUDIO]`, `[Silence]`, `[Music]`, bracket-only) are filtered — never published as captions; status stays Listening until a real caption. Sustained overruns → “Device busy — dropping old audio…”; sustained near-zero RMS → “No device audio signal” (wrong screen / mute mix). Diagnostics: `Log.i("CaptionAction", …)` with pcmMs, queueDepth, overruns, inferMs, filtered, textPreview.
-- **Live latency + full captions (0.2.8):** ASR consumer force-flushes each `drainToNewestWindow` PCM (no re-accumulate returning null in 1–15 ms). Playback live min window ~1.25 s (was 2–3 s); drain target ~1.5 s; max keep ~8 s. EN target → whisper `language=en`, `translate=false` (`mode=en-direct`) — skips auto-detect + translate tax on English audio; dual/non-EN stays `auto` + ML Kit (`mode=auto-translate`). Whisper live threads 4→6. Overlay primary caption no longer ellipsizes: wraps up to 16 lines inside the bubble (status line may still ellipsize). Diagnostics include `mode=` + `inferMs`.
+- **Live latency + full captions (0.2.8):** ASR consumer force-flushes each `drainToNewestWindow` PCM (no re-accumulate returning null in 1–15 ms). Playback live min window ~1.25 s (was 2–3 s); drain target ~1.5 s; max keep ~8 s. EN target → whisper `language=en`, `translate=false` (`mode=en-direct`) — skips auto-detect + translate tax on English audio; dual/non-EN stays `auto` + ML Kit (`mode=auto-translate`). Whisper live threads 4→6. Overlay primary caption no longer ellipsizes: wraps many lines inside the bubble (0.3.4: smaller type, taller default, up to 24 lines; status line may still ellipsize). Diagnostics include `mode=` + `inferMs`.
 - **Pipeline:** PCM queue → `InferenceEngine` (ASR, one pass) → brief MT prefer-wait (~600 ms) or show source then swap → concurrent `MlKitTranslationEngine` (no cancel-on-next-caption; seq guards) → overlay update. Last real caption stays on screen; Listening/catching-up/no-audio are status/spinner only (idle does not wipe captions).
 - **Real ASR:** Fast → `SherpaInferenceEngine` (SenseVoice ONNX, accumulated ~3–12 s windows). Balanced/Accurate → `WhisperCppInferenceEngine` (prebuilt whisper.cpp AAR + ggml bins). No demo/stub caption mode.
 - **Offline MT:** Google ML Kit on-device Translate for the `Languages.kt` set. Packs prepare in the background — **Start does not wait**. Live hot path uses short MT timeouts (no 120 s `Tasks.await` downloads on the ASR path).
 - **Whisper live path:** **one pass only**. Dual / non-EN → ASR once + async ML Kit. Single-line EN (no dual) → one `translate=true` pass. No blocking dual two-pass whisper on live.
-- **MediaProjection:** held on `CaptionOverlayService` with `registerCallback`; `onStop` → visible `failSession` Toast; mic fallback always Toasts; projection stopped on teardown.
+- **MediaProjection:** held on `CaptionOverlayService` with `registerCallback`; `onStop` → visible `failSession` Toast; decline/capture-fail → dialog/Toast + Home (no mic); projection stopped on teardown.
 - **Dual:** original + translated when MT supplies `translatedText`. Home dual switch enabled for supported targets.
 - **Session errors:** model-missing / engine-null / load-fail / capture-fail / projection-stopped toast and tear down FGS + overlay. MT pack failure toast; ASR still runs.
 - **Native / Play Services:** `app/libs/sherpa-onnx-1.13.8.aar` and `app/libs/whisper-android-1.0.0.aar` (arm64-v8a). ML Kit typically needs Google Play services.
@@ -123,11 +129,11 @@ Release APK: `app/build/outputs/apk/release/app-release.apk`
 
 ## Modules
 
-- **ui:** Home + PermissionStep + ThankYou — presentation only; start path goes through `LiveCaptionStarter`
-- **service:** `LiveCaptionStarter` (start/projection), `CaptionOverlayService` (session/overlay), `ModelDownloadManager`
+- **ui:** Home + PermissionStep + ThankYou — presentation only; start path goes through `LiveCaptionStarter` (projection grant required; decline → dialog on Home)
+- **service:** `LiveCaptionStarter` (start/projection/fail-home), `CaptionOverlayService` (playback-only session/overlay), `ModelDownloadManager`
 - **inference:** Engines + `InferenceEngineFactory` (Sherpa Fast / whisper.cpp Balanced·Accurate); `MlKitTranslationEngine` owns offline MT + language policy
 - **data:** Settings, `ModelCache`, `SubtitleFileRecorder`
-- **audio:** Continuous capture pump + bounded PCM queue (playback or mic)
+- **audio:** Continuous capture pump + bounded PCM queue (**playback capture only** for Live/Quality)
 
 ## Privacy
 

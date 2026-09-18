@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.2-mt-audio** — Live EN target shows English from ML Kit (not stuck Chinese); Quality with healthy capture RMS must not false-claim “No device audio”; drag still works; junk/repeat suppress kept.
+Current source: **0.3.4-device-audio** — device audio only (no mic fallback); decline screen share → dialog + Home; smaller wrap-friendly overlay text; Live EN MT + Quality keep-up retained.
 
 ## Preferred: promoted release installer
 
@@ -43,7 +43,7 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 1. Open **Caption Action** — single **Home** screen (languages, captions save, overlay font, status)
 2. Tap **Live Captions** (Fast/SenseVoice) or **Quality Captions** (Balanced·Accurate whisper.cpp) — separate products on Home
 3. Download if needed → one-at-a-time permission walkthrough if required → return to Home → Start again
-4. On Android 10+: MediaProjection prompt; decline falls back to mic with a toast; app minimizes
+4. On Android 10+: MediaProjection prompt; **allow** → playback captions + minimize. **Decline** → clear dialog (“Allow screen sharing…”) on Home; **no** overlay, **no** mic
 5. Confirm overlay updates on real audio; **drag by grabbing the caption text** to move; resize via purple corner handle only; end with bottom ✕ or green stop-dot
 
 ## 4. Live session checks
@@ -52,11 +52,12 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 - Target ≠ spoken/passthrough: captions must appear in the **target** language for Fast and Balanced/Accurate (incl. es/fr/zh/ja/etc.)
 - Dual on: original + translated when async ML Kit succeeds (whisper is single-pass on live)
 - Quality whisper: always language=auto; translate=true only for single-line EN target; dual/non-EN: ASR once + ML Kit
+- Overlay: smaller type, full caption wraps (no ellipsize); drag by caption text still moves bubble
 - Filler loops (`yeah. yeah.`, 嗯, thank-you-for-watching) must **not** spam the overlay; identical/near-dup windows suppressed
 - Target EN + Chinese audio (Live): overlay primary becomes **English** when MT completes (not permanently Chinese); dual shows EN + source
 - Quality (Samsung etc.): with volume up / healthy capture RMS, must **not** show “No device audio signal”; behind whisper → catching-up / listening
 - Idle silence must keep the last real caption (status/spinner only); must **not** invent captions (no silence-fed ASR)
-- Projection revoke mid-session: Toast + session end (no silent mic fallback)
+- Projection revoke mid-session: Toast + session end + return Home (never mic)
 - Home / Start should download MT language packs (status line shows progress); after packs ready, MT works offline
 - Stop via ✕, notification action, or returning to Home (Home stops an active session)
 - Kill/reopen — overlay geometry and language/model settings restore
@@ -67,11 +68,11 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 | Condition | Expected |
 |-----------|----------|
 | Overlay denied | Clear message; PermissionStep does **not** start FGS |
-| Mic denied | Cannot start capture |
+| RECORD_AUDIO denied | Cannot start playback capture (Android requirement) |
 | Low storage on download | Storage error toast |
 | Model missing / engine load fail / capture fail | Toast + FGS and overlay torn down (not stranded) |
-| MediaProjection declined | Toast + mic fallback |
-| MediaProjection revoked mid-session | Toast + session end |
+| MediaProjection declined | Dialog/Toast on Home; no session, no mic |
+| MediaProjection revoked mid-session | Toast + session end + Home |
 
 ## 6. Logs
 

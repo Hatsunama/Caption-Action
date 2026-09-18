@@ -92,7 +92,7 @@ class PermissionStepActivity : AppCompatActivity() {
                 body.setText(R.string.permission_audio_why)
                 primary.setText(R.string.permission_audio_action)
                 secondary.visibility = View.GONE
-                hint.text = "Required so Android can share sounds playing on the device."
+                hint.text = "Android requires this for playback capture — Caption Action never uses the microphone."
             }
             Step.NOTIFICATIONS -> {
                 label.text = "Step 3 · Notifications"
@@ -106,10 +106,16 @@ class PermissionStepActivity : AppCompatActivity() {
             Step.PROJECTION -> {
                 label.text = if (Build.VERSION.SDK_INT >= 33) "Step 4 · Screen audio" else "Step 3 · Screen audio"
                 title.setText(R.string.permission_projection_title)
-                body.setText(R.string.permission_projection_why)
-                primary.setText(R.string.permission_projection_action)
+                if (LiveCaptionStarter.shouldRequestProjection()) {
+                    body.setText(R.string.permission_projection_why)
+                    primary.setText(R.string.permission_projection_action)
+                    hint.text = "Required for device-audio captions. Declining means Start cannot caption — microphone is never used."
+                } else {
+                    body.setText(R.string.error_requires_android_10)
+                    primary.setText(R.string.continue_label)
+                    hint.text = "This device cannot capture app playback audio."
+                }
                 secondary.visibility = View.GONE
-                hint.text = "After this, you return to Home and tap Start again to begin."
             }
         }
     }
@@ -175,6 +181,7 @@ class PermissionStepActivity : AppCompatActivity() {
         if (LiveCaptionStarter.shouldRequestProjection()) {
             projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
         } else {
+            Toast.makeText(this, getString(R.string.error_requires_android_10), Toast.LENGTH_LONG).show()
             finishWalkthrough()
         }
     }
