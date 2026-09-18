@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -15,6 +16,24 @@ import com.hatsunama.captionaction.data.AppSettings
 import com.hatsunama.captionaction.ui.permissions.PermissionStepActivity
 
 object LiveCaptionStarter {
+
+    /**
+     * Suppress HomeActivity.onResume auto-stop during Start → projection → launcher handoff.
+     * Windowed so a brief resume after the projection result cannot kill the new session.
+     */
+    @Volatile
+    private var handoffUntilElapsed: Long = 0L
+
+    fun beginStartHandoff() {
+        handoffUntilElapsed = SystemClock.elapsedRealtime() + 8_000L
+    }
+
+    fun endStartHandoff() {
+        handoffUntilElapsed = 0L
+    }
+
+    fun shouldSuppressHomeAutoStop(): Boolean =
+        SystemClock.elapsedRealtime() < handoffUntilElapsed
 
     fun missingRequiredGrants(context: Context): Boolean {
         if (!canDrawOverlays(context)) return true
@@ -48,23 +67,40 @@ object LiveCaptionStarter {
         return mpm.createScreenCaptureIntent()
     }
 
+    /** Prefer launcher Home — Seeker may ignore moveTaskToBack alone. */
+    fun goToLauncherHome(activity: Activity) {
+        try {
+            val home = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            activity.startActivity(home)
+        } catch (_: Exception) {
+            activity.moveTaskToBack(true)
+        }
+        // Keep handoff window; do not clear here — Home may still resume briefly on Seeker.
+    }
+
     fun startMicAndMinimize(activity: Activity) {
+        beginStartHandoff()
         CaptionOverlayService.start(activity)
-        activity.moveTaskToBack(true)
+        goToLauncherHome(activity)
     }
 
     fun startWithProjectionAndMinimize(activity: Activity, resultCode: Int, data: Intent) {
+        beginStartHandoff()
         CaptionOverlayService.start(activity, resultCode, data)
-        activity.moveTaskToBack(true)
+        goToLauncherHome(activity)
     }
 
     fun startMicFallbackAfterDecline(activity: Activity) {
+        beginStartHandoff()
         CaptionOverlayService.start(activity)
         Toast.makeText(
             activity,
             activity.getString(R.string.permission_projection_declined_mic),
             Toast.LENGTH_LONG
         ).show()
-        activity.moveTaskToBack(true)
+        goToLauncherHome(activity)
     }
 }

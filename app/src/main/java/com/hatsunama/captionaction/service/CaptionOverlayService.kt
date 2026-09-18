@@ -17,6 +17,7 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -90,19 +91,47 @@ class CaptionOverlayService : Service() {
                     @Suppress("DEPRECATION")
                     intent?.getParcelableExtra(EXTRA_RESULT_DATA)
                 }
-                scope.launch { beginSession(resultCode, data) }
+                // Claim MediaProjection grant immediately (sync) before any slow work —
+                // the token can expire if we await MT packs / engine load first.
+                val projection = claimProjectionSync(resultCode, data)
+                scope.launch { beginSession(projection) }
             }
         }
         return START_STICKY
     }
 
-    private suspend fun beginSession(resultCode: Int, data: Intent?) {
+    private fun claimProjectionSync(resultCode: Int, data: Intent?): MediaProjection? {
+        if (resultCode == 0 || data == null) return null
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return try {
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mpm.getMediaProjection(resultCode, data)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun beginSession(projection: MediaProjection?) {
         val app = application as CaptionActionApp
         val settings = app.settings.current()
         fontIndex = settings.fontIndex
         showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
         showCloseFab()
+        setOverlayLoading(true)
         updateCaption(getString(R.string.loading_engine), null)
+
+        // Capture ASAP with the already-claimed projection (or mic fallback).
+        var started = false
+        if (projection != null) {
+            started = audioCapture.startPlaybackCapture(projection)
+        }
+        if (!started) {
+            started = audioCapture.startMic()
+        }
+        if (!started) {
+            failSession(getString(R.string.error_capture))
+            return
+        }
 
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
@@ -133,46 +162,21 @@ class CaptionOverlayService : Service() {
 
         val mt = MlKitTranslationEngine(this)
         translation = mt
-        updateCaption(getString(R.string.translation_pack_preparing), null)
-        val ensure = mt.ensureModels(
-            targetLanguage = settings.targetLanguage,
-            extraSources = settings.passthroughLanguages
-        ) { status ->
-            scope.launch(Dispatchers.Main) {
-                updateCaption(status, null)
+        // MT packs: non-blocking after capture. Continue on fail — ASR still works.
+        scope.launch(Dispatchers.IO) {
+            val ensure = mt.ensureModels(
+                targetLanguage = settings.targetLanguage,
+                extraSources = settings.passthroughLanguages
+            )
+            if (ensure is EnsureResult.Failed) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@CaptionOverlayService,
+                        getString(R.string.translation_pack_failed, ensure.message),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
-        }
-        if (ensure is EnsureResult.Failed) {
-            withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    this@CaptionOverlayService,
-                    getString(R.string.translation_pack_failed, ensure.message),
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-            // Continue: ASR still works; captions stay in spoken language until packs retry.
-        }
-
-        var started = false
-        if (resultCode != 0 && data != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val projection: MediaProjection? = try {
-                mpm.getMediaProjection(resultCode, data)
-            } catch (_: Exception) {
-                null
-            }
-            if (projection != null) {
-                started = audioCapture.startPlaybackCapture(projection)
-            }
-        }
-        if (!started) {
-            started = audioCapture.startMic()
-        }
-        if (!started) {
-            preferred.release()
-            engine = null
-            failSession(getString(R.string.error_capture))
-            return
         }
 
         val activeEngine = engine!!
@@ -191,6 +195,7 @@ class CaptionOverlayService : Service() {
                 ).show()
             }
         }
+        setOverlayLoading(false)
         updateCaption(getString(R.string.listening), null)
         lastCaptionAt = System.currentTimeMillis()
 
@@ -215,6 +220,7 @@ class CaptionOverlayService : Service() {
                     subtitleRecorder.appendCaption(primary, secondary)
                 }
                 withContext(Dispatchers.Main) {
+                    setOverlayLoading(false)
                     updateCaption(primary, secondary)
                 }
             }
@@ -226,6 +232,7 @@ class CaptionOverlayService : Service() {
                 delay(4_000)
                 val idle = System.currentTimeMillis() - lastCaptionAt
                 if (idle > 8_000 && overlayView != null) {
+                    setOverlayLoading(false)
                     updateCaption(getString(R.string.listening), null)
                 }
             }
@@ -405,6 +412,12 @@ class CaptionOverlayService : Service() {
         val sp = ((heightPx / density) / 7.5f).coerceIn(14f, 40f)
         primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
         secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.78f)
+    }
+
+    private fun setOverlayLoading(loading: Boolean) {
+        val view = overlayView ?: return
+        view.findViewById<ProgressBar>(R.id.captionLoading).visibility =
+            if (loading) View.VISIBLE else View.GONE
     }
 
     private fun updateCaption(primary: String, secondary: String?) {
