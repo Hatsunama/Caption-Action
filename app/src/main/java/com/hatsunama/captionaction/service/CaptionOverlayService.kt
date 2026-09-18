@@ -8,6 +8,7 @@ import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Typeface
+import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
@@ -132,11 +133,17 @@ class CaptionOverlayService : Service() {
     private fun startForegroundForProjection() {
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
+            // Restore 0.3.6 mic|mediaProjection FGS types. 0.3.7 dropped microphone and
+            // Start began failing after Allow on Seeker + Samsung (AudioRecord playback
+            // capture still needs the microphone FGS type alongside mediaProjection).
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            if (Build.VERSION.SDK_INT >= 34) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            }
+            startForeground(NOTIF_ID, notification, type)
         } else {
             startForeground(NOTIF_ID, notification)
         }
@@ -196,24 +203,27 @@ class CaptionOverlayService : Service() {
             failSessionReturnHome(msg)
             return
         }
-        // API 34+: MediaProjection stops without a VirtualDisplay → false error_capture.
-        // Attach a 2×2 keep-alive display before AudioRecord so silence/idle still works.
-        if (!ensureProjectionKeepAliveDisplay(projection)) {
-            Log.w(DIAG_TAG, "captureMode=none keepAliveDisplayFailed=true")
-            failSessionReturnHome(getString(R.string.error_capture))
-            return
+        // API 34+: best-effort VirtualDisplay keep-alive before AudioRecord.
+        // 0.3.8 hard-failed Start when keep-alive returned false (error_capture after Allow).
+        // Restore 0.3.6 path: only hard playback-capture init fails Start (ProjectionCaptureStartGate).
+        val keepAliveFailed = !ensureProjectionKeepAliveDisplay(projection)
+        if (keepAliveFailed) {
+            Log.w(DIAG_TAG, "keepAliveDisplayFailed=true continuingCaptureInit=true")
         }
         val started = audioCapture.startPlaybackCapture(projection)
         // Hard init only — silence / zero energy must not fail Start (PlaybackCaptureStartGate).
         val hardFail = !started
-        if (PlaybackCaptureStartGate.shouldFailStartAfterInit(
+        if (ProjectionCaptureStartGate.shouldFailStartAfterClaim(
+                keepAliveDisplayFailed = keepAliveFailed,
+                playbackCaptureStarted = started
+            ) || PlaybackCaptureStartGate.shouldFailStartAfterInit(
                 hardInitFailed = hardFail,
                 samplesRead = 0,
                 rms = 0f
             )
         ) {
-            Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true hardInit=true")
-            // Already Allowed — real capture failure (not decline / not "allow sharing" / not silence).
+            Log.w(DIAG_TAG, "captureMode=none playbackCaptureFailed=true hardInit=true keepAliveFailed=$keepAliveFailed")
+            // Already Allowed — real capture failure (not decline / not "allow sharing" / not silence / not keep-alive).
             failSessionReturnHome(getString(R.string.error_capture))
             return
         }
@@ -907,8 +917,8 @@ class CaptionOverlayService : Service() {
 
     /**
      * Tiny VirtualDisplay so MediaProjection stays valid for AudioPlaybackCapture.
-     * Android 14+ stops projections that never create a display — that looked like
-     * "could not capture" even when nothing was playing (silence is fine).
+     * Best-effort only — callers must not fail Start if this returns false
+     * (0.3.8 regression). Android 14+ prefers a display; silence is still fine.
      */
     private fun ensureProjectionKeepAliveDisplay(projection: MediaProjection): Boolean {
         if (projectionVirtualDisplay != null) return true
@@ -920,7 +930,7 @@ class CaptionOverlayService : Service() {
                 2,
                 2,
                 density,
-                0,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 reader.surface,
                 null,
                 null
