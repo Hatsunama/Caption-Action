@@ -8,7 +8,6 @@ import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Typeface
-import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
@@ -261,17 +260,41 @@ class CaptionOverlayService : Service() {
             failSessionReturnHome(msg)
             return
         }
-        // API 34+: best-effort VirtualDisplay keep-alive before AudioRecord.
-        // 0.3.8 hard-failed Start when keep-alive returned false (error_capture after Allow).
-        // Restore 0.3.6 path: only hard playback-capture init fails Start (ProjectionCaptureStartGate).
-        val keepAliveFailed = !ensureProjectionKeepAliveDisplay(projection)
-        val keepAliveCreated = !keepAliveFailed
+        // Seeker evidence (0.3.9): keepAliveCreated=true + hardInit=true — VirtualDisplay
+        // succeeded but AudioRecord playback init failed. 0.3.6 (last known good) started
+        // AudioRecord *without* a prior keep-alive; 0.3.9 put AUTO_MIRROR VD first.
+        // Fix: re-assert mic|mediaProjection FGS, AudioRecord first, then flag-0 keep-alive;
+        // if AudioRecord still fails, attach keep-alive and retry once.
+        startForegroundForProjection()
+        var started = audioCapture.startPlaybackCapture(projection)
+        Log.i(
+            DIAG_TAG,
+            "playbackCapture attempt=first started=$started " +
+                "usingPlaybackCapture=${audioCapture.usingPlaybackCapture} " +
+                "hasRecordAudio=${audioCapture.hasRecordAudioPermission()}"
+        )
+        var keepAliveFailed = !ensureProjectionKeepAliveDisplay(projection)
+        var keepAliveCreated = !keepAliveFailed
         Log.i(
             DIAG_TAG,
             "keepAlive created=$keepAliveCreated keepAliveFailed=$keepAliveFailed " +
-                "continuingCaptureInit=true"
+                "afterFirstPlaybackAttempt=true"
         )
-        val started = audioCapture.startPlaybackCapture(projection)
+        if (!started) {
+            Log.e(
+                DIAG_TAG,
+                "EXCEPTION beginSession first playbackCapture failed — " +
+                    "retry after keepAlive created=$keepAliveCreated"
+            )
+            // Re-assert FGS then retry once with keep-alive present (API 34+ longevity).
+            startForegroundForProjection()
+            started = audioCapture.startPlaybackCapture(projection)
+            Log.i(
+                DIAG_TAG,
+                "playbackCapture attempt=afterKeepAlive started=$started " +
+                    "keepAliveCreated=$keepAliveCreated"
+            )
+        }
         // Hard init only — silence / zero energy must not fail Start (PlaybackCaptureStartGate).
         val hardFail = !started
         if (ProjectionCaptureStartGate.shouldFailStartAfterClaim(
@@ -288,11 +311,21 @@ class CaptionOverlayService : Service() {
                 "EXCEPTION beginSession return-false reason=playbackCaptureFailed " +
                     "hardInit=true keepAliveCreated=$keepAliveCreated keepAliveFailed=$keepAliveFailed " +
                     "projectionNull=false captureMode=none " +
-                    "usingPlaybackCapture=${audioCapture.usingPlaybackCapture}"
+                    "usingPlaybackCapture=${audioCapture.usingPlaybackCapture} " +
+                    "hasRecordAudio=${audioCapture.hasRecordAudioPermission()}"
             )
             // Already Allowed — real capture failure (not decline / not "allow sharing" / not silence / not keep-alive).
             failSessionReturnHome(getString(R.string.error_capture))
             return
+        }
+        // Ensure keep-alive for session longevity even if first attempt succeeded without it.
+        if (!keepAliveCreated) {
+            keepAliveFailed = !ensureProjectionKeepAliveDisplay(projection)
+            keepAliveCreated = !keepAliveFailed
+            Log.i(
+                DIAG_TAG,
+                "keepAlive postSuccess created=$keepAliveCreated keepAliveFailed=$keepAliveFailed"
+            )
         }
         Log.i(
             DIAG_TAG,
@@ -997,12 +1030,14 @@ class CaptionOverlayService : Service() {
         return try {
             val density = resources.displayMetrics.densityDpi.coerceAtLeast(1)
             val reader = ImageReader.newInstance(2, 2, PixelFormat.RGBA_8888, 2)
+            // Flag 0 (not AUTO_MIRROR): audio-only keep-alive. 0.3.9 AUTO_MIRROR
+            // coincided with Seeker hardInit=true while VD still created successfully.
             val display = projection.createVirtualDisplay(
                 "caption-action-audio-keepalive",
                 2,
                 2,
                 density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                0,
                 reader.surface,
                 null,
                 null

@@ -10,10 +10,11 @@ Current source version: **0.3.10** (versionCode 33)
 
 ## 0.3.10
 
-Start-fail diagnostics only (no capture behavior change):
+Start-fail diagnostics + hardInit fix (Seeker evidence):
 
-- Every `beginSession` / `startPlaybackCapture` / VirtualDisplay keep-alive / `getMediaProjection` / `startForeground` return-false and catch path now `Log.e` with tag **CaptionAction**, reason string, and exception when present.
-- Also logs FGS types used, `projectionNull`, AudioRecord state, `keepAlive created`, `captureMode`.
+- Evidence: `keepAliveFailed=false` + `hardInit=true` — VirtualDisplay keep-alive OK; AudioRecord playback init failed.
+- Fix (evidence-based): re-assert `microphone|mediaProjection` FGS before AudioRecord; **AudioRecord first** (0.3.6 order); keep-alive uses flag `0` (not AUTO_MIRROR); if first init fails, attach keep-alive and **retry once**. Playback matchers limited to capturable `MEDIA|GAME|UNKNOWN` (+ MEDIA-only fallback).
+- Every return-false / catch `Log.e` tag **CaptionAction** with EXCEPTION reason + AudioRecord state / FGS types / `projectionNull` / `keepAlive created` / `captureMode`.
 - versionName plain `0.3.10`, versionCode 33. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.9
