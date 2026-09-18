@@ -6,7 +6,17 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.11** (versionCode 34)
+Current source version: **0.3.12** (versionCode 35)
+
+## 0.3.12
+
+Language-agnostic Live completeness + wrong-script MT gate:
+
+- **Root cause (wrong-script on overlay):** SenseVoice `auto` can emit a different script than the spoken language (model is zh/en/ja/ko/yue-strong). Overlay previously painted raw ASR on MT timeout — so target EN (or any Latin target) could show Asian glyphs (and the reverse for CJK targets). Not a Spanish-only bug.
+- **Fix:** Never paint ASR as primary when source script family ≠ target script family; wait for MT (allowSourceAppend=false). Script glyphs beat contradictory ASR lang tags for MT source. Latin-biased session rejects sudden CJK dumps (hallucination gate) without per-language special cases.
+- **Completeness:** Live windows ~3.0 s (`LIVE_WINDOW_SAMPLES=48_000`); near-dup no longer drops phrase extensions; short same-script speech can publish without MT; crumbs still skip MT.
+- **EN→EN:** unchanged fast path (same-script, no MT wait). Start/capture/green-dot/device-audio untouched.
+- versionName plain `0.3.12`, versionCode 35. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.11
 

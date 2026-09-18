@@ -181,12 +181,22 @@ class SherpaInferenceEngine(
                 rec.decode(stream)
                 val result = rec.getResult(stream)
                 val text = AsrJunkFilter.sanitizeOrNull(result.text) ?: return@withContext null
+                // Language-agnostic hallucination gate: Latin-leaning session + sudden CJK dump
+                // is almost always SenseVoice collapsing non-CJK audio into zh/ja/ko. Drop it.
+                // Real CJK speech builds positive bias first and is kept. No per-language special case.
+                if (AsrJunkFilter.scriptFamilyOf(text) == AsrJunkFilter.ScriptFamily.CJK &&
+                    scriptBias < 0
+                ) {
+                    Log.i(TAG, "rejected CJK dump on Latin-biased session text=${text.take(40)}")
+                    lastMode = "auto-reject-cjk-dump"
+                    return@withContext null
+                }
                 val rawLang = result.lang.ifBlank { "auto" }
                 val lang = enrichLangFromScript(text, rawLang)
                 updateScriptBias(text)
                 // auto at load; bias tag helps logs when ZH→EN (target en, CJK speech).
                 lastMode = when {
-                    scriptBias >= 2 && targetLanguage == "en" -> "auto-zh-bias"
+                    scriptBias >= 2 -> "auto-cjk-bias"
                     else -> "auto-translate"
                 }
                 val endMs = System.currentTimeMillis()
@@ -242,8 +252,16 @@ class SherpaInferenceEngine(
      */
     private fun enrichLangFromScript(text: String, rawLang: String): String {
         val n = rawLang.trim().lowercase()
+        val script = guessScriptLang(text)
+        // Language-agnostic: dominant CJK/JA/KO glyphs win over contradictory Latin/en tags.
+        // SenseVoice auto can mis-tag speech; trust the script of the ASR text itself.
+        if (script != null) {
+            if (n.isEmpty() || n == "auto" || n == "unknown" || n == "und" || n != script) {
+                return script
+            }
+        }
         if (n.isNotEmpty() && n != "auto" && n != "unknown" && n != "und") return n
-        return guessScriptLang(text) ?: n.ifBlank { "auto" }
+        return n.ifBlank { "auto" }
     }
 
     private fun guessScriptLang(text: String): String? {
@@ -299,11 +317,11 @@ class SherpaInferenceEngine(
     }
 
     companion object {
-        /** ~2.5 s @ 16 kHz — phrase-level SenseVoice (was 2.25 s; crumbs still dominated ZH→EN). */
-        const val LIVE_WINDOW_SAMPLES = 40_000
+        /** ~3.0 s @ 16 kHz — fuller Live phrases for MT (all langs); slight latency OK vs missing words. */
+        const val LIVE_WINDOW_SAMPLES = 48_000
         private const val TAG = "SherpaInferenceEngine"
-        private const val MIN_SAMPLES_MIC = 32_000  // align with ~2.0–2.5 s live windows
-        private const val MIN_SAMPLES_PLAYBACK = 32_000
+        private const val MIN_SAMPLES_MIC = 36_000  // align with ~3.0 s live windows
+        private const val MIN_SAMPLES_PLAYBACK = 36_000
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 8
