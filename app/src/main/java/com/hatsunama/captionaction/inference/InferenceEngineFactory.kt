@@ -16,10 +16,14 @@ object InferenceEngineFactory {
     val isWhisperAvailable: Boolean
         get() = whisperProbe ?: probeWhisper().also { whisperProbe = it }
 
-    /** Offline MT targets for a tier before an engine instance exists (UI honesty). */
     fun offlineTranslationTargets(tier: ModelTier): Set<String> = when (tier.engineFamily) {
         ModelTier.EngineFamily.SHERPA_SENSEVOICE -> emptySet()
         ModelTier.EngineFamily.WHISPER_CPP_GGML -> setOf("en")
+    }
+
+    fun canProvideDualSubtitles(tier: ModelTier, targetLanguage: String): Boolean {
+        val target = targetLanguage.trim().lowercase()
+        return tier.engineFamily == ModelTier.EngineFamily.WHISPER_CPP_GGML && target == "en"
     }
 
     fun create(

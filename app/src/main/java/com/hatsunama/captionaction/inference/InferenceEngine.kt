@@ -5,10 +5,13 @@ import java.io.File
 interface InferenceEngine {
     val name: String
 
-    /** Offline MT targets this engine can emit beyond raw ASR (e.g. whisper translate → en). */
     fun offlineTranslationTargets(): Set<String> = emptySet()
 
+    fun canProvideDualSubtitles(): Boolean = false
+
     fun setTargetLanguage(code: String) {}
+
+    fun setDualSubtitles(enabled: Boolean) {}
 
     suspend fun load(modelFile: File): Boolean
 

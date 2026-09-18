@@ -3,15 +3,11 @@
     <string name="app_name">Caption Action</string>
     <string name="tagline">Same Audio. A Brighter World.</string>
     <string name="privacy_promise">100% on-device · No cloud · No accounts · No ads</string>
-    <string name="privacy_body">All processing stays on your phone. Internet is only used when you choose to download a model.</string>
     <string name="start_live">Start live captions</string>
     <string name="stop_live">Stop captions</string>
-    <string name="language_settings">Languages &amp; dual mode</string>
-    <string name="model_manager">Models</string>
     <string name="overlay_preview">Overlay size &amp; font</string>
     <string name="settings_hub">Pick languages and caption font below. Start opens model choice, then live captions.</string>
     <string name="section_languages">Languages</string>
-    <string name="section_models">Models</string>
     <string name="section_overlay">Overlay</string>
     <string name="section_captions">Captions</string>
     <string name="save_subtitles_to_file">Save subtitles to a text file</string>
@@ -31,25 +27,21 @@
     <string name="permission_projection_why">Android’s screen-capture prompt lets Caption Action hear app playback (YouTube, games, media) — not your microphone as the product. Allow it so captions follow what is playing on screen.</string>
     <string name="permission_projection_action">Continue to system prompt</string>
     <string name="permission_setup_done">Permissions ready — tap Start live captions again to begin.</string>
-    <string name="permission_projection_required">Allow capturing sounds playing on the device to start captions.</string>
     <string name="permission_projection_declined_mic">Playback capture declined — using microphone instead.</string>
     <string name="model_fast">Fast — SenseVoice multilingual (~228 MB) · Real ASR</string>
     <string name="model_balanced">Balanced — ggml Base (~57 MB) · whisper.cpp ASR</string>
     <string name="model_accurate">Accurate — ggml Small (~182 MB) · whisper.cpp ASR</string>
     <string name="download_model">Download model</string>
-    <string name="cancel_download">Cancel download</string>
-    <string name="downloading_title">Downloading model…</string>
-    <string name="downloading_hint">One-time on-device download. Fast = SenseVoice; Balanced/Accurate = whisper.cpp. Cancel keeps a partial so the next attempt can resume.</string>
     <string name="model_ready">Model ready on device</string>
     <string name="model_missing">Model not downloaded</string>
     <string name="model_gate_title">Choose a caption model</string>
     <string name="model_gate_body">Download a model for on-device captions (Fast SenseVoice or Balanced/Accurate whisper.cpp). Models stay on your phone. Interrupted downloads can resume.</string>
     <string name="model_gate_download_required">A real model is required — download Fast, Balanced, or Accurate to start.</string>
     <string name="model_gate_use_start">Use model &amp; start</string>
-    <string name="dual_subtitles">Dual subtitles (original + translated)</string>
+    <string name="dual_subtitles">Dual subtitles (original + English)</string>
+    <string name="dual_unavailable_hint">Dual subtitles need Balanced/Accurate whisper.cpp with English target (ASR + translate). Fast SenseVoice and non-English targets stay single-line.</string>
     <string name="passthrough_hint">Languages left unchanged (passthrough)</string>
     <string name="target_language">Subtitle output language</string>
-    <string name="next">Next</string>
     <string name="back">Back</string>
     <string name="continue_label">Continue</string>
     <string name="close_overlay">End captions</string>
@@ -59,7 +51,6 @@
     <string name="error_storage">Not enough storage for the model.</string>
     <string name="error_model">Model missing or incomplete. Download Fast, Balanced, or Accurate to start captions.</string>
     <string name="error_capture">Could not capture device playback audio. Allow screen/audio capture and try again.</string>
-    <string name="error_memory">Low memory. Try the Fast model tier.</string>
     <string name="error_engine_load">Could not load on-device ASR. Re-download the selected model or reinstall the app.</string>
     <string name="resume_download">Resume download</string>
     <string name="model_partial">Partial download — can resume</string>
@@ -67,18 +58,14 @@
     <string name="notif_title">Caption Action is running</string>
     <string name="notif_text">Live subtitles overlay active — tap the green dot to end</string>
     <string name="download_can_resume">Partial download found — tap to resume</string>
-    <string name="offline_ready">Works offline after model download</string>
     <string name="loading_engine">Warming up captions…</string>
     <string name="listening">Listening for device audio…</string>
-    <string name="resize_hint">Drag to move · pull the corner handle to resize. Layout also saves while live.</string>
     <string name="overlay_preview_hint">Pick a font here. Move and resize the box on the live overlay after Start.</string>
     <string name="overlay_sample_text">Sample live caption</string>
     <string name="save">Save</string>
-    <string name="use_selected_tier">Use selected tier</string>
     <string name="home_status_ready">Ready when you are</string>
     <string name="settings_saved">Settings saved</string>
     <string name="overlay_font">Caption font</string>
-    <string name="hatsu_is_here">Hatsu Is Here For You</string>
     <string name="open_thank_you">Hatsu Is Here For You</string>
     <string name="thank_you_title">Thank you</string>
     <string name="thank_you_body">Thanks for downloading Caption Action and spending time with it. Hope the captions make your world a little brighter.</string>
@@ -92,5 +79,5 @@
     <string name="download_already_on_device">Already on device</string>
     <string name="translation_unavailable_hint">No offline translation to %1$s for %2$s — captions stay in the spoken language.</string>
     <string name="model_no_offline_mt">Fast SenseVoice: ASR only (no offline MT).</string>
-    <string name="model_offline_mt_en_only">whisper.cpp: offline translate to English when target is EN.</string>
+    <string name="model_offline_mt_en_only">whisper.cpp: offline translate to English when target is EN. Dual = ASR + translate two-pass.</string>
 </resources>

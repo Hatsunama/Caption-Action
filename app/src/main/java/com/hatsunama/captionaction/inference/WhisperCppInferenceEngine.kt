@@ -22,11 +22,19 @@ class WhisperCppInferenceEngine(
     private var model: WhisperModel? = null
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
+    @Volatile private var dualSubtitles: Boolean = false
 
     override fun offlineTranslationTargets(): Set<String> = setOf("en")
 
+    override fun canProvideDualSubtitles(): Boolean =
+        normalizeLang(targetLanguage) == "en"
+
     override fun setTargetLanguage(code: String) {
         targetLanguage = code
+    }
+
+    override fun setDualSubtitles(enabled: Boolean) {
+        dualSubtitles = enabled
     }
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
@@ -96,27 +104,34 @@ class WhisperCppInferenceEngine(
             val wav = writeTempWav(samples, sampleRateHz)
             try {
                 val target = normalizeLang(targetLanguage)
-                // Whisper translate task only targets English.
                 val translateToEn = target == "en"
-                val config = WhisperConfig(
-                    language = "auto",
-                    translate = translateToEn,
-                    threads = 2,
-                    maxSegmentLength = 0,
-                    printTimestamps = false
-                )
-                val result = Whisper.transcribe(m, wav.absolutePath, config)
-                val text = result.text.trim()
-                if (text.isEmpty()) return@withContext null
+                val wantDual = dualSubtitles && translateToEn
                 val end = System.currentTimeMillis()
-                CaptionResult(
-                    text = text,
-                    language = if (translateToEn) "en" else "auto",
-                    confidence = 0.8f,
-                    startMs = end - (samples.size * 1000L / sampleRateHz),
-                    endMs = end,
-                    translatedText = null
-                )
+                val startMs = end - (samples.size * 1000L / sampleRateHz)
+
+                if (wantDual) {
+                    val sourceText = runWhisper(m, wav, translate = false) ?: return@withContext null
+                    val enText = runWhisper(m, wav, translate = true) ?: sourceText
+                    val translated = enText.takeIf { it.isNotEmpty() && it != sourceText }
+                    CaptionResult(
+                        text = sourceText,
+                        language = "auto",
+                        confidence = 0.8f,
+                        startMs = startMs,
+                        endMs = end,
+                        translatedText = translated
+                    )
+                } else {
+                    val text = runWhisper(m, wav, translate = translateToEn) ?: return@withContext null
+                    CaptionResult(
+                        text = text,
+                        language = if (translateToEn) "en" else "auto",
+                        confidence = 0.8f,
+                        startMs = startMs,
+                        endMs = end,
+                        translatedText = null
+                    )
+                }
             } catch (t: Throwable) {
                 Log.e(TAG, "whisper transcribe failed", t)
                 null
@@ -124,6 +139,18 @@ class WhisperCppInferenceEngine(
                 wav.delete()
             }
         }
+
+    private suspend fun runWhisper(m: WhisperModel, wav: File, translate: Boolean): String? {
+        val config = WhisperConfig(
+            language = "auto",
+            translate = translate,
+            threads = 2,
+            maxSegmentLength = 0,
+            printTimestamps = false
+        )
+        val result = Whisper.transcribe(m, wav.absolutePath, config)
+        return result.text.trim().takeIf { it.isNotEmpty() }
+    }
 
     override fun release() {
         synchronized(lock) {

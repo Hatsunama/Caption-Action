@@ -1,3 +1,7 @@
+# Caption Action installer (promoted GitHub release APK).
+# App: single Home hub; Fast = SenseVoice (Sherpa); Balanced/Accurate = whisper.cpp.
+# Source tree version may be ahead of the promoted release tag below — dumpsys prints the installed versionName/versionCode after install.
+
 $ErrorActionPreference = 'Stop'
 
 $PackageName = 'com.hatsunama.captionaction'

@@ -38,8 +38,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -50,7 +48,7 @@ class CaptionOverlayService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var pipelineJob: Job? = null
-    private var watchdogJob: Job? = null
+    private var idleJob: Job? = null
 
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
@@ -109,9 +107,7 @@ class CaptionOverlayService : Service() {
         val tier = ModelTier.fromId(settings.modelTierId)
         val modelFile = cache.fileFor(tier)
         if (!cache.isReadyForAsr(tier)) {
-            val msg = getString(R.string.error_model)
-            updateCaption(msg, null)
-            _events.emit(SessionEvent.Error(msg))
+            failSession(getString(R.string.error_model))
             return
         }
         val preferred = InferenceEngineFactory.create(
@@ -120,18 +116,16 @@ class CaptionOverlayService : Service() {
             targetLanguage = settings.targetLanguage
         )
         if (preferred == null) {
-            val msg = getString(R.string.error_engine_load)
-            updateCaption(msg, null)
-            _events.emit(SessionEvent.Error(msg))
+            failSession(getString(R.string.error_engine_load))
             return
         }
         preferred.setTargetLanguage(settings.targetLanguage)
+        val dualAllowed = preferred.canProvideDualSubtitles() && settings.dualSubtitles
+        preferred.setDualSubtitles(dualAllowed)
         val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
         if (!loaded) {
             preferred.release()
-            val msg = getString(R.string.error_engine_load)
-            updateCaption(msg, null)
-            _events.emit(SessionEvent.Error(msg))
+            failSession(getString(R.string.error_engine_load))
             return
         }
         engine = preferred
@@ -152,8 +146,9 @@ class CaptionOverlayService : Service() {
             started = audioCapture.startMic()
         }
         if (!started) {
-            updateCaption(getString(R.string.error_capture), null)
-            _events.emit(SessionEvent.Error(getString(R.string.error_capture)))
+            preferred.release()
+            engine = null
+            failSession(getString(R.string.error_capture))
             return
         }
 
@@ -162,7 +157,7 @@ class CaptionOverlayService : Service() {
             val path = withContext(Dispatchers.IO) {
                 subtitleRecorder.startSession(
                     targetLanguage = settings.targetLanguage,
-                    dualSubtitles = settings.dualSubtitles
+                    dualSubtitles = dualAllowed
                 )
             }
             if (path == null) {
@@ -173,12 +168,6 @@ class CaptionOverlayService : Service() {
                 ).show()
             }
         }
-        _events.emit(
-            SessionEvent.Started(
-                source = if (audioCapture.usingPlaybackCapture) "playback" else "microphone",
-                engine = activeEngine.name
-            )
-        )
         updateCaption(getString(R.string.listening), null)
         lastCaptionAt = System.currentTimeMillis()
 
@@ -187,11 +176,13 @@ class CaptionOverlayService : Service() {
             audioCapture.readLoop(chunkSamples = 8_000) { pcm ->
                 val settingsNow = app.settings.current()
                 activeEngine.setTargetLanguage(settingsNow.targetLanguage)
+                val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
+                activeEngine.setDualSubtitles(dualNow)
                 val raw = activeEngine.transcribe(pcm, 16_000) ?: return@readLoop
                 val policy = translation.applyPolicy(raw, settingsNow)
                 val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
                     policy,
-                    settingsNow.dualSubtitles
+                    dualNow
                 )
                 val primary = composer.compose(primaryRaw)
                 val secondary = secondaryRaw
@@ -202,36 +193,24 @@ class CaptionOverlayService : Service() {
                 withContext(Dispatchers.Main) {
                     updateCaption(primary, secondary)
                 }
-                _events.emit(SessionEvent.Caption(primary, secondary))
             }
         }
 
-        watchdogJob?.cancel()
-        watchdogJob = scope.launch(Dispatchers.IO) {
+        idleJob?.cancel()
+        idleJob = scope.launch(Dispatchers.Main) {
             while (isActive) {
-                delay(2500)
+                delay(4_000)
                 val idle = System.currentTimeMillis() - lastCaptionAt
-                if (idle > 3500) {
-                    val silence = ShortArray(1600)
-                    val raw = activeEngine.transcribe(silence, 16_000) ?: continue
-                    val settingsNow = app.settings.current()
-                    activeEngine.setTargetLanguage(settingsNow.targetLanguage)
-                    val policy = translation.applyPolicy(raw, settingsNow)
-                    val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
-                        policy,
-                        settingsNow.dualSubtitles
-                    )
-                    val primary = composer.compose(primaryRaw)
-                    val secondary = secondaryRaw
-                    lastCaptionAt = System.currentTimeMillis()
-                    if (subtitleRecorder.isRecording) {
-                        subtitleRecorder.appendCaption(primary, secondary)
-                    }
-                    withContext(Dispatchers.Main) { updateCaption(primary, secondary) }
-                    _events.emit(SessionEvent.Caption(primary, secondary))
+                if (idle > 8_000 && overlayView != null) {
+                    updateCaption(getString(R.string.listening), null)
                 }
             }
         }
+    }
+
+    private fun failSession(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        stopSelfSafe()
     }
 
     private fun overlayType(): Int =
@@ -370,7 +349,6 @@ class CaptionOverlayService : Service() {
                 else -> false
             }
         }
-        // Drag on bubble only so the green stop-dot keeps click events.
         view.findViewById<View>(R.id.captionBubble).setOnTouchListener(listener)
         handle.setOnTouchListener(listener)
     }
@@ -454,7 +432,7 @@ class CaptionOverlayService : Service() {
 
     private fun stopSelfSafe() {
         pipelineJob?.cancel()
-        watchdogJob?.cancel()
+        idleJob?.cancel()
         audioCapture.stop()
         engine?.release()
         engine = null
@@ -472,14 +450,13 @@ class CaptionOverlayService : Service() {
                 Toast.LENGTH_LONG
             ).show()
         }
-        scope.launch { _events.emit(SessionEvent.Stopped) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
         pipelineJob?.cancel()
-        watchdogJob?.cancel()
+        idleJob?.cancel()
         audioCapture.stop()
         engine?.release()
         engine = null
@@ -488,13 +465,6 @@ class CaptionOverlayService : Service() {
         instance = null
         scope.cancel()
         super.onDestroy()
-    }
-
-    sealed class SessionEvent {
-        data class Started(val source: String, val engine: String) : SessionEvent()
-        data class Caption(val primary: String, val secondary: String?) : SessionEvent()
-        data class Error(val message: String) : SessionEvent()
-        data object Stopped : SessionEvent()
     }
 
     companion object {
@@ -507,9 +477,6 @@ class CaptionOverlayService : Service() {
         @Volatile
         var instance: CaptionOverlayService? = null
             private set
-
-        private val _events = MutableSharedFlow<SessionEvent>(extraBufferCapacity = 64)
-        val events = _events.asSharedFlow()
 
         fun start(context: Context, resultCode: Int = 0, data: Intent? = null) {
             val i = Intent(context, CaptionOverlayService::class.java).apply {

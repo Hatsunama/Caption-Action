@@ -112,7 +112,14 @@ class HomeActivity : AppCompatActivity() {
                         }
                     )
                     append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
-                    append(" Dual: ").append(if (s.dualSubtitles) "on" else "off")
+                    val dualOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
+                    append(" Dual: ").append(
+                        when {
+                            !dualOk -> "unavailable"
+                            s.dualSubtitles -> "on"
+                            else -> "off"
+                        }
+                    )
                     append(" · Target: ").append(s.targetLanguage)
                     if (target.isNotEmpty() && target !in mtTargets && target !in s.passthroughLanguages.map { it.lowercase() }) {
                         append("\n")
@@ -347,12 +354,7 @@ class HomeActivity : AppCompatActivity() {
     private suspend fun proceedAfterModelReady() {
         val settings = app().settings.current()
         if (LiveCaptionStarter.needsPermissionWalkthrough(settings, this)) {
-            permissionFlow.launch(
-                LiveCaptionStarter.permissionStepIntent(
-                    this,
-                    LiveCaptionStarter.permissionMode(settings)
-                )
-            )
+            permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
             return
         }
         if (LiveCaptionStarter.shouldRequestProjection()) {
@@ -371,7 +373,35 @@ class HomeActivity : AppCompatActivity() {
         )
         val chips = findViewById<ChipGroup>(R.id.passthroughChips)
         val dual = findViewById<MaterialSwitch>(R.id.switchDual)
+        val dualHint = findViewById<TextView>(R.id.dualHint)
         val summary = findViewById<TextView>(R.id.passthroughSummary)
+
+        fun refreshDualAvailability(targetCode: String, tierId: String, savedDual: Boolean) {
+            val tier = ModelTier.fromId(tierId)
+            val available = InferenceEngineFactory.canProvideDualSubtitles(tier, targetCode)
+            dual.visibility = if (available) View.VISIBLE else View.GONE
+            dualHint.visibility = if (available) View.GONE else View.VISIBLE
+            dualHint.text = getString(R.string.dual_unavailable_hint)
+            if (!available) {
+                if (dual.isChecked) dual.isChecked = false
+                if (savedDual) {
+                    lifecycleScope.launch {
+                        app().settings.update { it.copy(dualSubtitles = false) }
+                    }
+                }
+            } else {
+                dual.isChecked = savedDual
+            }
+        }
+
+        lifecycleScope.launch {
+            app().settings.settingsFlow.collectLatest { s ->
+                if (suppressPersist) return@collectLatest
+                val target = Languages.all.getOrNull(spinner.selectedItemPosition)?.code
+                    ?: s.targetLanguage
+                refreshDualAvailability(target, s.modelTierId, s.dualSubtitles)
+            }
+        }
 
         lifecycleScope.launch {
             val s = app().settings.current()
@@ -381,7 +411,7 @@ class HomeActivity : AppCompatActivity() {
             spinner.setSelection(
                 Languages.all.indexOfFirst { it.code == s.targetLanguage }.coerceAtLeast(0)
             )
-            dual.isChecked = s.dualSubtitles
+            refreshDualAvailability(s.targetLanguage, s.modelTierId, s.dualSubtitles)
             chips.removeAllViews()
             Languages.all.forEach { lang ->
                 val chip = Chip(this@HomeActivity).apply {
@@ -421,11 +451,25 @@ class HomeActivity : AppCompatActivity() {
         val dual = findViewById<MaterialSwitch>(R.id.switchDual)
         val target = Languages.all.getOrNull(spinner.selectedItemPosition)?.code ?: "en"
         lifecycleScope.launch {
+            val tierId = app().settings.current().modelTierId
+            val dualOk = InferenceEngineFactory.canProvideDualSubtitles(
+                ModelTier.fromId(tierId),
+                target
+            )
+            val dualValue = dualOk && dual.isChecked
+            if (!dualOk) {
+                dual.visibility = View.GONE
+                findViewById<TextView>(R.id.dualHint).visibility = View.VISIBLE
+                dual.isChecked = false
+            } else {
+                dual.visibility = View.VISIBLE
+                findViewById<TextView>(R.id.dualHint).visibility = View.GONE
+            }
             app().settings.update {
                 it.copy(
                     targetLanguage = target,
                     passthroughLanguages = selectedPassthrough.toSet(),
-                    dualSubtitles = dual.isChecked
+                    dualSubtitles = dualValue
                 )
             }
         }
