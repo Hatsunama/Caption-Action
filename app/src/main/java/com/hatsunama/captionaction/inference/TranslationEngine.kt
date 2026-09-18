@@ -152,8 +152,13 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
 
             val translated = translateHotPath(result.text, sourceCode, target)
             if (translated.isNullOrBlank() || translated == result.text) {
+                Log.i(TAG, "NMT skip $sourceCode→$target (empty or identical)")
                 result.copy(translatedText = null)
             } else {
+                Log.i(
+                    TAG,
+                    "NMT ok $sourceCode→$target in=${result.text.take(40)} out=${translated.take(40)}"
+                )
                 result.copy(translatedText = translated)
             }
         }
@@ -253,11 +258,16 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
 
 private fun normalizeLang(code: String): String = MlKitTranslationEngine.normalizeLangStatic(code)
 
+/**
+ * Overlay / recorder layout: target-language text is always primary when MT filled
+ * [CaptionResult.translatedText]. Dual = target primary + source secondary.
+ */
 object CaptionDisplay {
     fun primaryAndSecondary(policy: CaptionResult, dualSubtitles: Boolean): Pair<String, String?> {
         val original = policy.text
-        val inTarget = policy.translatedText
-        val primary = inTarget?.takeIf { it.isNotBlank() } ?: original
+        val inTarget = policy.translatedText?.takeIf { it.isNotBlank() }
+        // Prefer translated (EN/target) as primary — never leave source stuck when MT succeeded.
+        val primary = inTarget ?: original
         val dualOk = dualSubtitles && inTarget != null && inTarget != original
         return if (dualOk) {
             primary to original

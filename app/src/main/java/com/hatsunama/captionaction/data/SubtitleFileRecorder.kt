@@ -67,6 +67,10 @@ class SubtitleFileRecorder(private val context: Context) {
         }
     }
 
+    /**
+     * Append one finished caption line. Callers must append once per utterance
+     * (final primary — e.g. EN after MT — not source then translated duplicate).
+     */
     fun appendCaption(primary: String, secondary: String?) {
         val line = formatLine(primary, secondary) ?: return
         lock.withLock {
