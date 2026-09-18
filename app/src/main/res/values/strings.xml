@@ -51,6 +51,7 @@
     <string name="error_storage">Not enough storage for the model.</string>
     <string name="error_model">Model missing or incomplete. Download Fast, Balanced, or Accurate to start captions.</string>
     <string name="error_capture">Could not capture device playback audio. Allow screen/audio capture and try again.</string>
+    <string name="error_projection_stopped">Screen/audio capture was stopped. Captions ended.</string>
     <string name="error_engine_load">Could not load on-device ASR. Re-download the selected model or reinstall the app.</string>
     <string name="resume_download">Resume download</string>
     <string name="model_partial">Partial download — can resume</string>

@@ -11,8 +11,8 @@ android {
         applicationId = "com.hatsunama.captionaction"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "0.2.5-mute-capture"
+        versionCode = 19
+        versionName = "0.2.6-capture-pipeline"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         ndk {

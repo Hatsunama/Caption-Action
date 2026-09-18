@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.2.3-translate** — Home hub + SenseVoice/whisper ASR + ML Kit offline MT.
+Current source: **0.2.6-capture-pipeline** — continuous capture queue + single-pass live ASR + async ML Kit MT.
 
 ## Preferred: promoted release installer
 
@@ -50,10 +50,11 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 
 - Dual switch visible for any **Languages.kt** target (ML Kit MT); hint only if target unsupported
 - Target ≠ spoken/passthrough: captions must appear in the **target** language for Fast and Balanced/Accurate (incl. es/fr/zh/ja/etc.)
-- Dual on: original + translated when MT (or whisper EN two-pass) succeeds
-- Whisper + EN target: EN fast-path still OK; non-EN targets use ML Kit
+- Dual on: original + translated when async ML Kit succeeds (whisper is single-pass on live)
+- Whisper + EN target (no dual): one translate=true pass; dual/non-EN: ASR once + ML Kit
+- Idle silence must keep the last real caption (status/spinner only); must **not** invent captions (no silence-fed ASR)
+- Projection revoke mid-session: Toast + session end (no silent mic fallback)
 - Home / Start should download MT language packs (status line shows progress); after packs ready, MT works offline
-- Idle silence must **not** invent captions (no silence-fed ASR)
 - Stop via ✕, notification action, or returning to Home (Home stops an active session)
 - Kill/reopen — overlay geometry and language/model settings restore
 - Devices without Google Play services may fail ML Kit pack download (ASR still works)
@@ -67,11 +68,12 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 | Low storage on download | Storage error toast |
 | Model missing / engine load fail / capture fail | Toast + FGS and overlay torn down (not stranded) |
 | MediaProjection declined | Toast + mic fallback |
+| MediaProjection revoked mid-session | Toast + session end |
 
 ## 6. Logs
 
 ```bash
-adb logcat -s CaptionOverlayService:* WhisperCppEngine:* SherpaInferenceEngine:* MlKitTranslation:* AndroidRuntime:E
+adb logcat -s CaptionOverlayService:* AudioCapture:* WhisperCppEngine:* SherpaInferenceEngine:* MlKitTranslation:* AndroidRuntime:E
 ```
 
 ## 7. Engines (current)

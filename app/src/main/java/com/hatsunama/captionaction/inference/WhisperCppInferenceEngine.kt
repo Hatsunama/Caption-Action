@@ -25,7 +25,6 @@ class WhisperCppInferenceEngine(
     @Volatile private var dualSubtitles: Boolean = false
     @Volatile private var playbackCapture: Boolean = false
 
-    // Whisper EN translate remains a fast path; ML Kit covers any Languages.kt target.
     override fun offlineTranslationTargets(): Set<String> =
         com.hatsunama.captionaction.util.Languages.all.map { it.code }.toSet()
 
@@ -92,8 +91,6 @@ class WhisperCppInferenceEngine(
                 }
                 val n = pcmAccum.size
                 shouldFlush = if (playbackCapture) {
-                    // Time-window flush only — do not wait for mic-style silence.
-                    // Muted speaker volume can yield valid but low-amplitude PCM.
                     when {
                         n >= MAX_SAMPLES -> true
                         n >= minSamples -> true
@@ -126,25 +123,13 @@ class WhisperCppInferenceEngine(
             try {
                 val target = normalizeLang(targetLanguage)
                 val translateToEn = target == "en"
-                // Dual + EN: whisper two-pass (ASR + EN). Dual + non-EN: ASR only; ML Kit fills MT.
-                val wantWhisperDualEn = dualSubtitles && translateToEn
                 val end = System.currentTimeMillis()
                 val startMs = end - (samples.size * 1000L / sampleRateHz)
 
-                if (wantWhisperDualEn) {
-                    val sourceText = runWhisper(m, wav, translate = false) ?: return@withContext null
-                    val enText = runWhisper(m, wav, translate = true) ?: sourceText
-                    val translated = enText.takeIf { it.isNotEmpty() && it != sourceText }
-                    CaptionResult(
-                        text = sourceText,
-                        language = "auto",
-                        confidence = 0.8f,
-                        startMs = startMs,
-                        endMs = end,
-                        translatedText = translated
-                    )
-                } else if (translateToEn && !dualSubtitles) {
-                    // Fast path: single-line English via whisper translate.
+                // Live path: one whisper pass only.
+                // Dual or non-EN → ASR once; ML Kit fills translatedText async.
+                // Single-line EN (no dual) → one translate=true pass.
+                if (translateToEn && !dualSubtitles) {
                     val text = runWhisper(m, wav, translate = true) ?: return@withContext null
                     CaptionResult(
                         text = text,
@@ -155,7 +140,6 @@ class WhisperCppInferenceEngine(
                         translatedText = null
                     )
                 } else {
-                    // Non-EN target (or dual non-EN): original ASR text; TranslationEngine → ML Kit.
                     val text = runWhisper(m, wav, translate = false) ?: return@withContext null
                     CaptionResult(
                         text = text,
@@ -265,14 +249,12 @@ class WhisperCppInferenceEngine(
     companion object {
         private const val TAG = "WhisperCppEngine"
         private const val MIN_SAMPLES_MIC = 16_000 * 3
-        /** Shorter first flush for playback so Accurate feels less dead. */
         private const val MIN_SAMPLES_PLAYBACK = 16_000 * 2
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 12
         private const val MIC_SPEECH_RMS = 80f
         private const val MIC_DISCARD_RMS = 60f
-        /** Playback mix can be near-silent at volume 0 on some OEMs — only drop true zeros. */
         private const val PLAYBACK_SPEECH_RMS = 4f
         private const val PLAYBACK_DISCARD_RMS = 1f
 

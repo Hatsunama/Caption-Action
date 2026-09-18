@@ -25,6 +25,7 @@ import kotlinx.coroutines.withContext
 /**
  * Offline MT owner: policy (passthrough / same-lang) + Google ML Kit on-device Translate.
  * ASR engines stay ASR; if they already filled [CaptionResult.translatedText] (e.g. whisper→EN), keep it.
+ * Live hot path must never block on long Downloads — use short timeouts and skip if packs missing.
  */
 interface TranslationEngine {
     fun supportedTargets(): Set<String>
@@ -149,7 +150,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 return@withContext result.copy(translatedText = null)
             }
 
-            val translated = translate(result.text, sourceCode, target)
+            val translated = translateHotPath(result.text, sourceCode, target)
             if (translated.isNullOrBlank() || translated == result.text) {
                 result.copy(translatedText = null)
             } else {
@@ -160,7 +161,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
     private suspend fun identifyLanguage(text: String): String? {
         if (text.isBlank()) return null
         return try {
-            val tag = Tasks.await(languageId.identifyLanguage(text), 5, TimeUnit.SECONDS)
+            val tag = Tasks.await(languageId.identifyLanguage(text), 2, TimeUnit.SECONDS)
             val n = normalizeLang(tag ?: "")
             if (n.isEmpty() || n == "und") null else n
         } catch (t: Throwable) {
@@ -169,17 +170,16 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
         }
     }
 
-    private suspend fun translate(text: String, source: String, target: String): String? {
+    /** Live MT: short timeout; never await long model downloads on the caption path. */
+    private suspend fun translateHotPath(text: String, source: String, target: String): String? {
         val sourceTag = toMlKitTag(source) ?: return null
         val targetTag = toMlKitTag(target) ?: return null
         if (sourceTag == targetTag) return null
         return try {
             val translator = translatorFor(sourceTag, targetTag)
-            // Ensure this pair's models exist (lazy download if Home didn't finish).
-            Tasks.await(translator.downloadModelIfNeeded(), 120, TimeUnit.SECONDS)
-            Tasks.await(translator.translate(text), 15, TimeUnit.SECONDS)?.trim()
+            Tasks.await(translator.translate(text), TRANSLATE_TIMEOUT_SEC, TimeUnit.SECONDS)?.trim()
         } catch (t: Throwable) {
-            Log.w(TAG, "translate $source→$target failed: ${t.message}")
+            Log.w(TAG, "translate $source→$target failed/skipped: ${t.message}")
             null
         }
     }
@@ -225,8 +225,8 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
 
     companion object {
         private const val TAG = "MlKitTranslation"
+        private const val TRANSLATE_TIMEOUT_SEC = 4L
 
-        /** Prefer these sources cached with the user target so Fast/any ASR can MT quickly. */
         val COMMON_SOURCES: Set<String> = setOf(
             "en", "es", "fr", "de", "zh", "ja", "ko", "pt", "it", "ru"
         )
