@@ -23,6 +23,7 @@ class WhisperCppInferenceEngine(
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
     @Volatile private var dualSubtitles: Boolean = false
+    @Volatile private var playbackCapture: Boolean = false
 
     // Whisper EN translate remains a fast path; ML Kit covers any Languages.kt target.
     override fun offlineTranslationTargets(): Set<String> =
@@ -36,6 +37,10 @@ class WhisperCppInferenceEngine(
 
     override fun setDualSubtitles(enabled: Boolean) {
         dualSubtitles = enabled
+    }
+
+    override fun setPlaybackCapture(enabled: Boolean) {
+        playbackCapture = enabled
     }
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
@@ -71,8 +76,12 @@ class WhisperCppInferenceEngine(
 
             val now = System.currentTimeMillis()
             val energy = rms(pcm16le)
-            val speaking = energy >= 80f
+            val speechGate = if (playbackCapture) PLAYBACK_SPEECH_RMS else MIC_SPEECH_RMS
+            val speaking = energy >= speechGate
             if (speaking) lastSpeechAt = now
+
+            val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
+            val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_SPEECH
 
             val shouldFlush: Boolean
             val chunk: ShortArray?
@@ -82,15 +91,25 @@ class WhisperCppInferenceEngine(
                     pcmAccum.removeAt(0)
                 }
                 val n = pcmAccum.size
-                shouldFlush = when {
-                    n >= MAX_SAMPLES -> true
-                    n >= MIN_SAMPLES && !speaking && (now - lastSpeechAt) > 400L -> true
-                    n >= FLUSH_AT_SPEECH -> true
-                    else -> false
+                shouldFlush = if (playbackCapture) {
+                    // Time-window flush only — do not wait for mic-style silence.
+                    // Muted speaker volume can yield valid but low-amplitude PCM.
+                    when {
+                        n >= MAX_SAMPLES -> true
+                        n >= minSamples -> true
+                        else -> false
+                    }
+                } else {
+                    when {
+                        n >= MAX_SAMPLES -> true
+                        n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
+                        n >= flushAt -> true
+                        else -> false
+                    }
                 }
                 if (!shouldFlush) {
                     chunk = null
-                } else if (pcmAccum.size < MIN_SAMPLES / 2) {
+                } else if (pcmAccum.size < minSamples / 2) {
                     chunk = null
                 } else {
                     val arr = ShortArray(pcmAccum.size)
@@ -100,7 +119,8 @@ class WhisperCppInferenceEngine(
                 }
             }
             val samples = chunk ?: return@withContext null
-            if (rms(samples) < 60f) return@withContext null
+            val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
+            if (rms(samples) < discardGate) return@withContext null
 
             val wav = writeTempWav(samples, sampleRateHz)
             try {
@@ -244,9 +264,17 @@ class WhisperCppInferenceEngine(
 
     companion object {
         private const val TAG = "WhisperCppEngine"
-        private const val MIN_SAMPLES = 16_000 * 3
+        private const val MIN_SAMPLES_MIC = 16_000 * 3
+        /** Shorter first flush for playback so Accurate feels less dead. */
+        private const val MIN_SAMPLES_PLAYBACK = 16_000 * 2
         private const val FLUSH_AT_SPEECH = 16_000 * 5
+        private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 12
+        private const val MIC_SPEECH_RMS = 80f
+        private const val MIC_DISCARD_RMS = 60f
+        /** Playback mix can be near-silent at volume 0 on some OEMs — only drop true zeros. */
+        private const val PLAYBACK_SPEECH_RMS = 4f
+        private const val PLAYBACK_DISCARD_RMS = 1f
 
         fun isNativeAvailable(): Boolean {
             return try {

@@ -152,6 +152,8 @@ class CaptionOverlayService : Service() {
         preferred.setTargetLanguage(settings.targetLanguage)
         val dualAllowed = preferred.canProvideDualSubtitles() && settings.dualSubtitles
         preferred.setDualSubtitles(dualAllowed)
+        // Playback path: engines must not drop quiet/muted PCM with mic RMS gates.
+        preferred.setPlaybackCapture(audioCapture.usingPlaybackCapture)
         val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
         if (!loaded) {
             preferred.release()
@@ -201,11 +203,25 @@ class CaptionOverlayService : Service() {
 
         pipelineJob?.cancel()
         pipelineJob = scope.launch(Dispatchers.IO) {
+            var shownTranscribing = false
+            val pipelineStartedAt = System.currentTimeMillis()
             audioCapture.readLoop(chunkSamples = 8_000) { pcm ->
+                // Accurate whisper first result is slow — keep status honest so overlay
+                // does not look dead while audio accumulates / model runs.
+                if (!shownTranscribing &&
+                    System.currentTimeMillis() - pipelineStartedAt > 1_200L
+                ) {
+                    shownTranscribing = true
+                    withContext(Dispatchers.Main) {
+                        setOverlayLoading(true)
+                        updateCaption(getString(R.string.transcribing), null)
+                    }
+                }
                 val settingsNow = app.settings.current()
                 activeEngine.setTargetLanguage(settingsNow.targetLanguage)
                 val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
                 activeEngine.setDualSubtitles(dualNow)
+                activeEngine.setPlaybackCapture(audioCapture.usingPlaybackCapture)
                 val raw = activeEngine.transcribe(pcm, 16_000) ?: return@readLoop
                 val mtEngine = translation ?: return@readLoop
                 val policy = mtEngine.applyPolicy(raw, settingsNow)

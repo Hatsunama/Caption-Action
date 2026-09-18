@@ -60,6 +60,7 @@
     <string name="download_can_resume">Partial download found — tap to resume</string>
     <string name="loading_engine">Warming up captions…</string>
     <string name="listening">Listening for device audio…</string>
+    <string name="transcribing">Transcribing…</string>
     <string name="overlay_preview_hint">Pick a font here. Move and resize the box on the live overlay after Start.</string>
     <string name="overlay_sample_text">Sample live caption</string>
     <string name="save">Save</string>

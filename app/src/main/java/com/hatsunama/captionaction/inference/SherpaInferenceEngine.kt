@@ -21,12 +21,17 @@ class SherpaInferenceEngine(
     private val lock = Any()
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
+    @Volatile private var playbackCapture: Boolean = false
 
     // MT / dual owned by MlKitTranslationEngine; ASR stays ASR-only here.
     override fun offlineTranslationTargets(): Set<String> =
         com.hatsunama.captionaction.util.Languages.all.map { it.code }.toSet()
 
     override fun canProvideDualSubtitles(): Boolean = true
+
+    override fun setPlaybackCapture(enabled: Boolean) {
+        playbackCapture = enabled
+    }
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
@@ -77,8 +82,12 @@ class SherpaInferenceEngine(
 
             val now = System.currentTimeMillis()
             val energy = rms(pcm16le)
-            val speaking = energy >= 80f
+            val speechGate = if (playbackCapture) PLAYBACK_SPEECH_RMS else MIC_SPEECH_RMS
+            val speaking = energy >= speechGate
             if (speaking) lastSpeechAt = now
+
+            val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
+            val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_SPEECH
 
             val shouldFlush: Boolean
             val chunk: ShortArray?
@@ -88,15 +97,24 @@ class SherpaInferenceEngine(
                     pcmAccum.removeAt(0)
                 }
                 val n = pcmAccum.size
-                shouldFlush = when {
-                    n >= MAX_SAMPLES -> true
-                    n >= MIN_SAMPLES && !speaking && (now - lastSpeechAt) > 400L -> true
-                    n >= FLUSH_AT_SPEECH -> true
-                    else -> false
+                shouldFlush = if (playbackCapture) {
+                    // Time-window flush only — muted volume must still caption.
+                    when {
+                        n >= MAX_SAMPLES -> true
+                        n >= minSamples -> true
+                        else -> false
+                    }
+                } else {
+                    when {
+                        n >= MAX_SAMPLES -> true
+                        n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
+                        n >= flushAt -> true
+                        else -> false
+                    }
                 }
                 if (!shouldFlush) {
                     chunk = null
-                } else if (pcmAccum.size < MIN_SAMPLES / 2) {
+                } else if (pcmAccum.size < minSamples / 2) {
                     chunk = null
                 } else {
                     val arr = ShortArray(pcmAccum.size)
@@ -106,7 +124,8 @@ class SherpaInferenceEngine(
                 }
             }
             val samples = chunk ?: return@withContext null
-            if (rms(samples) < 80f) return@withContext null
+            val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
+            if (rms(samples) < discardGate) return@withContext null
 
             val floats = FloatArray(samples.size) { i -> samples[i] / 32768.0f }
             val stream = try {
@@ -178,8 +197,14 @@ class SherpaInferenceEngine(
 
     companion object {
         private const val TAG = "SherpaInferenceEngine"
-        private const val MIN_SAMPLES = 16_000 * 3
+        private const val MIN_SAMPLES_MIC = 16_000 * 3
+        private const val MIN_SAMPLES_PLAYBACK = 16_000 * 2
         private const val FLUSH_AT_SPEECH = 16_000 * 5
+        private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 12
+        private const val MIC_SPEECH_RMS = 80f
+        private const val MIC_DISCARD_RMS = 80f
+        private const val PLAYBACK_SPEECH_RMS = 4f
+        private const val PLAYBACK_DISCARD_RMS = 1f
     }
 }

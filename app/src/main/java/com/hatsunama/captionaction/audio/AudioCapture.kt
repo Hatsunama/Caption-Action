@@ -60,11 +60,19 @@ class AudioCapture(private val context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
         if (!hasMicPermission()) return false
         return try {
-            val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+            // Broad matching so video apps (Bilibili, etc.) are included even when
+            // they use VOICE_COMMUNICATION / UNKNOWN / assistance streams.
+            val configBuilder = AudioPlaybackCaptureConfiguration.Builder(projection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                .build()
+                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .addMatchingUsage(AudioAttributes.USAGE_ASSISTANT)
+            val config = configBuilder.build()
             val format = AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(16_000)
@@ -91,6 +99,45 @@ class AudioCapture(private val context: Context) {
         } catch (_: SecurityException) {
             false
         } catch (_: UnsupportedOperationException) {
+            false
+        } catch (_: IllegalArgumentException) {
+            // Some OEMs reject less-common usages — retry with core set only.
+            tryStartPlaybackCore(projection)
+        }
+    }
+
+    private fun tryStartPlaybackCore(projection: MediaProjection): Boolean {
+        return try {
+            val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .build()
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(16_000)
+                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .build()
+            val minBuf = AudioRecord.getMinBufferSize(
+                16_000,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            val ar = AudioRecord.Builder()
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(minBuf * 2)
+                .setAudioPlaybackCaptureConfig(config)
+                .build()
+            if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                ar.release()
+                return false
+            }
+            ar.startRecording()
+            record = ar
+            usingPlaybackCapture = true
+            true
+        } catch (_: Exception) {
             false
         }
     }
