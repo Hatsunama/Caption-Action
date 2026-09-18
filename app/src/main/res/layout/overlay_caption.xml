@@ -2,14 +2,17 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/overlayRoot"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:clipChildren="false"
+    android:clipToPadding="false">
 
-    <!-- Caption bubble -->
     <LinearLayout
         android:id="@+id/captionBubble"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_marginBottom="40dp"
+        android:layout_marginTop="16dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="12dp"
         android:layout_marginEnd="20dp"
         android:background="@drawable/bg_overlay_bubble"
         android:orientation="vertical"
@@ -37,28 +40,23 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <!-- Resize handle (bottom-right of bubble) -->
+    <View
+        android:id="@+id/btnStopDot"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="0dp"
+        android:layout_marginStart="0dp"
+        android:background="@drawable/bg_green_dot"
+        android:contentDescription="@string/stop_dot_a11y"
+        android:elevation="12dp" />
+
     <View
         android:id="@+id/resizeHandle"
         android:layout_width="28dp"
         android:layout_height="28dp"
         android:layout_gravity="bottom|end"
-        android:layout_marginBottom="28dp"
+        android:layout_marginBottom="0dp"
         android:background="@drawable/bg_resize_handle"
-        android:contentDescription="Resize" />
-
-    <!-- Floating close (bottom center-ish of overlay chrome) -->
-    <TextView
-        android:id="@+id/btnCloseOverlay"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_gravity="bottom|center_horizontal"
-        android:background="@drawable/bg_close_fab"
-        android:gravity="center"
-        android:text="✕"
-        android:textColor="@color/ca_white"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:contentDescription="@string/close_overlay"
-        android:elevation="8dp" />
+        android:contentDescription="@string/resize_a11y" />
 </FrameLayout>

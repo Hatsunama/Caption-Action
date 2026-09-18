@@ -1,8 +1,5 @@
 package com.hatsunama.captionaction.inference
 
-/**
- * Merges short fragments into stable, readable caption lines.
- */
 class SubtitleComposer(
     private val maxCharsPerLine: Int = 42,
     private val maxLines: Int = 2
@@ -22,7 +19,6 @@ class SubtitleComposer(
         if (current.isNotEmpty()) current.append(' ')
         current.append(cleaned)
 
-        // Soft trim to avoid runaway length
         if (current.length > maxCharsPerLine * maxLines * 2) {
             val s = current.toString()
             current = StringBuilder(s.takeLast(maxCharsPerLine * maxLines))

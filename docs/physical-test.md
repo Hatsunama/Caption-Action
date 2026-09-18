@@ -61,10 +61,13 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 
 ## 4. Live session checks
 
-- Toggle **Start live captions**
-- Accept MediaProjection screen-capture consent for playback audio (Android 10+), or decline to use mic fallback
+- Toggle **Start live captions** (Home or Live session — same start path)
+- If **Prefer capturing sounds playing on device** is on (default) and Android 10+: system MediaProjection prompt appears
+  - **Accept** → playback capture + overlay; app moves to background
+  - **Decline / cancel** → captions still start via **microphone fallback**, toast explains playback was declined, app moves to background
+- If prefer-playback is **off** (or pre-Android 10): no projection prompt; service starts on mic immediately and minimizes
 - Confirm floating overlay appears; drag it; resize via corner handle; leave the app — overlay should remain
-- Speak near the mic (demo engine) — captions should keep changing every ~2s (not freeze after greeting)
+- With Fast SenseVoice downloaded, play device audio — real ASR captions should appear (not canned rotating lines)
 - Stop via bottom ✕, notification action, or Live session screen
 - Kill/reopen app — overlay position/size and language/model settings should restore
 
@@ -72,11 +75,12 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 
 | Condition | Expected |
 |-----------|----------|
-| Overlay denied | Toast / status asking to grant; no crash |
+| Overlay denied | Toast / status asking to grant; no crash; PermissionStep does **not** start the foreground service |
 | Mic denied | Cannot start capture; clear message |
 | Low storage on download | Storage error toast |
-| Model missing | Demo engine still runs; Model manager shows “not downloaded” |
-| Capture unavailable | Falls back to mic or shows capture error |
+| Model missing | Cannot start; model gate only offers download (no demo path); manager shows “not downloaded” / partial resume |
+| MediaProjection declined | Toast “playback declined / using microphone”; overlay starts on mic (not a hard fail) |
+| Capture unavailable after accept | Service falls back to mic internally, or shows capture error if mic also fails |
 
 ## 6. Logs
 
@@ -88,19 +92,30 @@ PowerShell: same command inside `adb`.
 
 ## 7. Plugging a real ASR engine
 
-1. Add whisper.cpp Android (or Sherpa-ONNX) AAR / `jniLibs`.
-2. Implement `InferenceEngine` loading `ModelCache.fileFor(tier)` (ggml path).
-3. Return `CaptionResult` with detected language code when available.
-4. Set `WhisperCppBridge.isNativeAvailable = true` and return your engine from `createEngine()`.
-5. Keep `DemoInferenceEngine` as fallback when the model file is absent.
+**Phase B status:** Sherpa-ONNX AAR is wired. Fast tier downloads SenseVoice `model.int8.onnx`.
+`InferenceEngineFactory` returns `SherpaInferenceEngine` when native loads; otherwise null and the session shows an error (no demo fallback).
 
-Suggested references (external):
+Remaining / future:
+1. Optional whisper.cpp path for Balanced/Accurate ggml bins.
+2. Optional streaming (OnlineRecognizer) for lower latency.
+3. Offline MT for dual-subtitle translation.
 
+References:
+- https://github.com/k2-fsa/sherpa-onnx (Android AAR + SenseVoice)
 - https://github.com/ggerganov/whisper.cpp (Android examples / ggml models)
-- https://github.com/k2-fsa/sherpa-onnx (Android AAR, Whisper / SenseVoice)
+
 
 ## 8. Uninstall
 
 ```bash
 adb uninstall com.hatsunama.captionaction.debug
 ```
+
+
+## Phase B — Sherpa-ONNX SenseVoice (real ASR)
+
+1. Install debug APK built with `app/libs/sherpa-onnx-1.13.8.aar` (arm64-v8a).
+2. On Home → Models / Start gate, select **Fast — SenseVoice** and download (~228 MB). Cancel mid-download, then resume — partial should continue via Range.
+3. Start live captions. Session event / logs should show engine `Sherpa-ONNX SenseVoice`.
+4. If download skipped or AAR fails to load, Start fails with a clear error — no stub captions.
+5. Balanced/Accurate ggml downloads do **not** activate Sherpa (wrong format); they stay for a future whisper.cpp path.

@@ -33,27 +33,12 @@
         </activity>
 
         <activity
-            android:name=".ui.settings.LanguageSettingsActivity"
-            android:exported="false"
-            android:parentActivityName=".ui.home.HomeActivity" />
-
-        <activity
-            android:name=".ui.models.ModelManagerActivity"
-            android:exported="false"
-            android:parentActivityName=".ui.home.HomeActivity" />
-
-        <activity
-            android:name=".ui.live.LiveSessionActivity"
-            android:exported="false"
-            android:parentActivityName=".ui.home.HomeActivity" />
-
-        <activity
-            android:name=".ui.overlay.OverlayPreviewActivity"
-            android:exported="false"
-            android:parentActivityName=".ui.home.HomeActivity" />
-
-        <activity
             android:name=".ui.permissions.PermissionStepActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.home.HomeActivity" />
+
+        <activity
+            android:name=".ui.thanks.ThankYouActivity"
             android:exported="false"
             android:parentActivityName=".ui.home.HomeActivity" />
 

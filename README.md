@@ -45,8 +45,9 @@ Release: https://github.com/Hatsunama/Caption-Action/releases/tags/v0.1.0-mvp
 4. Show a movable, **resizable** overlay above other apps
 5. End anytime with the floating **✕** at the bottom of the screen
 6. Persist settings and overlay geometry locally (DataStore)
+7. Optional **Save subtitles to a text file** (Home → Captions): when enabled, each live session appends caption lines to a local UTF-8 `.txt` under the app’s Documents/captions folder (`getExternalFilesDir(Documents)/captions/`). One timestamped file per session; flush/close on stop. Opt-in, local only — no upload.
 
-**One Home screen** — languages, models, and overlay settings are scrollable sections. **Start live captions** stays sticky at the bottom. First Start walks permissions one-at-a-time, then returns to Home; tap Start again to begin (app minimizes so captions appear over other apps).
+**One Home screen** — languages, captions save toggle, models, and overlay settings are scrollable sections. **Start live captions** stays sticky at the bottom. First Start walks permissions one-at-a-time, then returns to Home; tap Start again to begin (app minimizes so captions appear over other apps).
 
 ## Permissions (one at a time)
 
@@ -54,20 +55,25 @@ First Start walks: overlay → device audio access → notifications (API 33+) �
 
 ## Model tiers (user-initiated download)
 
-| Tier | Approx size | File | URL |
-|------|-------------|------|-----|
-| **Fast** | ~31 MB | `ggml-tiny-q5_1.bin` | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin |
-| **Balanced** (default) | ~57 MB | `ggml-base-q5_1.bin` | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin |
-| **Accurate** | ~182 MB | `ggml-small-q5_1.bin` | https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin |
+| Tier | Approx size | File | Engine |
+|------|-------------|------|--------|
+| **Fast** (default) | ~228 MB | `model.int8.onnx` (SenseVoice) | **Sherpa-ONNX** real ASR (zh/en/ja/ko/yue) |
+| **Balanced** | ~57 MB | `ggml-base-q5_1.bin` | **whisper.cpp** real ASR (ggml) |
+| **Accurate** | ~182 MB | `ggml-small-q5_1.bin` | **whisper.cpp** real ASR (ggml) |
 
-Downloads show a dedicated bubble-gum loading UI with progress % and cancel. Models land in app-private storage (`files/models/`).
+SenseVoice URL: https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx  
+Tokens (`tokens.txt`) ship in the APK under `assets/sherpa/` and are copied beside the model on first load.
 
-## ASR / translation status (MVP honesty)
+Downloads show a dedicated bubble-gum loading UI with progress % and cancel. Interrupted downloads keep a per-tier `.part` file in app-private storage and resume via HTTP Range on the next attempt (if the server ignores Range, the download restarts from scratch). Models land in `files/models/`.
+
+## ASR / translation status (honesty)
 
 - **Architecture:** Full pipeline — audio → `InferenceEngine` → translation policy → subtitle composer → overlay → settings/ring buffer.
-- **ASR shipped in this MVP:** `DemoInferenceEngine` — continuous local timed/energy-aware demo caption lines (no greeting loop). Real ggml files can still be downloaded for the future engine.
-- **Native path:** `InferenceEngine` + `WhisperCppBridge` / `InferenceEngineFactory` are ready. Recommended plug-ins: **whisper.cpp Android** or **Sherpa-ONNX**. See [docs/physical-test.md](docs/physical-test.md).
-- **Translation:** Policy engine implements passthrough + dual-subtitle UI. Demo lines include sample translations so dual mode visibly changes. Dedicated offline MT is not bundled yet.
+- **Real ASR:** Fast → `SherpaInferenceEngine` (SenseVoice ONNX). Balanced/Accurate → `WhisperCppInferenceEngine` (prebuilt whisper.cpp AAR + ggml bins). No demo/stub caption mode.
+- **Errors:** If native fails to load or the selected model file is missing/incomplete, Start shows a clear error and does not emit fake captions.
+- **Native dependencies:** `app/libs/sherpa-onnx-1.13.8.aar` (~48 MiB) and `app/libs/whisper-android-1.0.0.aar` (~1.1 MiB, arm64-v8a `libwhisper.so` from [ffmpegkit-maintained/whisper v1.0.0](https://github.com/ffmpegkit-maintained/whisper/releases/tag/v1.0.0) / Maven `dev.ffmpegkit-maintained:whisper-android:1.0.0`).
+- **English target + whisper:** When `targetLanguage` is `en`, whisper.cpp runs with **translate=true** so non-English speech (e.g. Chinese) becomes English captions.
+- **Translation:** Policy-only passthrough + dual UI. Whisper translate covers **EN** target for ggml tiers; Fast SenseVoice has no offline MT. Non-EN targets stay in the spoken language (UI states this honestly).
 
 ## Build from source (low memory)
 
@@ -84,9 +90,11 @@ Release APK: `app/build/outputs/apk/release/app-release.apk`
 
 ## Modules
 
-- **UI:** Single Home screen (languages / models / overlay sections + sticky Start), sequential Permission steps
-- **Service:** `CaptionOverlayService` (SYSTEM_ALERT_WINDOW + FGS + bottom ✕ + resize handle), audio capture, model download, inference orchestration
-- **Data:** DataStore settings, model file cache, in-memory caption ring buffer (cleared on session end)
+- **ui:** Home + PermissionStep + ThankYou — events/presentation only; start path goes through `LiveCaptionStarter`
+- **service:** `LiveCaptionStarter` (start/projection orchestration), `CaptionOverlayService` (session/overlay wiring), `ModelDownloadManager`
+- **inference:** Engines + `InferenceEngineFactory` (Sherpa Fast / whisper.cpp Balanced·Accurate); `PassthroughTranslationEngine` is policy only (no fake MT)
+- **data:** Settings, `ModelCache` readiness, `SubtitleFileRecorder`
+- **audio:** Capture only (playback or mic)
 
 ## Privacy
 
@@ -94,4 +102,4 @@ Release APK: `app/build/outputs/apk/release/app-release.apk`
 
 ## License
 
-App code: see repository. Whisper ggml weights: follow upstream whisper.cpp / OpenAI Whisper terms on Hugging Face.
+App code: see repository. SenseVoice / sherpa-onnx: follow upstream licenses. Whisper ggml weights: follow whisper.cpp / OpenAI Whisper terms on Hugging Face.

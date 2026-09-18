@@ -18,13 +18,16 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.audio.AudioCapture
-import com.hatsunama.captionaction.data.CaptionRingBuffer
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
+import com.hatsunama.captionaction.data.SubtitleFileRecorder
+import com.hatsunama.captionaction.inference.CaptionDisplay
+import com.hatsunama.captionaction.inference.InferenceEngine
 import com.hatsunama.captionaction.inference.InferenceEngineFactory
 import com.hatsunama.captionaction.inference.PassthroughTranslationEngine
 import com.hatsunama.captionaction.inference.SubtitleComposer
@@ -55,10 +58,10 @@ class CaptionOverlayService : Service() {
     private var layoutParams: WindowManager.LayoutParams? = null
 
     private lateinit var audioCapture: AudioCapture
-    private val ringBuffer = CaptionRingBuffer()
     private val composer = SubtitleComposer()
     private val translation = PassthroughTranslationEngine()
-    private val engine = InferenceEngineFactory.create()
+    private lateinit var subtitleRecorder: SubtitleFileRecorder
+    private var engine: InferenceEngine? = null
 
     @Volatile private var lastCaptionAt = 0L
     private var fontIndex = 0
@@ -69,6 +72,7 @@ class CaptionOverlayService : Service() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         audioCapture = AudioCapture(this)
+        subtitleRecorder = SubtitleFileRecorder(this)
         instance = this
     }
 
@@ -104,12 +108,36 @@ class CaptionOverlayService : Service() {
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
         val modelFile = cache.fileFor(tier)
-        withContext(Dispatchers.IO) { engine.load(modelFile) }
+        if (!cache.isReadyForAsr(tier)) {
+            val msg = getString(R.string.error_model)
+            updateCaption(msg, null)
+            _events.emit(SessionEvent.Error(msg))
+            return
+        }
+        val preferred = InferenceEngineFactory.create(
+            context = this,
+            tier = tier,
+            targetLanguage = settings.targetLanguage
+        )
+        if (preferred == null) {
+            val msg = getString(R.string.error_engine_load)
+            updateCaption(msg, null)
+            _events.emit(SessionEvent.Error(msg))
+            return
+        }
+        preferred.setTargetLanguage(settings.targetLanguage)
+        val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
+        if (!loaded) {
+            preferred.release()
+            val msg = getString(R.string.error_engine_load)
+            updateCaption(msg, null)
+            _events.emit(SessionEvent.Error(msg))
+            return
+        }
+        engine = preferred
 
         var started = false
-        if (settings.preferPlaybackCapture && resultCode != 0 && data != null &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-        ) {
+        if (resultCode != 0 && data != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val projection: MediaProjection? = try {
                 mpm.getMediaProjection(resultCode, data)
@@ -129,10 +157,26 @@ class CaptionOverlayService : Service() {
             return
         }
 
+        val activeEngine = engine!!
+        if (settings.saveSubtitlesToFile) {
+            val path = withContext(Dispatchers.IO) {
+                subtitleRecorder.startSession(
+                    targetLanguage = settings.targetLanguage,
+                    dualSubtitles = settings.dualSubtitles
+                )
+            }
+            if (path == null) {
+                Toast.makeText(
+                    this@CaptionOverlayService,
+                    getString(R.string.subtitles_save_error),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
         _events.emit(
             SessionEvent.Started(
                 source = if (audioCapture.usingPlaybackCapture) "playback" else "microphone",
-                engine = engine.name
+                engine = activeEngine.name
             )
         )
         updateCaption(getString(R.string.listening), null)
@@ -141,20 +185,20 @@ class CaptionOverlayService : Service() {
         pipelineJob?.cancel()
         pipelineJob = scope.launch(Dispatchers.IO) {
             audioCapture.readLoop(chunkSamples = 8_000) { pcm ->
-                val raw = engine.transcribe(pcm, 16_000) ?: return@readLoop
                 val settingsNow = app.settings.current()
+                activeEngine.setTargetLanguage(settingsNow.targetLanguage)
+                val raw = activeEngine.transcribe(pcm, 16_000) ?: return@readLoop
                 val policy = translation.applyPolicy(raw, settingsNow)
-                ringBuffer.add(policy)
-                // Fresh line each emit so dual/translated text visibly changes
-                composer.reset()
-                val primaryText = if (settingsNow.dualSubtitles) {
-                    policy.translatedText ?: policy.text
-                } else {
-                    policy.text
-                }
-                val primary = composer.compose(primaryText)
-                val secondary = if (settingsNow.dualSubtitles) policy.text else null
+                val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
+                    policy,
+                    settingsNow.dualSubtitles
+                )
+                val primary = composer.compose(primaryRaw)
+                val secondary = secondaryRaw
                 lastCaptionAt = System.currentTimeMillis()
+                if (subtitleRecorder.isRecording) {
+                    subtitleRecorder.appendCaption(primary, secondary)
+                }
                 withContext(Dispatchers.Main) {
                     updateCaption(primary, secondary)
                 }
@@ -162,7 +206,6 @@ class CaptionOverlayService : Service() {
             }
         }
 
-        // Watchdog: if audio path stalls, keep demo lines flowing so UI never freezes
         watchdogJob?.cancel()
         watchdogJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
@@ -170,18 +213,20 @@ class CaptionOverlayService : Service() {
                 val idle = System.currentTimeMillis() - lastCaptionAt
                 if (idle > 3500) {
                     val silence = ShortArray(1600)
-                    val raw = engine.transcribe(silence, 16_000) ?: continue
+                    val raw = activeEngine.transcribe(silence, 16_000) ?: continue
                     val settingsNow = app.settings.current()
+                    activeEngine.setTargetLanguage(settingsNow.targetLanguage)
                     val policy = translation.applyPolicy(raw, settingsNow)
-                    composer.reset()
-                    val primaryText = if (settingsNow.dualSubtitles) {
-                        policy.translatedText ?: policy.text
-                    } else {
-                        policy.text
-                    }
-                    val primary = composer.compose(primaryText)
-                    val secondary = if (settingsNow.dualSubtitles) policy.text else null
+                    val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
+                        policy,
+                        settingsNow.dualSubtitles
+                    )
+                    val primary = composer.compose(primaryRaw)
+                    val secondary = secondaryRaw
                     lastCaptionAt = System.currentTimeMillis()
+                    if (subtitleRecorder.isRecording) {
+                        subtitleRecorder.appendCaption(primary, secondary)
+                    }
                     withContext(Dispatchers.Main) { updateCaption(primary, secondary) }
                     _events.emit(SessionEvent.Caption(primary, secondary))
                 }
@@ -217,7 +262,7 @@ class CaptionOverlayService : Service() {
         }
         applyFont(view, params.height)
         wireOverlayTouch(view, params, minW, minH)
-        view.findViewById<View>(R.id.btnCloseOverlay).setOnClickListener { stopSelfSafe() }
+        view.findViewById<View>(R.id.btnStopDot).setOnClickListener { stopAndReturnHome() }
         windowManager.addView(view, params)
         overlayView = view
         layoutParams = params
@@ -234,7 +279,7 @@ class CaptionOverlayService : Service() {
             gravity = Gravity.CENTER
             setBackgroundResource(R.drawable.bg_close_fab)
             contentDescription = getString(R.string.close_overlay)
-            setOnClickListener { stopSelfSafe() }
+            setOnClickListener { stopAndReturnHome() }
         }
         val params = WindowManager.LayoutParams(
             size,
@@ -249,6 +294,18 @@ class CaptionOverlayService : Service() {
         }
         windowManager.addView(fab, params)
         closeFabView = fab
+    }
+
+    private fun stopAndReturnHome() {
+        val home = Intent(this, HomeActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        }
+        startActivity(home)
+        stopSelfSafe()
     }
 
     private fun wireOverlayTouch(
@@ -313,7 +370,8 @@ class CaptionOverlayService : Service() {
                 else -> false
             }
         }
-        view.setOnTouchListener(listener)
+        // Drag on bubble only so the green stop-dot keeps click events.
+        view.findViewById<View>(R.id.captionBubble).setOnTouchListener(listener)
         handle.setOnTouchListener(listener)
     }
 
@@ -398,10 +456,22 @@ class CaptionOverlayService : Service() {
         pipelineJob?.cancel()
         watchdogJob?.cancel()
         audioCapture.stop()
-        engine.release()
-        ringBuffer.clear()
+        engine?.release()
+        engine = null
         composer.reset()
+        val savedPath = try {
+            subtitleRecorder.stopSession()
+        } catch (_: Exception) {
+            null
+        }
         removeOverlayViews()
+        if (savedPath != null) {
+            Toast.makeText(
+                this,
+                getString(R.string.subtitles_saved, savedPath),
+                Toast.LENGTH_LONG
+            ).show()
+        }
         scope.launch { _events.emit(SessionEvent.Stopped) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -411,8 +481,9 @@ class CaptionOverlayService : Service() {
         pipelineJob?.cancel()
         watchdogJob?.cancel()
         audioCapture.stop()
-        engine.release()
-        ringBuffer.clear()
+        engine?.release()
+        engine = null
+        try { subtitleRecorder.discard() } catch (_: Exception) {}
         removeOverlayViews()
         instance = null
         scope.cancel()
