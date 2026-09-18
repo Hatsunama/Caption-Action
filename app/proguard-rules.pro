@@ -1,2 +1,2 @@
-# Caption Action — keep inference stubs for future native engines
+# Keep inference engines and JNI-facing wrappers.
 -keep class com.hatsunama.captionaction.inference.** { *; }

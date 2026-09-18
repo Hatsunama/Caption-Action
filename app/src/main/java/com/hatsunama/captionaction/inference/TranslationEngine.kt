@@ -2,10 +2,6 @@ package com.hatsunama.captionaction.inference
 
 import com.hatsunama.captionaction.data.AppSettings
 
-/**
- * Translation policy only — never invents MT.
- * text = ASR source; translatedText = target-language line when the engine supplied one.
- */
 interface TranslationEngine {
     fun applyPolicy(result: CaptionResult, settings: AppSettings): CaptionResult
 }
@@ -50,7 +46,8 @@ object CaptionDisplay {
         val original = policy.text
         val inTarget = policy.translatedText
         val primary = inTarget?.takeIf { it.isNotBlank() } ?: original
-        return if (dualSubtitles && inTarget != null && inTarget != original) {
+        val dualOk = dualSubtitles && inTarget != null && inTarget != original
+        return if (dualOk) {
             primary to original
         } else {
             primary to null

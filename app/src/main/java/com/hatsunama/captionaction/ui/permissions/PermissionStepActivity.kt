@@ -18,10 +18,6 @@ import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.service.LiveCaptionStarter
 import kotlinx.coroutines.launch
 
-/**
- * Sequential permission UI only. Never starts CaptionOverlayService —
- * returns to Home so the user taps Start again.
- */
 class PermissionStepActivity : AppCompatActivity() {
 
     private enum class Step { OVERLAY, AUDIO, NOTIFICATIONS, PROJECTION }
@@ -193,9 +189,4 @@ class PermissionStepActivity : AppCompatActivity() {
         }
     }
 
-    companion object {
-        const val EXTRA_MODE = "mode"
-        const val MODE_SETUP = "setup"
-        const val MODE_MISSING = "missing"
-    }
 }

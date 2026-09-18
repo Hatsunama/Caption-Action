@@ -19,8 +19,12 @@ class SherpaInferenceEngine(
 
     private var recognizer: OfflineRecognizer? = null
     private val lock = Any()
+    private val pcmAccum = ArrayList<Short>(16_000 * 4)
+    private var lastSpeechAt = 0L
 
     override fun offlineTranslationTargets(): Set<String> = emptySet()
+
+    override fun canProvideDualSubtitles(): Boolean = false
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
@@ -51,7 +55,10 @@ class SherpaInferenceEngine(
                 decodingMethod = "greedy_search"
             )
             val rec = OfflineRecognizer(assetManager = null, config = config)
-            synchronized(lock) { recognizer = rec }
+            synchronized(lock) {
+                recognizer = rec
+                pcmAccum.clear()
+            }
             Log.i(TAG, "Loaded SenseVoice from ${modelFile.absolutePath}")
             true
         } catch (t: Throwable) {
@@ -65,9 +72,41 @@ class SherpaInferenceEngine(
         withContext(Dispatchers.Default) {
             val rec = synchronized(lock) { recognizer } ?: return@withContext null
             if (pcm16le.isEmpty()) return@withContext null
-            if (rms(pcm16le) < 80f) return@withContext null
 
-            val floats = FloatArray(pcm16le.size) { i -> pcm16le[i] / 32768.0f }
+            val now = System.currentTimeMillis()
+            val energy = rms(pcm16le)
+            val speaking = energy >= 80f
+            if (speaking) lastSpeechAt = now
+
+            val shouldFlush: Boolean
+            val chunk: ShortArray?
+            synchronized(lock) {
+                for (s in pcm16le) pcmAccum.add(s)
+                while (pcmAccum.size > MAX_SAMPLES) {
+                    pcmAccum.removeAt(0)
+                }
+                val n = pcmAccum.size
+                shouldFlush = when {
+                    n >= MAX_SAMPLES -> true
+                    n >= MIN_SAMPLES && !speaking && (now - lastSpeechAt) > 400L -> true
+                    n >= FLUSH_AT_SPEECH -> true
+                    else -> false
+                }
+                if (!shouldFlush) {
+                    chunk = null
+                } else if (pcmAccum.size < MIN_SAMPLES / 2) {
+                    chunk = null
+                } else {
+                    val arr = ShortArray(pcmAccum.size)
+                    for (i in pcmAccum.indices) arr[i] = pcmAccum[i]
+                    pcmAccum.clear()
+                    chunk = arr
+                }
+            }
+            val samples = chunk ?: return@withContext null
+            if (rms(samples) < 80f) return@withContext null
+
+            val floats = FloatArray(samples.size) { i -> samples[i] / 32768.0f }
             val stream = try {
                 rec.createStream()
             } catch (t: Throwable) {
@@ -80,13 +119,13 @@ class SherpaInferenceEngine(
                 val result = rec.getResult(stream)
                 val text = result.text.trim()
                 if (text.isEmpty()) return@withContext null
-                val now = System.currentTimeMillis()
+                val end = System.currentTimeMillis()
                 CaptionResult(
                     text = text,
                     language = result.lang.ifBlank { "auto" },
                     confidence = 0.85f,
-                    startMs = now,
-                    endMs = now + 1_500L,
+                    startMs = end - (samples.size * 1000L / sampleRateHz),
+                    endMs = end,
                     translatedText = null
                 )
             } catch (t: Throwable) {
@@ -107,6 +146,7 @@ class SherpaInferenceEngine(
             } catch (_: Throwable) {
             }
             recognizer = null
+            pcmAccum.clear()
         }
     }
 
@@ -136,5 +176,8 @@ class SherpaInferenceEngine(
 
     companion object {
         private const val TAG = "SherpaInferenceEngine"
+        private const val MIN_SAMPLES = 16_000 * 3
+        private const val FLUSH_AT_SPEECH = 16_000 * 5
+        private const val MAX_SAMPLES = 16_000 * 12
     }
 }

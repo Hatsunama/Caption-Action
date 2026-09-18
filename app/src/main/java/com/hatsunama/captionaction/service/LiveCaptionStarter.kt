@@ -14,11 +14,6 @@ import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.data.AppSettings
 import com.hatsunama.captionaction.ui.permissions.PermissionStepActivity
 
-/**
- * Owns start/projection orchestration.
- * Q+ → MediaProjection (playback); decline/failure → mic fallback.
- * PermissionStepActivity never starts the foreground service.
- */
 object LiveCaptionStarter {
 
     fun missingRequiredGrants(context: Context): Boolean {
@@ -39,21 +34,11 @@ object LiveCaptionStarter {
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
 
-    fun permissionMode(settings: AppSettings): String =
-        if (!settings.permissionsWalkthroughComplete) {
-            PermissionStepActivity.MODE_SETUP
-        } else {
-            PermissionStepActivity.MODE_MISSING
-        }
-
     fun needsPermissionWalkthrough(settings: AppSettings, context: Context): Boolean =
         !settings.permissionsWalkthroughComplete || missingRequiredGrants(context)
 
-    fun permissionStepIntent(context: Context, mode: String): Intent =
-        Intent(context, PermissionStepActivity::class.java).putExtra(
-            PermissionStepActivity.EXTRA_MODE,
-            mode
-        )
+    fun permissionStepIntent(context: Context): Intent =
+        Intent(context, PermissionStepActivity::class.java)
 
     fun shouldRequestProjection(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
