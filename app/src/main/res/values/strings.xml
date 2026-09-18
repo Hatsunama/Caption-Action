@@ -37,10 +37,8 @@
     <string name="permission_projection_why">Android’s screen-capture prompt lets Caption Action hear app playback (YouTube, games, media). Captions use device audio only — never the microphone. Allow screen sharing or the session cannot start.</string>
     <string name="permission_projection_action">Continue to system prompt</string>
     <string name="permission_setup_done">Permissions ready — tap Start live captions again to begin.</string>
-    <string name="permission_projection_declined_mic">Allow screen sharing to caption device audio</string>
     <string name="error_projection_required">Allow screen sharing to caption device audio</string>
     <string name="error_requires_android_10">Caption Action requires Android 10+ for device audio</string>
-    <string name="listening_playback">Listening (device audio)…</string>
     <string name="model_fast">Fast — SenseVoice multilingual (~228 MB) · Live path</string>
     <string name="model_balanced">Balanced — ggml Tiny Q5 (~31 MB) · Quality keep-up</string>
     <string name="model_accurate">Accurate — ggml Small (~182 MB) · Quality path</string>
@@ -70,10 +68,10 @@
     <string name="model_partial">Partial download — can resume</string>
     <string name="notif_channel">Live captions</string>
     <string name="notif_title">Caption Action is running</string>
-    <string name="notif_text">Live subtitles overlay active — tap the green dot to end</string>
+    <string name="notif_text">Device-audio captions active — tap the green dot to end</string>
     <string name="download_can_resume">Partial download found — tap to resume</string>
     <string name="loading_engine">Warming up captions…</string>
-    <string name="listening">Listening for device audio…</string>
+    <string name="listening">Listening (device audio)…</string>
     <string name="transcribing">Transcribing…</string>
     <string name="status_catching_up">Still listening — catching up…</string>
     <string name="status_no_audio_signal">No device audio signal</string>
@@ -102,6 +100,6 @@
     <string name="translation_pack_failed">Translation pack issue: %1$s — packs keep preparing in the background. Captions may stay in the spoken language until ready.</string>
     <string name="translation_pack_missing">Translation pack missing for this language pair. Connect once to download, then retry.</string>
     <string name="starting_captions">Starting live captions…</string>
-    <string name="starting_captions_hint">Preparing session — you will get the screen-share prompt next.</string>
+    <string name="starting_captions_hint">Preparing session — allow screen sharing to caption device audio (microphone is never used).</string>
     <string name="starting_requesting_capture">Opening screen-share prompt…</string>
 </resources>

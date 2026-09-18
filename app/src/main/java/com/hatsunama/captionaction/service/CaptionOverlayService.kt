@@ -172,7 +172,7 @@ class CaptionOverlayService : Service() {
         showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
         showCloseFab()
         audioCapture.startPump(scope)
-        setSessionStatus(getString(R.string.listening_playback), loading = true)
+        setSessionStatus(getString(R.string.listening), loading = true)
 
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
@@ -193,7 +193,7 @@ class CaptionOverlayService : Service() {
         preferred.setTargetLanguage(settings.targetLanguage)
         val dualAllowed = preferred.canProvideDualSubtitles() && settings.dualSubtitles
         preferred.setDualSubtitles(dualAllowed)
-        preferred.setPlaybackCapture(audioCapture.usingPlaybackCapture)
+        preferred.setPlaybackCapture(true)
         val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
         if (!loaded) {
             preferred.release()
@@ -274,7 +274,7 @@ class CaptionOverlayService : Service() {
 
             // Sustained near-zero RMS with no pump/queue activity → honest "no signal".
             // Healthy playback RMS or advancing chunks must never look like "no device audio".
-            val quietGate = if (audioCapture.usingPlaybackCapture) 2f else 40f
+            val quietGate = 2f // playback capture only (never mic)
             val signalHealthy = rms >= quietGate ||
                 chunksAdvancing ||
                 depthBefore > 0 ||
@@ -336,7 +336,7 @@ class CaptionOverlayService : Service() {
             activeEngine.setTargetLanguage(settingsNow.targetLanguage)
             val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
             activeEngine.setDualSubtitles(dualNow)
-            activeEngine.setPlaybackCapture(audioCapture.usingPlaybackCapture)
+            activeEngine.setPlaybackCapture(true)
             if (overrunsRising) {
                 activeEngine.discardPendingAudio()
             }
@@ -521,13 +521,8 @@ class CaptionOverlayService : Service() {
         }
     }
 
+    /** Fail session: Toast, tear down overlay/FGS, return to Home (main menu). Never starts mic. */
     private fun failSession(message: String) {
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-        stopSelfSafe()
-    }
-
-    /** Capture/projection failure: clear toast, tear down (no overlay), bring user to Home. */
-    private fun failSessionReturnHome(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         val home = Intent(this, HomeActivity::class.java).apply {
             addFlags(
@@ -536,9 +531,14 @@ class CaptionOverlayService : Service() {
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
             )
         }
-        startActivity(home)
+        try {
+            startActivity(home)
+        } catch (_: Exception) {
+        }
         stopSelfSafe()
     }
+
+    private fun failSessionReturnHome(message: String) = failSession(message)
 
     private fun overlayType(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -902,11 +902,17 @@ class CaptionOverlayService : Service() {
         var instance: CaptionOverlayService? = null
             private set
 
-        fun start(context: Context, resultCode: Int = 0, data: Intent? = null) {
+        /**
+         * Start a Live/Quality session with MediaProjection extras only.
+         * Callers must not invoke this without a granted projection result —
+         * there is no microphone start path.
+         */
+        fun start(context: Context, resultCode: Int, data: Intent) {
+            require(resultCode != 0) { "MediaProjection result required (device audio only)" }
             val i = Intent(context, CaptionOverlayService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_RESULT_CODE, resultCode)
-                if (data != null) putExtra(EXTRA_RESULT_DATA, data)
+                putExtra(EXTRA_RESULT_DATA, data)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(i)

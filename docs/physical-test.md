@@ -52,11 +52,12 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 - Target ≠ spoken/passthrough: captions must appear in the **target** language for Fast and Balanced/Accurate (incl. es/fr/zh/ja/etc.)
 - Dual on: original + translated when async ML Kit succeeds (whisper is single-pass on live)
 - Quality whisper: always language=auto; translate=true only for single-line EN target; dual/non-EN: ASR once + ML Kit
+- Overlay: smaller type, full caption wraps (no ellipsize); drag by caption text still moves bubble
 - Filler loops (`yeah. yeah.`, 嗯, thank-you-for-watching) must **not** spam the overlay; identical/near-dup windows suppressed
 - Target EN + Chinese audio (Live): overlay primary becomes **English** when MT completes (not permanently Chinese); dual shows EN + source
 - Quality (Samsung etc.): with volume up / healthy capture RMS, must **not** show “No device audio signal”; behind whisper → catching-up / listening
 - Idle silence must keep the last real caption (status/spinner only); must **not** invent captions (no silence-fed ASR)
-- Projection revoke mid-session: Toast + session end (no silent mic fallback)
+- Projection revoke mid-session: Toast + session end + return Home (never mic)
 - Home / Start should download MT language packs (status line shows progress); after packs ready, MT works offline
 - Stop via ✕, notification action, or returning to Home (Home stops an active session)
 - Kill/reopen — overlay geometry and language/model settings restore
@@ -71,7 +72,7 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 | Low storage on download | Storage error toast |
 | Model missing / engine load fail / capture fail | Toast + FGS and overlay torn down (not stranded) |
 | MediaProjection declined | Dialog/Toast on Home; no session, no mic |
-| MediaProjection revoked mid-session | Toast + session end |
+| MediaProjection revoked mid-session | Toast + session end + Home |
 
 ## 6. Logs
 

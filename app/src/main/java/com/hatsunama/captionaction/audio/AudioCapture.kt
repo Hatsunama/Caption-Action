@@ -7,7 +7,6 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
@@ -46,7 +45,7 @@ class AudioCapture(private val context: Context) {
     private val lastRms = AtomicReference(0f)
     private var pumpJob: Job? = null
 
-    fun hasMicPermission(): Boolean =
+    fun hasRecordAudioPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
@@ -59,37 +58,10 @@ class AudioCapture(private val context: Context) {
     /** Most recent pump-chunk RMS (PCM16 mono). */
     fun lastRms(): Float = lastRms.get()
 
-    /** Mic path retained for RECORD_AUDIO plumbing tests only — Live/Quality sessions must not call this. */
-    fun startMic(): Boolean {
-        stopPumpAndRecord()
-        if (!hasMicPermission()) return false
-        val sampleRate = SAMPLE_RATE
-        val channel = AudioFormat.CHANNEL_IN_MONO
-        val encoding = AudioFormat.ENCODING_PCM_16BIT
-        val minBuf = AudioRecord.getMinBufferSize(sampleRate, channel, encoding)
-        if (minBuf <= 0) return false
-        val bufBytes = captureBufferBytes(minBuf)
-        val ar = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            sampleRate,
-            channel,
-            encoding,
-            bufBytes
-        )
-        if (ar.state != AudioRecord.STATE_INITIALIZED) {
-            ar.release()
-            return false
-        }
-        ar.startRecording()
-        record = ar
-        usingPlaybackCapture = false
-        return true
-    }
-
     fun startPlaybackCapture(projection: MediaProjection): Boolean {
         stopPumpAndRecord()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        if (!hasMicPermission()) return false
+        if (!hasRecordAudioPermission()) return false
         return try {
             val configBuilder = AudioPlaybackCaptureConfiguration.Builder(projection)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
@@ -193,10 +165,9 @@ class AudioCapture(private val context: Context) {
                         lastDiagAt = now
                         Log.d(
                             TAG,
-                            "captureMode=${if (usingPlaybackCapture) "playback" else "mic"} " +
+                            "captureMode=playback usingPlaybackCapture=$usingPlaybackCapture " +
                                 "chunks=$c overruns=${overrunCount.get()} " +
-                                "q=${pcmQueue.size} rms=${lastRms.get()} " +
-                                "usingPlaybackCapture=$usingPlaybackCapture"
+                                "q=${pcmQueue.size} rms=${lastRms.get()}"
                         )
                     }
                 } else if (n < 0) {
