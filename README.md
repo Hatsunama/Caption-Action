@@ -6,7 +6,7 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.2.4-start-fix** (versionCode 17)
+Current source version: **0.2.5-mute-capture** (versionCode 18)
 
 ## Install (promoted release)
 
@@ -37,7 +37,7 @@ For this private repo, authenticate first (`$env:GH_TOKEN = (gh auth token)`).
 
 ## What it does
 
-1. Capture **sounds playing on the device** (MediaProjection / AudioPlaybackCapture — primary path; mic fallback if declined)
+1. Capture **sounds playing on the device** (MediaProjection / AudioPlaybackCapture — primary path; mic fallback if declined). Captions use internal playback capture and work **independent of speaker volume** when projection is granted (volume can be muted).
 2. Run on-device ASR (SenseVoice or whisper.cpp)
 3. Translate via **ML Kit on-device** when target ≠ spoken/passthrough (optional dual = original + translated)
 4. Show a movable, **resizable** overlay above other apps
