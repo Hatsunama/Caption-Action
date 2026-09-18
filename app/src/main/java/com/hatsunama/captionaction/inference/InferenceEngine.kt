@@ -25,5 +25,8 @@ interface InferenceEngine {
 
     suspend fun transcribe(pcm16le: ShortArray, sampleRateHz: Int): CaptionResult?
 
+    /** Drop partial ASR accumulator so a newest-window catch-up call is not mixed with stale PCM. */
+    fun discardPendingAudio() {}
+
     fun release()
 }

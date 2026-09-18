@@ -138,8 +138,7 @@ class SherpaInferenceEngine(
                 stream.acceptWaveform(floats, sampleRateHz)
                 rec.decode(stream)
                 val result = rec.getResult(stream)
-                val text = result.text.trim()
-                if (text.isEmpty()) return@withContext null
+                val text = AsrJunkFilter.sanitizeOrNull(result.text) ?: return@withContext null
                 val end = System.currentTimeMillis()
                 CaptionResult(
                     text = text,
@@ -159,6 +158,10 @@ class SherpaInferenceEngine(
                 }
             }
         }
+
+    override fun discardPendingAudio() {
+        synchronized(lock) { pcmAccum.clear() }
+    }
 
     override fun release() {
         synchronized(lock) {
