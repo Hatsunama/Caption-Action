@@ -47,6 +47,7 @@ class HomeActivity : AppCompatActivity() {
     private var suppressPersist = true
     private var fontIndex = 0
     private var modelGateDialog: AlertDialog? = null
+    private var startingDialog: AlertDialog? = null
     private var mtPrepareJob: Job? = null
     private var mtEngine: MlKitTranslationEngine? = null
     @Volatile private var mtStatusLine: String = ""
@@ -62,6 +63,7 @@ class HomeActivity : AppCompatActivity() {
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        dismissStartingDialog()
         if (result.resultCode == RESULT_OK && result.data != null) {
             LiveCaptionStarter.startWithProjectionAndMinimize(this, result.resultCode, result.data!!)
         } else {
@@ -84,6 +86,9 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Opening Home while captions run stops them — but not the resume that
+        // follows the MediaProjection result / Start handoff to launcher.
+        if (LiveCaptionStarter.shouldSuppressHomeAutoStop()) return
         if (CaptionOverlayService.instance != null) {
             CaptionOverlayService.stop(this)
         }
@@ -96,6 +101,7 @@ class HomeActivity : AppCompatActivity() {
         mtEngine?.release()
         mtEngine = null
         modelGateDialog?.dismiss()
+        dismissStartingDialog()
         super.onDestroy()
     }
 
@@ -303,6 +309,7 @@ class HomeActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.error_model), Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            showStartingDialog(getString(R.string.starting_captions))
             lifecycleScope.launch {
                 app().settings.update { it.copy(modelTierId = tier.id) }
                 dialog.dismiss()
@@ -386,6 +393,7 @@ class HomeActivity : AppCompatActivity() {
                         refreshStatus()
                         if (cache.isReadyForAsr(tier)) {
                             dialog.dismiss()
+                            showStartingDialog(getString(R.string.starting_captions))
                             proceedAfterModelReady()
                         }
                     }
@@ -414,35 +422,47 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private suspend fun proceedAfterModelReady() {
+        // Never gate Start on ML Kit packs — show loading UI, kick MT in background,
+        // then launch projection / mic immediately after ASR model is ready.
+        showStartingDialog(getString(R.string.starting_captions))
         val settings = app().settings.current()
-        // Ensure MT packs for target (+ common sources) before live session.
-        val engine = mtEngine ?: MlKitTranslationEngine(this).also { mtEngine = it }
-        mtStatusLine = getString(R.string.translation_pack_downloading)
-        val ensure = withContext(Dispatchers.IO) {
-            engine.ensureModels(
-                targetLanguage = settings.targetLanguage,
-                extraSources = settings.passthroughLanguages
-            )
-        }
-        if (ensure is EnsureResult.Failed) {
-            Toast.makeText(
-                this,
-                getString(R.string.translation_pack_failed, ensure.message),
-                Toast.LENGTH_LONG
-            ).show()
-            // Still proceed — ASR works; MT retries in-session.
-        } else {
-            mtStatusLine = getString(R.string.translation_pack_ready)
-        }
+        // Home optional MT status only — do not await.
+        ensureMtPacks(settings.targetLanguage, settings.passthroughLanguages)
         if (LiveCaptionStarter.needsPermissionWalkthrough(settings, this)) {
+            dismissStartingDialog()
             permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
             return
         }
+        showStartingDialog(getString(R.string.starting_requesting_capture))
+        LiveCaptionStarter.beginStartHandoff()
         if (LiveCaptionStarter.shouldRequestProjection()) {
+            // Dismiss before system share-screen UI; handoff flag covers resume.
+            dismissStartingDialog()
             projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
         } else {
+            dismissStartingDialog()
             LiveCaptionStarter.startMicAndMinimize(this)
         }
+    }
+
+    private fun showStartingDialog(status: String) {
+        val existing = startingDialog
+        if (existing != null && existing.isShowing) {
+            existing.findViewById<TextView>(R.id.startingStatus)?.text = status
+            return
+        }
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_starting, null)
+        view.findViewById<TextView>(R.id.startingStatus).text = status
+        startingDialog = AlertDialog.Builder(this)
+            .setView(view)
+            .setCancelable(false)
+            .create()
+            .also { it.show() }
+    }
+
+    private fun dismissStartingDialog() {
+        startingDialog?.dismiss()
+        startingDialog = null
     }
 
     private fun bindLanguageSection() {

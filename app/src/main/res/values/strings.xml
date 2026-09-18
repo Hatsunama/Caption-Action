@@ -78,10 +78,13 @@
     <string name="download_progress_mb">%1$d%% · %2$d / %3$d MB</string>
     <string name="download_already_on_device">Already on device</string>
     <string name="translation_pack_unsupported">Offline MT does not support target %1$s.</string>
-    <string name="model_offline_mt_mlkit">Offline translation: Google ML Kit on-device (any tier → Languages list). Whisper EN translate remains a fast path.</string>
+    <string name="model_offline_mt_mlkit">Offline translation: Google ML Kit on-device (any tier → Languages list). Packs prepare in the background — Start does not wait on them. Whisper EN translate remains a fast path.</string>
     <string name="translation_pack_ready">Translation packs ready</string>
     <string name="translation_pack_downloading">Downloading translation packs…</string>
-    <string name="translation_pack_preparing">Preparing translation packs…</string>
-    <string name="translation_pack_failed">Translation pack issue: %1$s — tap Start again to retry. Captions may stay in the spoken language until packs are ready.</string>
+    <string name="translation_pack_preparing">Preparing translation packs in background…</string>
+    <string name="translation_pack_failed">Translation pack issue: %1$s — packs keep preparing in the background. Captions may stay in the spoken language until ready.</string>
     <string name="translation_pack_missing">Translation pack missing for this language pair. Connect once to download, then retry.</string>
+    <string name="starting_captions">Starting live captions…</string>
+    <string name="starting_captions_hint">Preparing session — you will get the screen-share prompt next.</string>
+    <string name="starting_requesting_capture">Opening screen-share prompt…</string>
 </resources>

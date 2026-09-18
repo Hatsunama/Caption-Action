@@ -19,6 +19,15 @@
         android:padding="14dp"
         android:elevation="6dp">
 
+        <ProgressBar
+            android:id="@+id/captionLoading"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:indeterminate="true"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/captionPrimary"
             android:layout_width="match_parent"

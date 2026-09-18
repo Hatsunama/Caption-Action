@@ -6,7 +6,7 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.2.3-translate** (versionCode 16)
+Current source version: **0.2.4-start-fix** (versionCode 17)
 
 ## Install (promoted release)
 
@@ -68,7 +68,7 @@ Downloads show progress % with cancel/resume via HTTP Range. Models land in `fil
 
 - **Pipeline:** audio → `InferenceEngine` (ASR) → `MlKitTranslationEngine` (policy + offline MT) → subtitle composer → overlay. Settings via DataStore (no ring buffer).
 - **Real ASR:** Fast → `SherpaInferenceEngine` (SenseVoice ONNX, accumulated ~3–12 s windows). Balanced/Accurate → `WhisperCppInferenceEngine` (prebuilt whisper.cpp AAR + ggml bins). No demo/stub caption mode.
-- **Offline MT:** Google ML Kit on-device Translate (`com.google.mlkit:translate`) for the `Languages.kt` set (en/es/fr/de/pt/it/ja/ko/zh/hi/ar/ru/tr/vi/id/nl/pl/uk). Language packs download on Home / Start (target + common sources). After download, MT works offline.
+- **Offline MT:** Google ML Kit on-device Translate (`com.google.mlkit:translate`) for the `Languages.kt` set (en/es/fr/de/pt/it/ja/ko/zh/hi/ar/ru/tr/vi/id/nl/pl/uk). Language packs prepare in the background on Home and after capture starts (target + common sources) — **Start does not wait on MT packs**. After download, MT works offline.
 - **Whisper EN fast path:** when target is English, whisper.cpp `translate=true` (and dual two-pass) still applies; ML Kit covers Fast→any and whisper→non-EN.
 - **Dual:** available for any supported target when original `text` + `translatedText` exist (ML Kit or whisper). Home dual switch enabled accordingly.
 - **Session errors:** model-missing / engine-null / load-fail / capture-fail toast and tear down FGS + overlay (`stopSelfSafe`). MT pack download failure toast with retry; ASR still runs (spoken language until packs ready).
