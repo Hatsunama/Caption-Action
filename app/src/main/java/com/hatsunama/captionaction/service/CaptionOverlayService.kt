@@ -29,7 +29,8 @@ import com.hatsunama.captionaction.data.SubtitleFileRecorder
 import com.hatsunama.captionaction.inference.CaptionDisplay
 import com.hatsunama.captionaction.inference.InferenceEngine
 import com.hatsunama.captionaction.inference.InferenceEngineFactory
-import com.hatsunama.captionaction.inference.PassthroughTranslationEngine
+import com.hatsunama.captionaction.inference.EnsureResult
+import com.hatsunama.captionaction.inference.MlKitTranslationEngine
 import com.hatsunama.captionaction.inference.SubtitleComposer
 import com.hatsunama.captionaction.ui.home.HomeActivity
 import kotlinx.coroutines.CoroutineScope
@@ -57,7 +58,7 @@ class CaptionOverlayService : Service() {
 
     private lateinit var audioCapture: AudioCapture
     private val composer = SubtitleComposer()
-    private val translation = PassthroughTranslationEngine()
+    private var translation: MlKitTranslationEngine? = null
     private lateinit var subtitleRecorder: SubtitleFileRecorder
     private var engine: InferenceEngine? = null
 
@@ -130,6 +131,28 @@ class CaptionOverlayService : Service() {
         }
         engine = preferred
 
+        val mt = MlKitTranslationEngine(this)
+        translation = mt
+        updateCaption(getString(R.string.translation_pack_preparing), null)
+        val ensure = mt.ensureModels(
+            targetLanguage = settings.targetLanguage,
+            extraSources = settings.passthroughLanguages
+        ) { status ->
+            scope.launch(Dispatchers.Main) {
+                updateCaption(status, null)
+            }
+        }
+        if (ensure is EnsureResult.Failed) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    this@CaptionOverlayService,
+                    getString(R.string.translation_pack_failed, ensure.message),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            // Continue: ASR still works; captions stay in spoken language until packs retry.
+        }
+
         var started = false
         if (resultCode != 0 && data != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -179,7 +202,8 @@ class CaptionOverlayService : Service() {
                 val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
                 activeEngine.setDualSubtitles(dualNow)
                 val raw = activeEngine.transcribe(pcm, 16_000) ?: return@readLoop
-                val policy = translation.applyPolicy(raw, settingsNow)
+                val mtEngine = translation ?: return@readLoop
+                val policy = mtEngine.applyPolicy(raw, settingsNow)
                 val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
                     policy,
                     dualNow
@@ -436,6 +460,8 @@ class CaptionOverlayService : Service() {
         audioCapture.stop()
         engine?.release()
         engine = null
+        translation?.release()
+        translation = null
         composer.reset()
         val savedPath = try {
             subtitleRecorder.stopSession()
@@ -460,6 +486,8 @@ class CaptionOverlayService : Service() {
         audioCapture.stop()
         engine?.release()
         engine = null
+        translation?.release()
+        translation = null
         try { subtitleRecorder.discard() } catch (_: Exception) {}
         removeOverlayViews()
         instance = null

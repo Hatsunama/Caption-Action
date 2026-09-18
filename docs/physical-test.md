@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.2.2-restructure** — Home hub + SenseVoice (Fast) + whisper.cpp (Balanced/Accurate).
+Current source: **0.2.3-translate** — Home hub + SenseVoice/whisper ASR + ML Kit offline MT.
 
 ## Preferred: promoted release installer
 
@@ -18,7 +18,7 @@ $env:GH_TOKEN = (gh auth token)
 - Promoted release tag (until superseded): https://github.com/Hatsunama/Caption-Action/releases/tags/v0.1.0-mvp
 - Release package: `com.hatsunama.captionaction`
 
-Only use the debug APK steps below when iterating on a local **0.2.2+** build (whisper + SenseVoice).
+Only use the debug APK steps below when iterating on a local **0.2.3+** build (whisper + SenseVoice + ML Kit MT).
 
 ## 1. Install debug APK (local build / fallback)
 
@@ -48,12 +48,15 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 
 ## 4. Live session checks
 
-- Dual switch visible only for **Balanced/Accurate + English target**; otherwise hint explains single-line mode
-- With dual on + whisper + EN: expect original + English when speech is non-English
-- Fast SenseVoice: ASR only (no dual / no offline MT)
+- Dual switch visible for any **Languages.kt** target (ML Kit MT); hint only if target unsupported
+- Target ≠ spoken/passthrough: captions must appear in the **target** language for Fast and Balanced/Accurate (incl. es/fr/zh/ja/etc.)
+- Dual on: original + translated when MT (or whisper EN two-pass) succeeds
+- Whisper + EN target: EN fast-path still OK; non-EN targets use ML Kit
+- Home / Start should download MT language packs (status line shows progress); after packs ready, MT works offline
 - Idle silence must **not** invent captions (no silence-fed ASR)
 - Stop via ✕, notification action, or returning to Home (Home stops an active session)
 - Kill/reopen — overlay geometry and language/model settings restore
+- Devices without Google Play services may fail ML Kit pack download (ASR still works)
 
 ## 5. Error paths to verify
 
@@ -68,14 +71,15 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 ## 6. Logs
 
 ```bash
-adb logcat -s CaptionOverlayService:* WhisperCppEngine:* SherpaInferenceEngine:* AndroidRuntime:E
+adb logcat -s CaptionOverlayService:* WhisperCppEngine:* SherpaInferenceEngine:* MlKitTranslation:* AndroidRuntime:E
 ```
 
 ## 7. Engines (current)
 
 - Fast → `SherpaInferenceEngine` (SenseVoice OfflineRecognizer), ~3–12 s accumulated windows
 - Balanced/Accurate → `WhisperCppInferenceEngine` (ggml via whisper-android AAR)
-- Factory returns null on native failure — session errors out (no demo fallback)
+- MT → `MlKitTranslationEngine` (ML Kit Translate + language-id when source unknown)
+- Factory returns null on native ASR failure — session errors out (no demo fallback)
 
 References:
 - https://github.com/k2-fsa/sherpa-onnx

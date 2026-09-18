@@ -6,7 +6,7 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.2.2-restructure** (versionCode 15)
+Current source version: **0.2.3-translate** (versionCode 16)
 
 ## Install (promoted release)
 
@@ -39,7 +39,7 @@ For this private repo, authenticate first (`$env:GH_TOKEN = (gh auth token)`).
 
 1. Capture **sounds playing on the device** (MediaProjection / AudioPlaybackCapture — primary path; mic fallback if declined)
 2. Run on-device ASR (SenseVoice or whisper.cpp)
-3. Apply language policy (passthrough languages; optional dual when whisper→EN can supply both lines)
+3. Translate via **ML Kit on-device** when target ≠ spoken/passthrough (optional dual = original + translated)
 4. Show a movable, **resizable** overlay above other apps
 5. End anytime with the floating **✕** or the green stop-dot
 6. Persist settings and overlay geometry locally (DataStore)
@@ -55,23 +55,24 @@ First Start walks: overlay → device audio access → notifications (API 33+) �
 
 | Tier | Approx size | File | Engine |
 |------|-------------|------|--------|
-| **Fast** (default) | ~228 MB | `model.int8.onnx` (SenseVoice) | **Sherpa-ONNX** ASR (zh/en/ja/ko/yue) |
-| **Balanced** | ~57 MB | `ggml-base-q5_1.bin` | **whisper.cpp** ASR (+ optional EN translate) |
-| **Accurate** | ~182 MB | `ggml-small-q5_1.bin` | **whisper.cpp** ASR (+ optional EN translate) |
+| **Fast** (default) | ~228 MB | `model.int8.onnx` (SenseVoice) | **Sherpa-ONNX** ASR + **ML Kit** MT |
+| **Balanced** | ~57 MB | `ggml-base-q5_1.bin` | **whisper.cpp** ASR (+ EN fast-path) + **ML Kit** MT |
+| **Accurate** | ~182 MB | `ggml-small-q5_1.bin` | **whisper.cpp** ASR (+ EN fast-path) + **ML Kit** MT |
 
 SenseVoice URL: https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx  
 Tokens (`tokens.txt`) ship in the APK under `assets/sherpa/` and are copied beside the model on first load.
 
 Downloads show progress % with cancel/resume via HTTP Range. Models land in `files/models/`.
 
-## ASR / translation status (honesty)
+## ASR / translation
 
-- **Pipeline:** audio → `InferenceEngine` → translation policy → subtitle composer → overlay. Settings via DataStore (no ring buffer).
+- **Pipeline:** audio → `InferenceEngine` (ASR) → `MlKitTranslationEngine` (policy + offline MT) → subtitle composer → overlay. Settings via DataStore (no ring buffer).
 - **Real ASR:** Fast → `SherpaInferenceEngine` (SenseVoice ONNX, accumulated ~3–12 s windows). Balanced/Accurate → `WhisperCppInferenceEngine` (prebuilt whisper.cpp AAR + ggml bins). No demo/stub caption mode.
-- **Session errors:** model-missing / engine-null / load-fail / capture-fail toast and tear down FGS + overlay (`stopSelfSafe`).
-- **Native dependencies:** `app/libs/sherpa-onnx-1.13.8.aar` and `app/libs/whisper-android-1.0.0.aar` (arm64-v8a).
-- **English target + whisper:** `translate=true` for single-line EN captions. **Dual** (original + English) runs a two-pass ASR + translate only when dual is on, target is EN, and a ggml tier is selected. The Home dual switch is hidden otherwise (SenseVoice / non-EN targets).
-- **No fake MT** for non-English targets.
+- **Offline MT:** Google ML Kit on-device Translate (`com.google.mlkit:translate`) for the `Languages.kt` set (en/es/fr/de/pt/it/ja/ko/zh/hi/ar/ru/tr/vi/id/nl/pl/uk). Language packs download on Home / Start (target + common sources). After download, MT works offline.
+- **Whisper EN fast path:** when target is English, whisper.cpp `translate=true` (and dual two-pass) still applies; ML Kit covers Fast→any and whisper→non-EN.
+- **Dual:** available for any supported target when original `text` + `translatedText` exist (ML Kit or whisper). Home dual switch enabled accordingly.
+- **Session errors:** model-missing / engine-null / load-fail / capture-fail toast and tear down FGS + overlay (`stopSelfSafe`). MT pack download failure toast with retry; ASR still runs (spoken language until packs ready).
+- **Native / Play Services:** `app/libs/sherpa-onnx-1.13.8.aar` and `app/libs/whisper-android-1.0.0.aar` (arm64-v8a). ML Kit Translate typically needs Google Play services on the device.
 
 ## Build from source (low memory)
 
@@ -92,13 +93,13 @@ Release APK: `app/build/outputs/apk/release/app-release.apk`
 
 - **ui:** Home + PermissionStep + ThankYou — presentation only; start path goes through `LiveCaptionStarter`
 - **service:** `LiveCaptionStarter` (start/projection), `CaptionOverlayService` (session/overlay), `ModelDownloadManager`
-- **inference:** Engines + `InferenceEngineFactory` (Sherpa Fast / whisper.cpp Balanced·Accurate); `PassthroughTranslationEngine` is policy only
+- **inference:** Engines + `InferenceEngineFactory` (Sherpa Fast / whisper.cpp Balanced·Accurate); `MlKitTranslationEngine` owns offline MT + language policy
 - **data:** Settings, `ModelCache`, `SubtitleFileRecorder`
 - **audio:** Capture only (playback or mic)
 
 ## Privacy
 
-100% on-device inference path. No analytics SDKs. No remote database. Internet is used only for optional user-initiated model download.
+100% on-device inference path. No analytics SDKs. No remote database. Internet is used for optional user-initiated ASR model download and one-time ML Kit translation language packs.
 
 ## License
 
