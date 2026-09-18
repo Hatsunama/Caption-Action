@@ -6,7 +6,12 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.10** (versionCode 33)
+Current source version: **0.3.11** (versionCode 34)
+
+## 0.3.11
+
+- Remove bottom red ✕ close FAB from live overlay; green stop-dot (top) remains the stop control.
+- versionName plain `0.3.11`, versionCode 34. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.10
 

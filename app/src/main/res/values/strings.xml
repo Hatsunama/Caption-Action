@@ -55,7 +55,6 @@
     <string name="target_language">Subtitle output language</string>
     <string name="back">Back</string>
     <string name="continue_label">Continue</string>
-    <string name="close_overlay">End captions</string>
     <string name="stop_dot_a11y">Stop captions and return home</string>
     <string name="resize_a11y">Resize caption box</string>
     <string name="error_permission">Permission still needed — try again from the explanation screen.</string>

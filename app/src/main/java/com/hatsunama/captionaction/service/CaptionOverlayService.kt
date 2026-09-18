@@ -68,7 +68,6 @@ class CaptionOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
-    private var closeFabView: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
 
     private lateinit var audioCapture: AudioCapture
@@ -336,7 +335,6 @@ class CaptionOverlayService : Service() {
 
         // Existing product path: overlay on launcher Home, Listening… awaiting device audio.
         showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
-        showCloseFab()
         audioCapture.startPump(scope)
         setSessionStatus(getString(R.string.listening), loading = true)
 
@@ -746,34 +744,6 @@ class CaptionOverlayService : Service() {
         layoutParams = params
     }
 
-    private fun showCloseFab() {
-        if (closeFabView != null) return
-        val density = resources.displayMetrics.density
-        val size = (56 * density).toInt()
-        val fab = TextView(this).apply {
-            text = "✕"
-            textSize = 20f
-            setTextColor(0xFFFFFFFF.toInt())
-            gravity = Gravity.CENTER
-            setBackgroundResource(R.drawable.bg_close_fab)
-            contentDescription = getString(R.string.close_overlay)
-            setOnClickListener { stopAndReturnHome() }
-        }
-        val params = WindowManager.LayoutParams(
-            size,
-            size,
-            overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            y = (24 * density).toInt()
-        }
-        windowManager.addView(fab, params)
-        closeFabView = fab
-    }
-
     private fun stopAndReturnHome() {
         val home = Intent(this, HomeActivity::class.java).apply {
             addFlags(
@@ -1010,10 +980,6 @@ class CaptionOverlayService : Service() {
             try { windowManager.removeView(it) } catch (_: Exception) {}
         }
         overlayView = null
-        closeFabView?.let {
-            try { windowManager.removeView(it) } catch (_: Exception) {}
-        }
-        closeFabView = null
         layoutParams = null
     }
 
