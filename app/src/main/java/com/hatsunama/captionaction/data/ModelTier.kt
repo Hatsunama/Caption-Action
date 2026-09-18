@@ -19,9 +19,9 @@ enum class ModelTier(
     BALANCED(
         id = "balanced",
         displayName = "Balanced",
-        fileName = "ggml-base-q5_1.bin",
-        approxBytes = 57L * 1024 * 1024,
-        downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
+        fileName = "ggml-tiny-q5_1.bin",
+        approxBytes = 31L * 1024 * 1024,
+        downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin",
         engineFamily = EngineFamily.WHISPER_CPP_GGML
     ),
     ACCURATE(

@@ -76,7 +76,36 @@ object AsrJunkFilter {
         "感谢收看",
         "请订阅",
         "订阅",
-        "点赞订阅"
+        "点赞订阅",
+        // Ultra-short CJK particles / crumbs from short SenseVoice windows
+        "的",
+        "了",
+        "吧",
+        "呢",
+        "吗",
+        "嘛",
+        "呀",
+        "哇",
+        "着",
+        "过",
+        "和",
+        "与",
+        "或",
+        "就",
+        "都",
+        "也",
+        "又",
+        "还",
+        "那",
+        "这",
+        "是",
+        "在",
+        "有",
+        "不",
+        "没",
+        "很",
+        "太",
+        "更"
     )
 
     /** Short tokens that, alone or only-repeated, are never useful captions. */
@@ -116,6 +145,12 @@ object AsrJunkFilter {
 
         val normalized = normalize(strippedBrackets)
         if (normalized.isEmpty()) return true
+        // Ultra-short crumbs (≤2 chars after normalize) — SenseVoice 1s fragments / lone particles.
+        val compactNoSpace = normalized.replace(Regex("""\s+"""), "")
+        if (compactNoSpace.length <= 2) return true
+        // Require a bit of real content (non-punctuation) before publish/MT.
+        val contentLen = strippedBrackets.replace(Regex("""[\s\p{Punct}]+"""), "").length
+        if (contentLen <= 2) return true
         if (normalized in EXACT_JUNK) return true
 
         // Common whisper silence / blank markers (with or without punctuation)

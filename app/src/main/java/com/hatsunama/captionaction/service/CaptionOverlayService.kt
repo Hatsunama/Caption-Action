@@ -256,6 +256,9 @@ class CaptionOverlayService : Service() {
         while (coroutineContext.isActive) {
             val overrunsBefore = audioCapture.overrunCount()
             val depthBefore = audioCapture.queueDepth()
+            // Prefer shorter Quality windows when already behind so the next pass finishes sooner.
+            val behindHint = overrunsBefore > lastOverruns || depthBefore >= 3
+            activeEngine.setKeepUpBehind(behindHint)
             val windowSamples = activeEngine.preferredWindowSamples()
             val pcm = audioCapture.drainToNewestWindow(windowSamples) ?: break
             val pcmMs = pcm.size * 1000L / AudioCapture.SAMPLE_RATE
@@ -308,6 +311,20 @@ class CaptionOverlayService : Service() {
                 shownTranscribing = true
                 withContext(Dispatchers.Main) {
                     setSessionStatus(getString(R.string.listening), loading = true)
+                }
+            }
+
+            // UI honesty: last good caption held by design — if no new line for a few seconds
+            // while capture is still advancing, show catching-up (do not wipe caption).
+            val captionStale = hasRealCaption &&
+                lastPublishedAtMs > 0L &&
+                (now - lastPublishedAtMs) >= STALE_CAPTION_MS &&
+                (chunksAdvancing || signalHealthy)
+            if (captionStale && now - lastCatchupStatusAt >= STATUS_THROTTLE_MS) {
+                lastCatchupStatusAt = now
+                withContext(Dispatchers.Main) {
+                    setSessionStatus(getString(R.string.status_catching_up), loading = true)
+                    setCaptionDimmed(true)
                 }
             }
 
@@ -375,6 +392,7 @@ class CaptionOverlayService : Service() {
             lastPublishedAtMs = publishNow
             val seq = ++captionSeq
             hasRealCaption = true
+            withContext(Dispatchers.Main) { setCaptionDimmed(false) }
 
             val mtEngine = translation
             val needsMt = mtEngine != null && likelyNeedsMt(raw, settingsNow)
@@ -715,6 +733,13 @@ class CaptionOverlayService : Service() {
         }
     }
 
+    private fun setCaptionDimmed(dimmed: Boolean) {
+        val view = overlayView ?: return
+        val alpha = if (dimmed) 0.65f else 1f
+        view.findViewById<TextView>(R.id.captionPrimary).alpha = alpha
+        view.findViewById<TextView>(R.id.captionSecondary).alpha = alpha
+    }
+
     private fun updateCaption(primary: String, secondary: String?) {
         val view = overlayView ?: return
         val primaryView = view.findViewById<TextView>(R.id.captionPrimary)
@@ -848,6 +873,8 @@ class CaptionOverlayService : Service() {
         private const val LONG_INFER_STATUS_MS = 3_000L
         /** Suppress near-duplicate captions inside this window (ms). */
         private const val NEAR_DUP_WINDOW_MS = 2_500L
+        /** No new caption while capture advancing → catching-up status (keep last line). */
+        private const val STALE_CAPTION_MS = 4_500L
         const val ACTION_START = "com.hatsunama.captionaction.START"
         const val ACTION_STOP = "com.hatsunama.captionaction.STOP"
         const val EXTRA_RESULT_CODE = "result_code"

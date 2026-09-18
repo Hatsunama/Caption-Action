@@ -6,7 +6,14 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.2-mt-audio** (versionCode 25)
+Current source version: **0.3.3-accuracy-keepup** (versionCode 26)
+
+## 0.3.3-accuracy-keepup
+
+- **Live ASR accuracy (Sherpa):** SenseVoice windows raised ~1.0 s → **~2.25 s** (`LIVE_WINDOW_SAMPLES=36_000`, min gates ~28 k) so phrases are not crumb-fragmented before ML Kit. Ultra-short / lone-particle junk (≤2 chars after normalize, 的/了/吧/…) filtered before publish/MT. Honest tradeoff: Live stays faster than Quality but will not match burned-in subs.
+- **Quality keep-up (whisper):** Balanced model **ggml-base-q5_1 → ggml-tiny-q5_1** (~31 MB) for faster passes on mid devices. Windows **~1.5 s** normally / **~1.125 s when behind** (overruns/backlog via `setKeepUpBehind`) — still ≥1000 ms native min. Goal: caption updates every ~2–3 s on Samsung-class hardware, not once per 10 s+.
+- **EN fast path:** EN target + single-line prefers `language=en, translate=false` (`en-direct`) when recent captions look Latin/EN-heavy; bias falls back to `auto`+translate-to-EN for multilingual sources. Dual / non-EN stay auto + ML Kit.
+- **UI honesty:** if no new caption for >~4.5 s while capture is advancing, status → “Still listening — catching up…” and last caption is lightly dimmed (not wiped). Overlay drag / concurrent MT / yeah junk filters unchanged.
 
 ## 0.3.2-mt-audio
 
@@ -77,7 +84,7 @@ First Start walks: overlay → device audio access → notifications (API 33+) �
 | Tier | Approx size | File | Engine |
 |------|-------------|------|--------|
 | **Fast** (default) | ~228 MB | `model.int8.onnx` (SenseVoice) | **Sherpa-ONNX** ASR + **ML Kit** MT |
-| **Balanced** | ~57 MB | `ggml-base-q5_1.bin` | **whisper.cpp** ASR (+ EN fast-path) + **ML Kit** MT |
+| **Balanced** | ~31 MB | `ggml-tiny-q5_1.bin` | **whisper.cpp** ASR (+ EN fast-path) + **ML Kit** MT |
 | **Accurate** | ~182 MB | `ggml-small-q5_1.bin` | **whisper.cpp** ASR (+ EN fast-path) + **ML Kit** MT |
 
 SenseVoice URL: https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx  
