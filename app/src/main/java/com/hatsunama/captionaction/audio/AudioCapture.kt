@@ -27,9 +27,9 @@ import kotlin.coroutines.coroutineContext
  * Continuous PCM capture. A dedicated pump reads AudioRecord into a bounded queue;
  * ASR consumers pull windows and must never block [AudioRecord.read].
  *
- * [drainToNewestWindow] accumulates ~1.0 s of PCM before each ASR call (waiting on the
- * queue while the pump is active). When the consumer falls behind, it drops intermediate
- * chunks and returns a contiguous newest window so live captions stay near real-time.
+ * [drainToNewestWindow] accumulates a full engine window (Live ~2.25 s / Quality ~1.5 s)
+ * before each ASR call (waiting on the queue while the pump is active). When behind, it
+ * drops intermediate chunks and returns a contiguous newest window.
  */
 class AudioCapture(private val context: Context) {
 
@@ -219,7 +219,7 @@ class AudioCapture(private val context: Context) {
     }
 
     /**
-     * Pull a full live ASR window (~[targetSamples] PCM, default ~1.0 s). Accumulates from
+     * Pull a full ASR window (~[targetSamples] PCM; Live ~2.25 s / Quality ~1.5 s). Accumulates from
      * the queue, waiting (poll with timeout) while the pump is still capturing, so live
      * windows are never a single READ_SAMPLES crumb. Only returns a short/partial window when capture
      * has ended and the queue is empty (final flush). When behind (depth ≥ threshold or
@@ -368,12 +368,14 @@ class AudioCapture(private val context: Context) {
         private const val QUEUE_CAPACITY = 24
         private const val TAKE_TIMEOUT_MS = 250L
         private const val DIAG_INTERVAL_MS = 5_000L
-        /** Live ASR window (~1.0 s @ 16 kHz). Drain waits for this while capturing. */
-        /** Live / Sherpa ~1.0 s @ 16 kHz. */
-        const val DEFAULT_WINDOW_SAMPLES = 16_000
-        /** Quality / whisper ~2.5 s — whisper.cpp needs ≥1000 ms and prefers longer. */
-        const val QUALITY_WINDOW_SAMPLES = 40_000
-        const val LIVE_WINDOW_SAMPLES = 16_000
+        /** Default drain target; engines override via preferredWindowSamples(). */
+        const val DEFAULT_WINDOW_SAMPLES = 36_000
+        /** Quality / whisper ~1.5 s — shorter so mid-device passes finish nearer realtime. */
+        const val QUALITY_WINDOW_SAMPLES = 24_000
+        /** Quality when behind (~1.125 s) — still ≥ native 1000 ms min. */
+        const val QUALITY_WINDOW_BEHIND_SAMPLES = 18_000
+        /** Live / Sherpa ~2.25 s — phrase-level SenseVoice (not 1.0 s crumbs). */
+        const val LIVE_WINDOW_SAMPLES = 36_000
         /** If drained chunk count ≥ this, skip intermediate audio. */
         private const val BACKLOG_CHUNK_THRESHOLD = 4
     }

@@ -235,10 +235,11 @@ class SherpaInferenceEngine(
     }
 
     companion object {
-        const val LIVE_WINDOW_SAMPLES = 16_000
+        /** ~2.25 s @ 16 kHz — phrase-level SenseVoice (was 1.0 s crumbs). */
+        const val LIVE_WINDOW_SAMPLES = 36_000
         private const val TAG = "SherpaInferenceEngine"
-        private const val MIN_SAMPLES_MIC = 12_000  // match live drain window
-        private const val MIN_SAMPLES_PLAYBACK = 12_000  // live ~1.0s windows always clear primary gate
+        private const val MIN_SAMPLES_MIC = 28_000  // align with ~2.0–2.25 s live windows
+        private const val MIN_SAMPLES_PLAYBACK = 28_000
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 8

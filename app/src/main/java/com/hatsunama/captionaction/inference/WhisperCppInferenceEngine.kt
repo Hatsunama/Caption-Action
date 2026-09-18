@@ -16,12 +16,14 @@ import kotlinx.coroutines.withContext
 /**
  * Quality-path ASR via whisper.cpp (ffmpegkit AAR).
  *
- * Multilingual by default: language=auto for every source. translate=true only when the
- * subtitle target is English (whisper's built-in translate-to-EN). Dual / non-EN targets keep
- * auto + translate=false and rely on ML Kit async MT — no brittle en-direct fast path.
+ * Windows: ~1.5 s normally; ~1.125 s when [setKeepUpBehind] so mid-device passes finish nearer
+ * realtime (still ≥1000 ms native min). Short PCM is silence-padded.
  *
- * whisper.cpp rejects audio shorter than 1000 ms (`input is too short`); Quality windows are
- * therefore ~2.5 s and short PCM is silence-padded before native transcribe.
+ * Language:
+ * - EN target + !dual: prefer `language=en, translate=false` (`en-direct`) when recent captions
+ *   look Latin/EN-heavy (Samsung EN content) — drops auto+translate tax. Bias falls back to
+ *   `auto` + translate-to-EN when non-Latin / empty speech suggests multilingual source.
+ * - Dual / non-EN: always `auto` + translate=false; ML Kit fills translatedText async.
  */
 class WhisperCppInferenceEngine(
     private val appContext: Context,
@@ -36,6 +38,9 @@ class WhisperCppInferenceEngine(
     @Volatile private var dualSubtitles: Boolean = false
     @Volatile private var playbackCapture: Boolean = false
     @Volatile private var lastMode: String = ""
+    @Volatile private var keepUpBehind: Boolean = false
+    /** ≥0 → prefer en-direct for EN target; negative → auto+translate (multilingual). */
+    @Volatile private var enDirectBias: Int = 1
 
     override fun offlineTranslationTargets(): Set<String> =
         com.hatsunama.captionaction.util.Languages.all.map { it.code }.toSet()
@@ -56,7 +61,12 @@ class WhisperCppInferenceEngine(
 
     override fun lastAsrMode(): String = lastMode
 
-    override fun preferredWindowSamples(): Int = QUALITY_WINDOW_SAMPLES
+    override fun setKeepUpBehind(behind: Boolean) {
+        keepUpBehind = behind
+    }
+
+    override fun preferredWindowSamples(): Int =
+        if (keepUpBehind) QUALITY_WINDOW_BEHIND_SAMPLES else QUALITY_WINDOW_SAMPLES
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
@@ -174,25 +184,54 @@ class WhisperCppInferenceEngine(
             val endMs = System.currentTimeMillis()
             val startMs = endMs - (pcm.size * 1000L / sampleRateHz)
 
-            // Systemic multilingual path (any source → target):
-            // - Always language=auto (never force en-direct; that breaks CN/JA/… sources).
-            // - translate=true only for single-line EN target (whisper translate-to-EN).
-            // - Dual / non-EN: auto + translate=false; ML Kit fills translatedText async.
-            val translateToEn = target == "en" && !dualSubtitles
-            lastMode = if (translateToEn) "auto-translate-en" else "auto-mlkit"
+            val enTargetSingle = target == "en" && !dualSubtitles
+            val useEnDirect = enTargetSingle && enDirectBias >= 0
+            val language: String
+            val translate: Boolean
+            when {
+                useEnDirect -> {
+                    language = "en"
+                    translate = false
+                    lastMode = "en-direct"
+                }
+                enTargetSingle -> {
+                    language = "auto"
+                    translate = true
+                    lastMode = "auto-translate-en"
+                }
+                else -> {
+                    language = "auto"
+                    translate = false
+                    lastMode = "auto-mlkit"
+                }
+            }
             val text = runWhisper(
                 m,
                 wav,
-                language = "auto",
-                translate = translateToEn,
+                language = language,
+                translate = translate,
                 pcmMs = pcm.size * 1000L / sampleRateHz,
                 wavBytes = wav.length(),
                 windowRms = windowRms
-            ) ?: return@withContext null
+            )
+            if (text == null) {
+                // Speech-ish window but no usable text → nudge away from en-direct.
+                if (enTargetSingle && windowRms >= discardGate * 2f) {
+                    enDirectBias = (enDirectBias - 1).coerceAtLeast(-3)
+                }
+                return@withContext null
+            }
+            if (enTargetSingle) {
+                enDirectBias = if (looksMostlyLatin(text)) {
+                    (enDirectBias + 1).coerceAtMost(3)
+                } else {
+                    (enDirectBias - 2).coerceAtLeast(-3)
+                }
+            }
 
             CaptionResult(
                 text = text,
-                language = if (translateToEn) "en" else "auto",
+                language = if (useEnDirect || (enTargetSingle && translate)) "en" else "auto",
                 confidence = 0.8f,
                 startMs = startMs,
                 endMs = endMs,
@@ -254,6 +293,8 @@ class WhisperCppInferenceEngine(
             pcmAccum.clear()
         }
         lastMode = ""
+        keepUpBehind = false
+        enDirectBias = 1
     }
 
     private fun ensureMinDuration(pcm: ShortArray, sampleRateHz: Int, minSamples: Int): ShortArray {
@@ -327,6 +368,13 @@ class WhisperCppInferenceEngine(
         return kotlin.math.sqrt(sum / n.coerceAtLeast(1)).toFloat()
     }
 
+    private fun looksMostlyLatin(text: String): Boolean {
+        val letters = text.filter { it.isLetter() }
+        if (letters.isEmpty()) return false
+        val latin = letters.count { it in 'a'..'z' || it in 'A'..'Z' }
+        return latin * 100 / letters.length >= 70
+    }
+
     private fun normalizeLang(code: String): String {
         val c = code.trim().lowercase()
         if (c.isEmpty() || c == "auto" || c == "unknown") return ""
@@ -335,12 +383,14 @@ class WhisperCppInferenceEngine(
 
     companion object {
         private const val TAG = "WhisperCppEngine"
-        /** Quality drain target ~2.5 s @ 16 kHz — enough for whisper.cpp to emit text. */
-        const val QUALITY_WINDOW_SAMPLES = 40_000
+        /** Quality drain target ~1.5 s @ 16 kHz — shorter passes keep mid-devices updating. */
+        const val QUALITY_WINDOW_SAMPLES = 24_000
+        /** When behind (overruns/backlog): ~1.125 s — still ≥ native 1000 ms. */
+        const val QUALITY_WINDOW_BEHIND_SAMPLES = 18_000
         /** Native whisper.cpp rejects audio under 1000 ms. */
         private const val NATIVE_MIN_SAMPLES = 16_000
-        private const val MIN_SAMPLES_MIC = 32_000
-        private const val MIN_SAMPLES_PLAYBACK = 32_000
+        private const val MIN_SAMPLES_MIC = 16_000
+        private const val MIN_SAMPLES_PLAYBACK = 16_000
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 8

@@ -6,13 +6,13 @@
     <string name="start_live">Start Live Captions</string>
     <string name="product_pick_label">Two products — pick the one that matches how you watch</string>
     <string name="product_live_cta">Live Captions — Fast / near real-time</string>
-    <string name="product_live_blurb">SenseVoice on-device · any app · low latency. Best when you need captions to keep up.</string>
+    <string name="product_live_blurb">SenseVoice on-device · any app · ~2 s phrase windows. Faster than Quality; not burned-in-sub accuracy.</string>
     <string name="product_quality_cta">Quality Captions — Balanced / Accurate</string>
-    <string name="product_quality_blurb">whisper.cpp · more accurate · slower. Best when you can wait a beat for cleaner text (CN, EN, and other languages).</string>
+    <string name="product_quality_blurb">whisper.cpp · cleaner text · updates every few seconds on mid devices. Balanced uses Tiny for keep-up; Accurate is Small.</string>
     <string name="product_live_gate_title">Live Captions</string>
-    <string name="product_live_gate_body">Near real-time captions over any app. Uses the Fast SenseVoice model only.</string>
+    <string name="product_live_gate_body">Near real-time captions over any app (~2 s SenseVoice windows). Uses the Fast SenseVoice model only. Faster than Quality; phrase-level, not burned-in-sub perfect.</string>
     <string name="product_quality_gate_title">Quality Captions</string>
-    <string name="product_quality_gate_body">Higher-accuracy captions with whisper.cpp. Choose Balanced or Accurate. Works for Chinese, English, and other spoken languages into your subtitle target.</string>
+    <string name="product_quality_gate_body">Higher-accuracy captions with whisper.cpp. Balanced (Tiny) keeps up better on mid devices; Accurate (Small) is slower/cleaner. Multilingual via auto; EN target on English content uses a fast path.</string>
     <string name="product_quality_pick_model">Quality model</string>
     <string name="stop_live">Stop captions</string>
     <string name="overlay_preview">Overlay size &amp; font</string>
@@ -39,7 +39,7 @@
     <string name="permission_setup_done">Permissions ready — tap Start live captions again to begin.</string>
     <string name="permission_projection_declined_mic">Playback capture declined — using microphone instead.</string>
     <string name="model_fast">Fast — SenseVoice multilingual (~228 MB) · Live path</string>
-    <string name="model_balanced">Balanced — ggml Base (~57 MB) · Quality path</string>
+    <string name="model_balanced">Balanced — ggml Tiny Q5 (~31 MB) · Quality keep-up</string>
     <string name="model_accurate">Accurate — ggml Small (~182 MB) · Quality path</string>
     <string name="download_model">Download model</string>
     <string name="model_ready">Model ready on device</string>
@@ -72,7 +72,7 @@
     <string name="loading_engine">Warming up captions…</string>
     <string name="listening">Listening for device audio…</string>
     <string name="transcribing">Transcribing…</string>
-    <string name="status_catching_up">Device busy — dropping old audio…</string>
+    <string name="status_catching_up">Still listening — catching up…</string>
     <string name="status_no_audio_signal">No device audio signal</string>
     <string name="overlay_preview_hint">Pick a font here. Move and resize the box on the live overlay after Start.</string>
     <string name="overlay_sample_text">Sample live caption</string>
