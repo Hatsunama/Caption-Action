@@ -22,9 +22,11 @@ class SherpaInferenceEngine(
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
 
-    override fun offlineTranslationTargets(): Set<String> = emptySet()
+    // MT / dual owned by MlKitTranslationEngine; ASR stays ASR-only here.
+    override fun offlineTranslationTargets(): Set<String> =
+        com.hatsunama.captionaction.util.Languages.all.map { it.code }.toSet()
 
-    override fun canProvideDualSubtitles(): Boolean = false
+    override fun canProvideDualSubtitles(): Boolean = true
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()

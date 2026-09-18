@@ -24,10 +24,11 @@ class WhisperCppInferenceEngine(
     private var lastSpeechAt = 0L
     @Volatile private var dualSubtitles: Boolean = false
 
-    override fun offlineTranslationTargets(): Set<String> = setOf("en")
+    // Whisper EN translate remains a fast path; ML Kit covers any Languages.kt target.
+    override fun offlineTranslationTargets(): Set<String> =
+        com.hatsunama.captionaction.util.Languages.all.map { it.code }.toSet()
 
-    override fun canProvideDualSubtitles(): Boolean =
-        normalizeLang(targetLanguage) == "en"
+    override fun canProvideDualSubtitles(): Boolean = true
 
     override fun setTargetLanguage(code: String) {
         targetLanguage = code
@@ -105,11 +106,12 @@ class WhisperCppInferenceEngine(
             try {
                 val target = normalizeLang(targetLanguage)
                 val translateToEn = target == "en"
-                val wantDual = dualSubtitles && translateToEn
+                // Dual + EN: whisper two-pass (ASR + EN). Dual + non-EN: ASR only; ML Kit fills MT.
+                val wantWhisperDualEn = dualSubtitles && translateToEn
                 val end = System.currentTimeMillis()
                 val startMs = end - (samples.size * 1000L / sampleRateHz)
 
-                if (wantDual) {
+                if (wantWhisperDualEn) {
                     val sourceText = runWhisper(m, wav, translate = false) ?: return@withContext null
                     val enText = runWhisper(m, wav, translate = true) ?: sourceText
                     val translated = enText.takeIf { it.isNotEmpty() && it != sourceText }
@@ -121,11 +123,23 @@ class WhisperCppInferenceEngine(
                         endMs = end,
                         translatedText = translated
                     )
-                } else {
-                    val text = runWhisper(m, wav, translate = translateToEn) ?: return@withContext null
+                } else if (translateToEn && !dualSubtitles) {
+                    // Fast path: single-line English via whisper translate.
+                    val text = runWhisper(m, wav, translate = true) ?: return@withContext null
                     CaptionResult(
                         text = text,
-                        language = if (translateToEn) "en" else "auto",
+                        language = "en",
+                        confidence = 0.8f,
+                        startMs = startMs,
+                        endMs = end,
+                        translatedText = null
+                    )
+                } else {
+                    // Non-EN target (or dual non-EN): original ASR text; TranslationEngine → ML Kit.
+                    val text = runWhisper(m, wav, translate = false) ?: return@withContext null
+                    CaptionResult(
+                        text = text,
+                        language = "auto",
                         confidence = 0.8f,
                         startMs = startMs,
                         endMs = end,

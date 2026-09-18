@@ -3,6 +3,7 @@ package com.hatsunama.captionaction.inference
 import android.content.Context
 import android.util.Log
 import com.hatsunama.captionaction.data.ModelTier
+import com.hatsunama.captionaction.util.Languages
 
 object InferenceEngineFactory {
     private const val TAG = "InferenceEngineFactory"
@@ -16,14 +17,16 @@ object InferenceEngineFactory {
     val isWhisperAvailable: Boolean
         get() = whisperProbe ?: probeWhisper().also { whisperProbe = it }
 
-    fun offlineTranslationTargets(tier: ModelTier): Set<String> = when (tier.engineFamily) {
-        ModelTier.EngineFamily.SHERPA_SENSEVOICE -> emptySet()
-        ModelTier.EngineFamily.WHISPER_CPP_GGML -> setOf("en")
-    }
+    /** Offline MT targets via ML Kit Translate (Languages.kt set). Independent of ASR tier. */
+    @Suppress("UNUSED_PARAMETER")
+    fun offlineTranslationTargets(tier: ModelTier): Set<String> =
+        Languages.all.map { it.code }.filter { MlKitTranslationEngine.isSupportedTarget(it) }.toSet()
 
+    /** Dual works whenever ML Kit (or whisper EN) can supply original + translated. */
+    @Suppress("UNUSED_PARAMETER")
     fun canProvideDualSubtitles(tier: ModelTier, targetLanguage: String): Boolean {
         val target = targetLanguage.trim().lowercase()
-        return tier.engineFamily == ModelTier.EngineFamily.WHISPER_CPP_GGML && target == "en"
+        return target.isNotEmpty() && MlKitTranslationEngine.isSupportedTarget(target)
     }
 
     fun create(

@@ -24,7 +24,9 @@ import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
+import com.hatsunama.captionaction.inference.EnsureResult
 import com.hatsunama.captionaction.inference.InferenceEngineFactory
+import com.hatsunama.captionaction.inference.MlKitTranslationEngine
 import com.hatsunama.captionaction.service.CaptionOverlayService
 import com.hatsunama.captionaction.service.LiveCaptionStarter
 import com.hatsunama.captionaction.service.ModelDownloadManager
@@ -45,6 +47,9 @@ class HomeActivity : AppCompatActivity() {
     private var suppressPersist = true
     private var fontIndex = 0
     private var modelGateDialog: AlertDialog? = null
+    private var mtPrepareJob: Job? = null
+    private var mtEngine: MlKitTranslationEngine? = null
+    @Volatile private var mtStatusLine: String = ""
 
     private val permissionFlow = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -87,6 +92,9 @@ class HomeActivity : AppCompatActivity() {
     override fun onDestroy() {
         activeDownloader?.cancel()
         downloadJob?.cancel()
+        mtPrepareJob?.cancel()
+        mtEngine?.release()
+        mtEngine = null
         modelGateDialog?.dismiss()
         super.onDestroy()
     }
@@ -102,6 +110,8 @@ class HomeActivity : AppCompatActivity() {
                 val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
                 val mtTargets = InferenceEngineFactory.offlineTranslationTargets(tier)
                 val target = s.targetLanguage.trim().lowercase()
+                val needsMt = target.isNotEmpty() &&
+                    target !in s.passthroughLanguages.map { it.lowercase() }
                 status.text = buildString {
                     append("Model: ${tier.displayName}")
                     append(
@@ -121,11 +131,69 @@ class HomeActivity : AppCompatActivity() {
                         }
                     )
                     append(" · Target: ").append(s.targetLanguage)
-                    if (target.isNotEmpty() && target !in mtTargets && target !in s.passthroughLanguages.map { it.lowercase() }) {
-                        append("\n")
-                        append(getString(R.string.translation_unavailable_hint, s.targetLanguage, tier.displayName))
+                    append(" · MT: ")
+                    when {
+                        !needsMt -> append("passthrough / same-lang")
+                        target in mtTargets -> append(mtStatusLine.ifBlank { getString(R.string.translation_pack_ready) })
+                        else -> append(getString(R.string.translation_pack_unsupported, s.targetLanguage))
                     }
                 }
+                if (needsMt && target in mtTargets) {
+                    ensureMtPacks(s.targetLanguage, s.passthroughLanguages)
+                }
+            }
+        }
+    }
+
+    private fun ensureMtPacks(target: String, passthrough: Set<String>) {
+        if (mtPrepareJob?.isActive == true) return
+        val engine = mtEngine ?: MlKitTranslationEngine(this).also { mtEngine = it }
+        mtPrepareJob = lifecycleScope.launch {
+            mtStatusLine = getString(R.string.translation_pack_downloading)
+            val result = withContext(Dispatchers.IO) {
+                engine.ensureModels(
+                    targetLanguage = target,
+                    extraSources = passthrough
+                ) { line ->
+                    mtStatusLine = line
+                    runOnUiThread {
+                        // Trigger status refresh via settings flow noop — update TextView directly.
+                        val status = findViewById<TextView>(R.id.statusText)
+                        val cur = status.text?.toString().orEmpty()
+                        val base = cur.substringBefore(" · MT: ").ifBlank { cur }
+                        status.text = if (base.contains(" · MT: ")) {
+                            base.substringBefore(" · MT: ") + " · MT: " + line
+                        } else if (cur.contains(" · MT: ")) {
+                            cur.substringBefore(" · MT: ") + " · MT: " + line
+                        } else {
+                            cur
+                        }
+                    }
+                }
+            }
+            mtStatusLine = when (result) {
+                is EnsureResult.Ready -> getString(R.string.translation_pack_ready)
+                is EnsureResult.Failed -> getString(R.string.translation_pack_failed, result.message)
+            }
+            // Nudge status line once more from latest settings snapshot.
+            val s = app().settings.current()
+            val tier = ModelTier.fromId(s.modelTierId)
+            val present = cache.isPresent(tier)
+            val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
+            val dualOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
+            findViewById<TextView>(R.id.statusText).text = buildString {
+                append("Model: ${tier.displayName}")
+                append(if (present) " ✓ on device. " else " · not downloaded. ")
+                append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
+                append(" Dual: ").append(
+                    when {
+                        !dualOk -> "unavailable"
+                        s.dualSubtitles -> "on"
+                        else -> "off"
+                    }
+                )
+                append(" · Target: ").append(s.targetLanguage)
+                append(" · MT: ").append(mtStatusLine)
             }
         }
     }
@@ -178,14 +246,8 @@ class HomeActivity : AppCompatActivity() {
                 }
                 append("\n")
                 append(getString(R.string.model_gate_download_required))
-                val mt = InferenceEngineFactory.offlineTranslationTargets(tier)
-                if (mt.isEmpty()) {
-                    append("\n")
-                    append(getString(R.string.model_no_offline_mt))
-                } else {
-                    append("\n")
-                    append(getString(R.string.model_offline_mt_en_only))
-                }
+                append("\n")
+                append(getString(R.string.model_offline_mt_mlkit))
             }
             btnUse.isEnabled = ready && !downloading
             btnUse.alpha = if (ready && !downloading) 1f else 0.45f
@@ -353,6 +415,25 @@ class HomeActivity : AppCompatActivity() {
 
     private suspend fun proceedAfterModelReady() {
         val settings = app().settings.current()
+        // Ensure MT packs for target (+ common sources) before live session.
+        val engine = mtEngine ?: MlKitTranslationEngine(this).also { mtEngine = it }
+        mtStatusLine = getString(R.string.translation_pack_downloading)
+        val ensure = withContext(Dispatchers.IO) {
+            engine.ensureModels(
+                targetLanguage = settings.targetLanguage,
+                extraSources = settings.passthroughLanguages
+            )
+        }
+        if (ensure is EnsureResult.Failed) {
+            Toast.makeText(
+                this,
+                getString(R.string.translation_pack_failed, ensure.message),
+                Toast.LENGTH_LONG
+            ).show()
+            // Still proceed — ASR works; MT retries in-session.
+        } else {
+            mtStatusLine = getString(R.string.translation_pack_ready)
+        }
         if (LiveCaptionStarter.needsPermissionWalkthrough(settings, this)) {
             permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
             return
@@ -382,6 +463,7 @@ class HomeActivity : AppCompatActivity() {
             dual.visibility = if (available) View.VISIBLE else View.GONE
             dualHint.visibility = if (available) View.GONE else View.VISIBLE
             dualHint.text = getString(R.string.dual_unavailable_hint)
+            // Dual is available for all Languages.kt targets via ML Kit; hint only if unsupported.
             if (!available) {
                 if (dual.isChecked) dual.isChecked = false
                 if (savedDual) {

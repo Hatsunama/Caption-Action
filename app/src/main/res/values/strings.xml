@@ -38,8 +38,8 @@
     <string name="model_gate_body">Download a model for on-device captions (Fast SenseVoice or Balanced/Accurate whisper.cpp). Models stay on your phone. Interrupted downloads can resume.</string>
     <string name="model_gate_download_required">A real model is required — download Fast, Balanced, or Accurate to start.</string>
     <string name="model_gate_use_start">Use model &amp; start</string>
-    <string name="dual_subtitles">Dual subtitles (original + English)</string>
-    <string name="dual_unavailable_hint">Dual subtitles need Balanced/Accurate whisper.cpp with English target (ASR + translate). Fast SenseVoice and non-English targets stay single-line.</string>
+    <string name="dual_subtitles">Dual subtitles (original + translated)</string>
+    <string name="dual_unavailable_hint">Dual subtitles need a supported target language from the list (offline ML Kit MT).</string>
     <string name="passthrough_hint">Languages left unchanged (passthrough)</string>
     <string name="target_language">Subtitle output language</string>
     <string name="back">Back</string>
@@ -77,7 +77,11 @@
     <string name="download_in_progress">Downloading…</string>
     <string name="download_progress_mb">%1$d%% · %2$d / %3$d MB</string>
     <string name="download_already_on_device">Already on device</string>
-    <string name="translation_unavailable_hint">No offline translation to %1$s for %2$s — captions stay in the spoken language.</string>
-    <string name="model_no_offline_mt">Fast SenseVoice: ASR only (no offline MT).</string>
-    <string name="model_offline_mt_en_only">whisper.cpp: offline translate to English when target is EN. Dual = ASR + translate two-pass.</string>
+    <string name="translation_pack_unsupported">Offline MT does not support target %1$s.</string>
+    <string name="model_offline_mt_mlkit">Offline translation: Google ML Kit on-device (any tier → Languages list). Whisper EN translate remains a fast path.</string>
+    <string name="translation_pack_ready">Translation packs ready</string>
+    <string name="translation_pack_downloading">Downloading translation packs…</string>
+    <string name="translation_pack_preparing">Preparing translation packs…</string>
+    <string name="translation_pack_failed">Translation pack issue: %1$s — tap Start again to retry. Captions may stay in the spoken language until packs are ready.</string>
+    <string name="translation_pack_missing">Translation pack missing for this language pair. Connect once to download, then retry.</string>
 </resources>

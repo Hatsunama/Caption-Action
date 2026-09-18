@@ -7,6 +7,7 @@ interface InferenceEngine {
 
     fun offlineTranslationTargets(): Set<String> = emptySet()
 
+    /** Dual is enabled when TranslationEngine can supply translatedText (ML Kit / whisper EN). */
     fun canProvideDualSubtitles(): Boolean = false
 
     fun setTargetLanguage(code: String) {}
