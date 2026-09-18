@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.2.6-capture-pipeline** — continuous capture queue + single-pass live ASR + async ML Kit MT.
+Current source: **0.2.8-live-latency** — force-flush live windows, EN-direct whisper, full (non-ellipsized) overlay captions.
 
 ## Preferred: promoted release installer
 

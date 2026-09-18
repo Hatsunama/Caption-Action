@@ -1,8 +1,15 @@
 package com.hatsunama.captionaction.inference
 
+/**
+ * Soft-wraps live caption text for the overlay. Does **not** ellipsize or hard-cap to 2 lines —
+ * the primary TextView must show the full current caption (wrap within overlay height).
+ */
 class SubtitleComposer(
     private val maxCharsPerLine: Int = 42,
-    private val maxLines: Int = 2
+    /** Soft wrap line budget; high enough for full sentences in the overlay. */
+    private val maxLines: Int = 12,
+    /** Rolling buffer of recent text (chars); keeps last utterances readable. */
+    private val maxBufferChars: Int = 480
 ) {
     private var current = StringBuilder()
     private var lastUpdate = 0L
@@ -19,9 +26,12 @@ class SubtitleComposer(
         if (current.isNotEmpty()) current.append(' ')
         current.append(cleaned)
 
-        if (current.length > maxCharsPerLine * maxLines * 2) {
+        if (current.length > maxBufferChars) {
             val s = current.toString()
-            current = StringBuilder(s.takeLast(maxCharsPerLine * maxLines))
+            // Trim at a word boundary near the limit so we don't start mid-word.
+            var cut = s.length - maxBufferChars
+            val space = s.indexOf(' ', cut).let { if (it < 0) cut else it + 1 }
+            current = StringBuilder(s.substring(space.coerceIn(0, s.length)))
         }
         return display()
     }
@@ -35,14 +45,20 @@ class SubtitleComposer(
             if (line.isNotEmpty() && line.length + 1 + w.length > maxCharsPerLine) {
                 lines.add(line.toString())
                 line = StringBuilder(w)
-                if (lines.size >= maxLines) break
+                if (lines.size >= maxLines) {
+                    // Keep newest lines if we somehow exceed budget.
+                    while (lines.size >= maxLines) lines.removeAt(0)
+                }
             } else {
                 if (line.isNotEmpty()) line.append(' ')
                 line.append(w)
             }
         }
-        if (lines.size < maxLines && line.isNotEmpty()) lines.add(line.toString())
-        return lines.take(maxLines).joinToString("\n")
+        if (line.isNotEmpty()) {
+            if (lines.size >= maxLines) lines.removeAt(0)
+            lines.add(line.toString())
+        }
+        return lines.joinToString("\n")
     }
 
     fun reset() {

@@ -28,7 +28,7 @@ import kotlin.coroutines.coroutineContext
  * ASR consumers pull windows and must never block [AudioRecord.read].
  *
  * When the ASR consumer falls behind, [drainToNewestWindow] drops intermediate chunks
- * and returns a contiguous newest ~2–4 s window so live captions stay near real-time.
+ * and returns a contiguous newest ~1.5–2 s window so live captions stay near real-time.
  */
 class AudioCapture(private val context: Context) {
 
@@ -336,8 +336,9 @@ class AudioCapture(private val context: Context) {
         private const val QUEUE_CAPACITY = 24
         private const val TAKE_TIMEOUT_MS = 250L
         private const val DIAG_INTERVAL_MS = 5_000L
-        /** Newest window for one whisper/Sherpa call when catching up (~3 s). */
-        const val DEFAULT_WINDOW_SAMPLES = 16_000 * 3
+        /** Newest window for one whisper/Sherpa call when catching up (~1.5 s). */
+        /** Newest window for one ASR call when catching up (~1.5 s live; was 3 s). */
+        const val DEFAULT_WINDOW_SAMPLES = 16_000 * 3 / 2
         /** If drained chunk count ≥ this, skip intermediate audio. */
         private const val BACKLOG_CHUNK_THRESHOLD = 4
     }
