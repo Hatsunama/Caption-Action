@@ -5,12 +5,12 @@
     <string name="privacy_promise">100% on-device · No cloud · No accounts · No ads</string>
     <string name="start_live">Start Live Captions</string>
     <string name="product_pick_label">Two products — pick the one that matches how you watch</string>
-    <string name="product_live_cta">Live Captions — Fast / near real-time</string>
-    <string name="product_live_blurb">SenseVoice on-device (auto) · any app · ~3 s phrase windows · MT to your target. All speech treated equally; wrong-script ASR never shown as primary. Faster than Quality; not burned-in-sub accuracy.</string>
+    <string name="product_live_cta">Live Captions — Continuous multilingual</string>
+    <string name="product_live_blurb">whisper.cpp Tiny (language=auto) · all 18 Languages · any app · ML Kit MT to your target after ASR. EN→EN stays ASR-only (no MT wait). SenseVoice is optional advanced only — not the any-language Live path.</string>
     <string name="product_quality_cta">Quality Captions — Balanced / Accurate</string>
-    <string name="product_quality_blurb">whisper.cpp · cleaner text · updates every few seconds on mid devices. Balanced uses Tiny for keep-up; Accurate is Small.</string>
+    <string name="product_quality_blurb">whisper.cpp · cleaner text · updates every few seconds on mid devices. Balanced uses Tiny for keep-up; Accurate is Small. Quality tier unchanged.</string>
     <string name="product_live_gate_title">Live Captions</string>
-    <string name="product_live_gate_body">Near real-time captions over any app (~3 s SenseVoice auto windows). Captures device speech equally, then translates full phrases to your target. Wrong-script leftovers are held until MT. Faster than Quality; phrase-level, not burned-in-sub perfect.</string>
+    <string name="product_live_gate_body">Continuous multilingual captions over any app via whisper.cpp Tiny (auto). Covers the full Languages list; ML Kit translates to your target after ASR. EN→EN is the fast ASR-only path. Optional SenseVoice is a limited zh/en/ja/ko/yue lane — not required for Live.</string>
     <string name="product_quality_gate_title">Quality Captions</string>
     <string name="product_quality_gate_body">Higher-accuracy captions with whisper.cpp. Balanced (Tiny) keeps up better on mid devices; Accurate (Small) is slower/cleaner. Multilingual via auto; EN target on English content uses a fast path.</string>
     <string name="product_quality_pick_model">Quality model</string>
@@ -39,14 +39,14 @@
     <string name="permission_setup_done">Permissions ready — tap Start live captions again to begin.</string>
     <string name="error_projection_required">Allow screen sharing to caption device audio</string>
     <string name="error_requires_android_10">Caption Action requires Android 10+ for device audio</string>
-    <string name="model_fast">Fast — SenseVoice multilingual (~228 MB) · Live path</string>
-    <string name="model_balanced">Balanced — ggml Tiny Q5 (~31 MB) · Quality keep-up</string>
+    <string name="model_fast">SenseVoice (optional) · zh/en/ja/ko/yue only (~228 MB) · not all-language Live</string>
+    <string name="model_balanced">Balanced — ggml Tiny Q5 (~31 MB) · Live continuous / Quality keep-up</string>
     <string name="model_accurate">Accurate — ggml Small (~182 MB) · Quality path</string>
     <string name="download_model">Download model</string>
     <string name="model_ready">Model ready on device</string>
     <string name="model_missing">Model not downloaded</string>
     <string name="model_gate_title">Choose Live or Quality</string>
-    <string name="model_gate_body">Live uses Fast (SenseVoice). Quality uses Balanced or Accurate (whisper.cpp). Models stay on your phone; interrupted downloads can resume.</string>
+    <string name="model_gate_body">Live defaults to Balanced (whisper Tiny, all Languages). SenseVoice is optional and limited. Quality uses Balanced or Accurate. Models stay on your phone; interrupted downloads can resume.</string>
     <string name="model_gate_download_required">Download the model for this product to start captions.</string>
     <string name="model_gate_use_start">Use model &amp; start</string>
     <string name="dual_subtitles">Dual subtitles (original + translated)</string>
@@ -59,7 +59,7 @@
     <string name="resize_a11y">Resize caption box</string>
     <string name="error_permission">Permission still needed — try again from the explanation screen.</string>
     <string name="error_storage">Not enough storage for the model.</string>
-    <string name="error_model">Model missing or incomplete. Download Fast, Balanced, or Accurate to start captions.</string>
+    <string name="error_model">Model missing or incomplete. Download Balanced (Live/Quality), Accurate, or optional SenseVoice to start captions.</string>
     <string name="error_capture">Could not capture device playback audio. Try Start again.</string>
     <string name="error_projection_claim_failed">Screen-share grant could not be used (expired or already consumed). Tap Start and Allow again.</string>
     <string name="error_projection_stopped">Screen/audio capture was stopped. Captions ended.</string>

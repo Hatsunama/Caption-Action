@@ -245,10 +245,11 @@ class HomeActivity : AppCompatActivity() {
             CaptionProduct.LIVE -> {
                 titleView?.setText(R.string.product_live_gate_title)
                 bodyView?.setText(R.string.product_live_gate_body)
+                // Live default = whisper Tiny (Balanced). SenseVoice optional advanced only.
+                radioBalanced.visibility = View.VISIBLE
                 radioFast.visibility = View.VISIBLE
-                radioBalanced.visibility = View.GONE
                 radioAccurate.visibility = View.GONE
-                radioFast.isChecked = true
+                radioBalanced.isChecked = true
             }
             CaptionProduct.QUALITY -> {
                 titleView?.setText(R.string.product_quality_gate_title)
@@ -263,7 +264,10 @@ class HomeActivity : AppCompatActivity() {
         }
 
         fun selectedTier(): ModelTier = when (product) {
-            CaptionProduct.LIVE -> ModelTier.FAST
+            CaptionProduct.LIVE -> when (group.checkedRadioButtonId) {
+                R.id.radioFast -> ModelTier.FAST
+                else -> ModelTier.BALANCED
+            }
             CaptionProduct.QUALITY -> when (group.checkedRadioButtonId) {
                 R.id.radioAccurate -> ModelTier.ACCURATE
                 else -> ModelTier.BALANCED
@@ -320,7 +324,10 @@ class HomeActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val s = app().settings.current()
             when (product) {
-                CaptionProduct.LIVE -> radioFast.isChecked = true
+                CaptionProduct.LIVE -> when (ModelTier.fromId(s.modelTierId)) {
+                    ModelTier.FAST -> radioFast.isChecked = true
+                    else -> radioBalanced.isChecked = true
+                }
                 CaptionProduct.QUALITY -> when (ModelTier.fromId(s.modelTierId)) {
                     ModelTier.ACCURATE -> radioAccurate.isChecked = true
                     else -> radioBalanced.isChecked = true

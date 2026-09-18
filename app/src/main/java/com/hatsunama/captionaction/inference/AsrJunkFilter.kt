@@ -261,31 +261,7 @@ object AsrJunkFilter {
     /** Dominant writing system of [text] — used for language-agnostic MT/display gates. */
     enum class ScriptFamily { CJK, LATIN, OTHER, EMPTY }
 
-    fun scriptFamilyOf(text: String): ScriptFamily {
-        var cjk = 0
-        var latin = 0
-        var other = 0
-        for (ch in text) {
-            when {
-                Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
-                    ch.code in 0x3040..0x30FF ||
-                    ch.code in 0xAC00..0xD7AF -> cjk++
-                ch in 'A'..'Z' || ch in 'a'..'z' ||
-                    Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.LATIN -> latin++
-                ch.isLetter() -> other++
-            }
-        }
-        val letters = cjk + latin + other
-        if (letters == 0) return ScriptFamily.EMPTY
-        return when {
-            cjk * 2 >= letters -> ScriptFamily.CJK
-            latin * 2 >= letters -> ScriptFamily.LATIN
-            other * 2 >= letters -> ScriptFamily.OTHER
-            cjk >= latin && cjk >= other -> ScriptFamily.CJK
-            latin >= other -> ScriptFamily.LATIN
-            else -> ScriptFamily.OTHER
-        }
-    }
+    fun scriptFamilyOf(text: String): ScriptFamily = dominantFamily(countScriptLetters(text))
 
     /** Expected script family for a BCP-47-ish language code (language-agnostic table). */
     fun scriptFamilyForLang(code: String): ScriptFamily {
@@ -305,13 +281,56 @@ object AsrJunkFilter {
 
     /**
      * True when painting ASR [sourceText] as primary would show the wrong script for [targetLang].
-     * Language-agnostic: any source/target script mismatch must wait for MT (never flash leftovers).
+     * Language-agnostic: dominant mismatch OR significant mixed foreign glyphs → hold for MT.
+     * Fixes majority misclassify (e.g. long Latin + a few CJK chars still flashes non-target script).
      */
     fun shouldHoldSourceOffOverlay(sourceText: String, targetLang: String): Boolean {
-        val src = scriptFamilyOf(sourceText)
         val tgt = scriptFamilyForLang(targetLang)
-        if (src == ScriptFamily.EMPTY || tgt == ScriptFamily.EMPTY) return false
-        return src != tgt
+        if (tgt == ScriptFamily.EMPTY) return false
+        val counts = countScriptLetters(sourceText)
+        val letters = counts.cjk + counts.latin + counts.other
+        if (letters == 0) return false
+        val src = dominantFamily(counts)
+        if (src != ScriptFamily.EMPTY && src != tgt) return true
+        // Mixed-script: significant foreign letters even when majority matches target.
+        return when (tgt) {
+            ScriptFamily.LATIN -> counts.cjk >= 2 || counts.other >= 3
+            ScriptFamily.CJK -> counts.other >= 3
+            ScriptFamily.OTHER -> counts.cjk >= 2
+            ScriptFamily.EMPTY -> false
+        }
+    }
+
+    private data class ScriptCounts(val cjk: Int, val latin: Int, val other: Int)
+
+    private fun countScriptLetters(text: String): ScriptCounts {
+        var cjk = 0
+        var latin = 0
+        var other = 0
+        for (ch in text) {
+            when {
+                Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.HAN ||
+                    ch.code in 0x3040..0x30FF ||
+                    ch.code in 0xAC00..0xD7AF -> cjk++
+                ch in 'A'..'Z' || ch in 'a'..'z' ||
+                    Character.UnicodeScript.of(ch.code) == Character.UnicodeScript.LATIN -> latin++
+                ch.isLetter() -> other++
+            }
+        }
+        return ScriptCounts(cjk, latin, other)
+    }
+
+    private fun dominantFamily(c: ScriptCounts): ScriptFamily {
+        val letters = c.cjk + c.latin + c.other
+        if (letters == 0) return ScriptFamily.EMPTY
+        return when {
+            c.cjk * 2 >= letters -> ScriptFamily.CJK
+            c.latin * 2 >= letters -> ScriptFamily.LATIN
+            c.other * 2 >= letters -> ScriptFamily.OTHER
+            c.cjk >= c.latin && c.cjk >= c.other -> ScriptFamily.CJK
+            c.latin >= c.other -> ScriptFamily.LATIN
+            else -> ScriptFamily.OTHER
+        }
     }
 
 

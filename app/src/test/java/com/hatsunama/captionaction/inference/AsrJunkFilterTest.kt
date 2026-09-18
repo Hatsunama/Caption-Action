@@ -99,4 +99,31 @@ class AsrJunkFilterTest {
         assertTrue(AsrJunkFilter.isJunk("yeah"))
         assertTrue(AsrJunkFilter.isJunk("嗯"))
     }
+
+    @Test
+    fun holdSource_mixedLatinMajorityWithCjk_holdsForLatinTarget() {
+        // Majority Latin must not bypass the gate when CJK glyphs are present.
+        assertTrue(
+            AsrJunkFilter.shouldHoldSourceOffOverlay(
+                "Hello everyone this is a long English line 你好",
+                "en"
+            )
+        )
+        assertTrue(
+            AsrJunkFilter.shouldHoldSourceOffOverlay(
+                "Muchas gracias por todo 谢谢",
+                "es"
+            )
+        )
+    }
+
+    @Test
+    fun holdSource_pureLatin_stillPassesForLatinTarget() {
+        assertFalse(
+            AsrJunkFilter.shouldHoldSourceOffOverlay(
+                "Hello everyone this is a long English line only",
+                "en"
+            )
+        )
+    }
 }
