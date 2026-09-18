@@ -37,12 +37,6 @@ class PermissionStepActivity : AppCompatActivity() {
         goTo(Step.PROJECTION)
     }
 
-    private val projectionLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { _ ->
-        finishWalkthrough()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_permission_step)
@@ -109,7 +103,7 @@ class PermissionStepActivity : AppCompatActivity() {
                 if (LiveCaptionStarter.shouldRequestProjection()) {
                     body.setText(R.string.permission_projection_why)
                     primary.setText(R.string.permission_projection_action)
-                    hint.text = "Required for device-audio captions. Declining means Start cannot caption — microphone is never used."
+                    hint.text = "The system share prompt appears when you tap Start — not here. Every Start asks again (grants expire)."
                 } else {
                     body.setText(R.string.error_requires_android_10)
                     primary.setText(R.string.continue_label)
@@ -178,12 +172,13 @@ class PermissionStepActivity : AppCompatActivity() {
     }
 
     private fun requestProjectionConsent() {
-        if (LiveCaptionStarter.shouldRequestProjection()) {
-            projectionLauncher.launch(LiveCaptionStarter.createScreenCaptureIntent(this))
-        } else {
+        // Educational only — do NOT fire createScreenCaptureIntent here.
+        // Firing it during walkthrough wastes a single-use grant token and can leave
+        // Start with a stale/consumed Intent path. Real prompt is only on Home Start.
+        if (!LiveCaptionStarter.shouldRequestProjection()) {
             Toast.makeText(this, getString(R.string.error_requires_android_10), Toast.LENGTH_LONG).show()
-            finishWalkthrough()
         }
+        finishWalkthrough()
     }
 
     private fun finishWalkthrough() {

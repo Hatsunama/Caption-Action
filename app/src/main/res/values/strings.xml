@@ -34,8 +34,8 @@
     <string name="permission_notif_why">A quiet notification keeps the live session running in the background.</string>
     <string name="permission_notif_action">Allow notifications</string>
     <string name="permission_projection_title">Capture sounds playing on device</string>
-    <string name="permission_projection_why">Android’s screen-capture prompt lets Caption Action hear app playback (YouTube, games, media). Captions use device audio only — never the microphone. Allow screen sharing or the session cannot start.</string>
-    <string name="permission_projection_action">Continue to system prompt</string>
+    <string name="permission_projection_why">When you tap Start, Android asks which screen to share so Caption Action can hear app playback (YouTube, games, media). Captions use device audio only — never the microphone. Choose entire screen (or the app playing audio) and Allow.</string>
+    <string name="permission_projection_action">Got it — continue</string>
     <string name="permission_setup_done">Permissions ready — tap Start live captions again to begin.</string>
     <string name="error_projection_required">Allow screen sharing to caption device audio</string>
     <string name="error_requires_android_10">Caption Action requires Android 10+ for device audio</string>
@@ -61,7 +61,8 @@
     <string name="error_permission">Permission still needed — try again from the explanation screen.</string>
     <string name="error_storage">Not enough storage for the model.</string>
     <string name="error_model">Model missing or incomplete. Download Fast, Balanced, or Accurate to start captions.</string>
-    <string name="error_capture">Could not capture device playback audio. Allow screen sharing and try again.</string>
+    <string name="error_capture">Could not capture device playback audio. Try Start again.</string>
+    <string name="error_projection_claim_failed">Screen-share grant could not be used (expired or already consumed). Tap Start and Allow again.</string>
     <string name="error_projection_stopped">Screen/audio capture was stopped. Captions ended.</string>
     <string name="error_engine_load">Could not load on-device ASR. Re-download the selected model or reinstall the app.</string>
     <string name="resume_download">Resume download</string>
