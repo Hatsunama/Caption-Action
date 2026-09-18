@@ -27,8 +27,9 @@ import kotlin.coroutines.coroutineContext
  * Continuous PCM capture. A dedicated pump reads AudioRecord into a bounded queue;
  * ASR consumers pull windows and must never block [AudioRecord.read].
  *
- * When the ASR consumer falls behind, [drainToNewestWindow] drops intermediate chunks
- * and returns a contiguous newest ~1.5–2 s window so live captions stay near real-time.
+ * [drainToNewestWindow] accumulates ~1.0 s of PCM before each ASR call (waiting on the
+ * queue while the pump is active). When the consumer falls behind, it drops intermediate
+ * chunks and returns a contiguous newest window so live captions stay near real-time.
  */
 class AudioCapture(private val context: Context) {
 
@@ -218,31 +219,62 @@ class AudioCapture(private val context: Context) {
     }
 
     /**
-     * Pull audio for one ASR call. When queue depth is high or overruns are rising,
-     * drops intermediate chunks and returns a contiguous newest ~[targetSamples] window
-     * so the consumer skips backlog instead of drowning in old speech.
+     * Pull a full live ASR window (~[targetSamples] PCM, default ~1.0 s). Accumulates from
+     * the queue, waiting (poll with timeout) while the pump is still capturing, so live
+     * windows are never a single READ_SAMPLES crumb. Only returns a short/partial window when capture
+     * has ended and the queue is empty (final flush). When behind (depth ≥ threshold or
+     * total > target), keeps a contiguous newest ~[targetSamples] slice.
      */
     suspend fun drainToNewestWindow(targetSamples: Int = DEFAULT_WINDOW_SAMPLES): ShortArray? {
-        val first = takeChunk() ?: return null
         val chunks = ArrayList<ShortArray>(QUEUE_CAPACITY)
+        var total = 0
+
+        val first = takeChunk() ?: return null
         chunks.add(first)
-        while (true) {
-            val next = pcmQueue.poll() ?: break
-            chunks.add(next)
+        total += first.size
+
+        // Drain whatever is already queued, then wait for more until we hit targetSamples.
+        while (total < targetSamples && coroutineContext.isActive) {
+            var drained = false
+            while (true) {
+                val next = pcmQueue.poll() ?: break
+                chunks.add(next)
+                total += next.size
+                drained = true
+                if (total >= targetSamples) break
+            }
+            if (total >= targetSamples) break
+
+            val capturing = record != null && pumpJob?.isActive == true
+            if (!capturing && pcmQueue.isEmpty()) {
+                // Capture ended — allow a short final window rather than blocking forever.
+                break
+            }
+
+            val waited = pcmQueue.poll(TAKE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            if (waited != null) {
+                chunks.add(waited)
+                total += waited.size
+            } else if (record == null && pcmQueue.isEmpty()) {
+                break
+            } else if (pumpJob?.isActive != true && pcmQueue.isEmpty()) {
+                break
+            }
+            // else: timeout while still capturing — keep waiting for a full window
+            if (!drained && waited == null && !capturing) break
         }
 
+        if (chunks.isEmpty()) return null
+
         val depth = chunks.size
-        val behind = depth >= BACKLOG_CHUNK_THRESHOLD
-        if (behind) {
+        val behind = depth >= BACKLOG_CHUNK_THRESHOLD || total > targetSamples
+        if (behind && total > targetSamples) {
             Log.i(
                 TAG,
-                "drainToNewest: behind depth=$depth overruns=${overrunCount.get()} " +
+                "drainToNewest: behind depth=$depth samples=$total overruns=${overrunCount.get()} " +
                     "→ keep newest ~${targetSamples} samples"
             )
         }
-
-        var total = 0
-        for (c in chunks) total += c.size
 
         // Keep contiguous newest window (always contiguous from the end of drained chunks).
         val keepFrom: Int
@@ -268,7 +300,7 @@ class AudioCapture(private val context: Context) {
             pos += c.size
         }
         // If the oldest kept chunk is larger than remaining budget, trim from the front.
-        if (out.size > targetSamples && behind) {
+        if (out.size > targetSamples && (behind || total > targetSamples)) {
             val start = out.size - targetSamples
             return out.copyOfRange(start, out.size)
         }
@@ -336,9 +368,8 @@ class AudioCapture(private val context: Context) {
         private const val QUEUE_CAPACITY = 24
         private const val TAKE_TIMEOUT_MS = 250L
         private const val DIAG_INTERVAL_MS = 5_000L
-        /** Newest window for one whisper/Sherpa call when catching up (~1.5 s). */
-        /** Newest window for one ASR call when catching up (~1.5 s live; was 3 s). */
-        const val DEFAULT_WINDOW_SAMPLES = 16_000 * 3 / 2
+        /** Live ASR window (~1.0 s @ 16 kHz). Drain waits for this while capturing. */
+        const val DEFAULT_WINDOW_SAMPLES = 16_000
         /** If drained chunk count ≥ this, skip intermediate audio. */
         private const val BACKLOG_CHUNK_THRESHOLD = 4
     }

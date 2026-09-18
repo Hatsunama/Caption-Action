@@ -281,9 +281,9 @@ class WhisperCppInferenceEngine(
     companion object {
         private const val TAG = "WhisperCppEngine"
         /** Mic live min ~1.5 s. */
-        private const val MIN_SAMPLES_MIC = 16_000 * 3 / 2
+        private const val MIN_SAMPLES_MIC = 12_000  // match live drain window
         /** Playback live min ~1.25 s (was 2 s) so first caption arrives sooner. */
-        private const val MIN_SAMPLES_PLAYBACK = 16_000 + 4_000
+        private const val MIN_SAMPLES_PLAYBACK = 12_000  // live ~1.0s windows always clear primary gate
         private const val FLUSH_AT_SPEECH = 16_000 * 5
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         /** Max keep ~8 s. */
