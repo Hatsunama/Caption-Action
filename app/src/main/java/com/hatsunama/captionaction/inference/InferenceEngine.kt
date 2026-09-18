@@ -40,6 +40,9 @@ interface InferenceEngine {
     /** Last ASR mode tag for diagnostics (`en-direct` / `auto-translate`). */
     fun lastAsrMode(): String = ""
 
+    /** Preferred PCM window for live drain. Whisper Quality needs ~2.5s; Sherpa Live ~1.0s. */
+    fun preferredWindowSamples(): Int = 16_000
+
     /** Drop partial ASR accumulator so a newest-window catch-up call is not mixed with stale PCM. */
     fun discardPendingAudio() {}
 

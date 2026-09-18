@@ -369,7 +369,11 @@ class AudioCapture(private val context: Context) {
         private const val TAKE_TIMEOUT_MS = 250L
         private const val DIAG_INTERVAL_MS = 5_000L
         /** Live ASR window (~1.0 s @ 16 kHz). Drain waits for this while capturing. */
+        /** Live / Sherpa ~1.0 s @ 16 kHz. */
         const val DEFAULT_WINDOW_SAMPLES = 16_000
+        /** Quality / whisper ~2.5 s — whisper.cpp needs ≥1000 ms and prefers longer. */
+        const val QUALITY_WINDOW_SAMPLES = 40_000
+        const val LIVE_WINDOW_SAMPLES = 16_000
         /** If drained chunk count ≥ this, skip intermediate audio. */
         private const val BACKLOG_CHUNK_THRESHOLD = 4
     }

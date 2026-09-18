@@ -36,6 +36,8 @@ class SherpaInferenceEngine(
 
     override fun lastAsrMode(): String = lastMode
 
+    override fun preferredWindowSamples(): Int = LIVE_WINDOW_SAMPLES
+
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
         release()
         if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
@@ -84,8 +86,15 @@ class SherpaInferenceEngine(
         forceFlush: Boolean
     ): CaptionResult? =
         withContext(Dispatchers.Default) {
-            val rec = synchronized(lock) { recognizer } ?: return@withContext null
-            if (pcm16le.isEmpty()) return@withContext null
+            val rec = synchronized(lock) { recognizer }
+            if (rec == null) {
+                lastMode = ""
+                return@withContext null
+            }
+            if (pcm16le.isEmpty()) {
+                lastMode = ""
+                return@withContext null
+            }
 
             val now = System.currentTimeMillis()
             val energy = rms(pcm16le)
@@ -141,9 +150,16 @@ class SherpaInferenceEngine(
                 }
                 samples = chunk
             }
-            val pcm = samples ?: return@withContext null
+            val pcm = samples
+            if (pcm == null) {
+                lastMode = ""
+                return@withContext null
+            }
             val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
-            if (rms(pcm) < discardGate) return@withContext null
+            if (rms(pcm) < discardGate) {
+                lastMode = ""
+                return@withContext null
+            }
 
             lastMode = "auto-translate"
             val floats = FloatArray(pcm.size) { i -> pcm[i] / 32768.0f }
@@ -219,6 +235,7 @@ class SherpaInferenceEngine(
     }
 
     companion object {
+        const val LIVE_WINDOW_SAMPLES = 16_000
         private const val TAG = "SherpaInferenceEngine"
         private const val MIN_SAMPLES_MIC = 12_000  // match live drain window
         private const val MIN_SAMPLES_PLAYBACK = 12_000  // live ~1.0s windows always clear primary gate
