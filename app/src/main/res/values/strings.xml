@@ -84,6 +84,7 @@
     <string name="download_starting">Starting download…</string>
     <string name="download_connecting">Connecting…</string>
     <string name="download_in_progress">Downloading…</string>
+    <string name="download_once_patience">Take a little breath — your local AI is settling onto this phone. It can take a bit, and that’s okay. You only have to wait through this once.</string>
     <string name="download_progress_mb">%1$d%% · %2$d / %3$d MB</string>
     <string name="download_already_on_device">Already on device</string>
     <string name="translation_pack_unsupported">Offline MT does not support target %1$s.</string>

@@ -241,6 +241,7 @@ class HomeActivity : AppCompatActivity() {
         val group = view.findViewById<RadioGroup>(R.id.modelGroup)
         val status = view.findViewById<TextView>(R.id.modelStatus)
         val progress = view.findViewById<ProgressBar>(R.id.downloadProgress)
+        val onceHint = view.findViewById<TextView>(R.id.downloadOnceHint)
         val percent = view.findViewById<TextView>(R.id.downloadPercent)
         val btnDownload = view.findViewById<MaterialButton>(R.id.btnDownload)
         val btnUse = view.findViewById<MaterialButton>(R.id.btnUseAndStart)
@@ -360,6 +361,7 @@ class HomeActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.error_storage), Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
+            onceHint.visibility = View.VISIBLE
             progress.visibility = View.VISIBLE
             percent.visibility = View.VISIBLE
             progress.isIndeterminate = false
@@ -397,6 +399,7 @@ class HomeActivity : AppCompatActivity() {
                 val result = withContext(Dispatchers.IO) {
                     mgr.download(tier) { p ->
                         runOnUiThread {
+                            onceHint.visibility = View.VISIBLE
                             progress.visibility = View.VISIBLE
                             percent.visibility = View.VISIBLE
                             progress.isIndeterminate = false
