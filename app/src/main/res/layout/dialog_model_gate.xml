@@ -59,12 +59,22 @@
         android:textColor="@color/ca_text"
         android:textSize="13sp" />
 
+    <TextView
+        android:id="@+id/downloadOnceHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/download_once_patience"
+        android:textColor="@color/ca_muted"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
     <ProgressBar
         android:id="@+id/downloadProgress"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
         android:layout_height="18dp"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:max="100"
         android:progress="0"
         android:indeterminate="false"
