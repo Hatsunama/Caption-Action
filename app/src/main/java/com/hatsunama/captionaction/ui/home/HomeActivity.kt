@@ -247,21 +247,17 @@ class HomeActivity : AppCompatActivity() {
         val btnUse = view.findViewById<MaterialButton>(R.id.btnUseAndStart)
         val btnCancel = view.findViewById<MaterialButton>(R.id.btnCancelGate)
         var downloading = false
-        val radioFast = view.findViewById<RadioButton>(R.id.radioFast)
         val radioBalanced = view.findViewById<RadioButton>(R.id.radioBalanced)
         val titleView = view.findViewById<TextView>(R.id.modelGateTitle)
         val bodyView = view.findViewById<TextView>(R.id.modelGateBody)
-        // Live-only gate: Balanced (whisper Tiny) default; SenseVoice optional advanced.
+        // Live-only gate: Balanced (whisper Tiny) is the sole user-facing path.
+        // ModelTier.FAST/SenseVoice remains available to the engine for compatibility,
+        // but is intentionally not user-facing here.
         titleView?.setText(R.string.product_live_gate_title)
         bodyView?.setText(R.string.product_live_gate_body)
-        radioBalanced.visibility = View.VISIBLE
-        radioFast.visibility = View.VISIBLE
         radioBalanced.isChecked = true
 
-        fun selectedTier(): ModelTier = when (group.checkedRadioButtonId) {
-            R.id.radioFast -> ModelTier.FAST
-            else -> ModelTier.BALANCED
-        }
+        fun selectedTier(): ModelTier = ModelTier.BALANCED
 
         fun refreshStatus() {
             val tier = selectedTier()
@@ -310,14 +306,8 @@ class HomeActivity : AppCompatActivity() {
             }
         }
 
-        lifecycleScope.launch {
-            val s = app().settings.current()
-            when (ModelTier.fromId(s.modelTierId)) {
-                ModelTier.FAST -> radioFast.isChecked = true
-                else -> radioBalanced.isChecked = true // Balanced default; Accurate (if ever saved) maps here
-            }
-            refreshStatus()
-        }
+        radioBalanced.isChecked = true
+        refreshStatus()
 
         group.setOnCheckedChangeListener { _, _ -> refreshStatus() }
 

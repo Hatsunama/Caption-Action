@@ -6,9 +6,9 @@
     <string name="start_live">Start Live Captions</string>
     <string name="product_pick_label">Start live captions when you are ready</string>
     <string name="product_live_cta">Live Captions — Continuous multilingual</string>
-    <string name="product_live_blurb">whisper.cpp Tiny (language=auto) · all 18 Languages · any app · ML Kit MT to your target after ASR. EN→EN stays ASR-only (no MT wait). SenseVoice is optional advanced only — not the any-language Live path.</string>
+    <string name="product_live_blurb">whisper.cpp Tiny (language=auto) · all 18 Languages · any app · ML Kit MT to your target after ASR. EN→EN stays ASR-only (no MT wait).</string>
             <string name="product_live_gate_title">Live Captions</string>
-    <string name="product_live_gate_body">Continuous multilingual captions over any app via whisper.cpp Tiny (auto). Covers the full Languages list; ML Kit translates to your target after ASR. EN→EN is the fast ASR-only path. Optional SenseVoice is a limited zh/en/ja/ko/yue lane — not required for Live.</string>
+    <string name="product_live_gate_body">Continuous multilingual captions over any app via whisper.cpp Tiny (auto). Covers the full Languages list; ML Kit translates to your target after ASR. EN→EN is the fast ASR-only path.</string>
                 <string name="stop_live">Stop captions</string>
     <string name="overlay_preview">Overlay size &amp; font</string>
     <string name="settings_hub">Pick languages and caption font below. Scroll to Start for live captions.</string>
@@ -34,15 +34,14 @@
     <string name="permission_setup_done">Permissions ready — tap Start live captions again to begin.</string>
     <string name="error_projection_required">Allow screen sharing to caption device audio</string>
     <string name="error_requires_android_10">Caption Action requires Android 10+ for device audio</string>
-    <string name="model_fast">SenseVoice (optional) · zh/en/ja/ko/yue only (~228 MB) · not all-language Live</string>
-    <string name="model_balanced">Balanced — ggml Tiny Q5 (~31 MB) · Live continuous (default)</string>
+    <string name="model_balanced">Live — whisper.cpp Tiny (ggml Q5, ~31 MB) · multilingual continuous captions</string>
         <string name="download_model">Download model</string>
     <string name="model_ready">Model ready on device</string>
     <string name="model_missing">Model not downloaded</string>
-    <string name="model_gate_title">Choose Live model</string>
-    <string name="model_gate_body">Live defaults to Balanced (whisper Tiny, all Languages). SenseVoice is optional and limited. Models stay on your phone; interrupted downloads can resume.</string>
+    <string name="model_gate_title">Live model</string>
+    <string name="model_gate_body">Live uses whisper.cpp Tiny (Balanced) for all Languages. The model stays on your phone; interrupted downloads can resume.</string>
     <string name="model_gate_download_required">Download the model to start live captions.</string>
-    <string name="model_gate_use_start">Use model &amp; start</string>
+    <string name="model_gate_use_start">Use Live model &amp; start</string>
     <string name="dual_subtitles">Dual subtitles (original + translated)</string>
     <string name="dual_unavailable_hint">Dual subtitles need a supported target language from the list (offline ML Kit MT).</string>
     <string name="passthrough_hint">Languages left unchanged (passthrough)</string>
@@ -53,7 +52,7 @@
     <string name="resize_a11y">Resize caption box</string>
     <string name="error_permission">Permission still needed — try again from the explanation screen.</string>
     <string name="error_storage">Not enough storage for the model.</string>
-    <string name="error_model">Model missing or incomplete. Download Balanced (Live default) or optional SenseVoice to start captions.</string>
+    <string name="error_model">Model missing or incomplete. Download the Live whisper Tiny model to start captions.</string>
     <string name="error_capture">Could not capture device playback audio. Try Start again.</string>
     <string name="error_projection_claim_failed">Screen-share grant could not be used (expired or already consumed). Tap Start and Allow again.</string>
     <string name="error_projection_stopped">Screen/audio capture was stopped. Captions ended.</string>

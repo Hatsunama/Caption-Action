@@ -40,13 +40,6 @@
             android:text="@string/model_balanced"
             android:checked="true" />
 
-        <RadioButton
-            android:id="@+id/radioFast"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_card_cyan"
-            android:padding="12dp"
-            android:text="@string/model_fast" />
     </RadioGroup>
 
     <TextView
