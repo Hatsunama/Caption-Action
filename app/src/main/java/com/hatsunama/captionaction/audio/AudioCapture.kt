@@ -7,6 +7,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
@@ -98,6 +99,80 @@ class AudioCapture(private val context: Context) {
             usages = intArrayOf(AudioAttributes.USAGE_MEDIA),
             attemptLabel = "mediaOnly"
         )
+    }
+
+    /**
+     * Microphone capture for Mic Translator only.
+     * Live captions must keep using [startPlaybackCapture] (device audio / MediaProjection) —
+     * never call this from the Live overlay path.
+     */
+    fun startMicrophoneCapture(): Boolean {
+        stopPumpAndRecord()
+        if (!hasRecordAudioPermission()) {
+            Log.e(
+                CA_TAG,
+                "EXCEPTION startMicrophoneCapture return-false reason=RECORD_AUDIO_denied " +
+                    "captureMode=none"
+            )
+            return false
+        }
+        return try {
+            val minBuf = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            if (minBuf == AudioRecord.ERROR || minBuf == AudioRecord.ERROR_BAD_VALUE) {
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION startMicrophoneCapture return-false reason=minBuf_invalid " +
+                        "minBuf=$minBuf captureMode=none"
+                )
+                return false
+            }
+            val bufBytes = captureBufferBytes(minBuf)
+            val ar = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufBytes
+            )
+            val state = ar.state
+            if (state != AudioRecord.STATE_INITIALIZED) {
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION startMicrophoneCapture return-false " +
+                        "reason=AudioRecord_STATE_UNINITIALIZED audioRecordState=$state " +
+                        "minBuf=$minBuf bufBytes=$bufBytes captureMode=none"
+                )
+                ar.release()
+                return false
+            }
+            ar.startRecording()
+            val recState = ar.recordingState
+            if (recState != AudioRecord.RECORDSTATE_RECORDING) {
+                Log.e(
+                    CA_TAG,
+                    "EXCEPTION startMicrophoneCapture recordingState_unexpected " +
+                        "recordingState=$recState audioRecordState=$state (continuing)"
+                )
+            }
+            record = ar
+            usingPlaybackCapture = false
+            Log.i(
+                CA_TAG,
+                "startMicrophoneCapture ok captureMode=microphone " +
+                    "audioRecordState=$state recordingState=$recState usingPlaybackCapture=false"
+            )
+            true
+        } catch (e: SecurityException) {
+            Log.e(CA_TAG, "EXCEPTION startMicrophoneCapture SecurityException", e)
+            false
+        } catch (e: Exception) {
+            Log.e(CA_TAG, "EXCEPTION startMicrophoneCapture catch", e)
+            false
+        }
     }
 
     /**
@@ -220,7 +295,7 @@ class AudioCapture(private val context: Context) {
         }
     }
 
-    /** Start the non-blocking capture pump. Call after [startPlaybackCapture] (device audio). */
+    /** Start the non-blocking capture pump. Call after [startPlaybackCapture] or [startMicrophoneCapture]. */
     fun startPump(scope: CoroutineScope) {
         pumpJob?.cancel()
         pcmQueue.clear()
@@ -243,7 +318,7 @@ class AudioCapture(private val context: Context) {
                         lastDiagAt = now
                         Log.d(
                             TAG,
-                            "captureMode=playback usingPlaybackCapture=$usingPlaybackCapture " +
+                            "captureMode=${if (usingPlaybackCapture) "playback" else "microphone"} usingPlaybackCapture=$usingPlaybackCapture " +
                                 "chunks=$c overruns=${overrunCount.get()} " +
                                 "q=${pcmQueue.size} rms=${lastRms.get()}"
                         )

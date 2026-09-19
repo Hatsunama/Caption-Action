@@ -313,6 +313,23 @@
                 android:textSize="12sp" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnMicTranslator"
+                style="@style/Widget.CaptionAction.Button.Secondary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:textColor="@color/ca_on_refract"
+                android:text="@string/mic_translator_cta" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/mic_translator_blurb"
+                android:textColor="@color/ca_on_refract_muted"
+                android:textSize="12sp" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnThankYou"
                 style="@style/Widget.CaptionAction.Button.Secondary"
                 android:layout_width="match_parent"

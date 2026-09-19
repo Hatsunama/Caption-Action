@@ -1,6 +1,9 @@
 package com.hatsunama.captionaction.ui.home
 
 import android.graphics.Typeface
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.LayoutInflater
@@ -13,6 +16,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -31,6 +35,7 @@ import com.hatsunama.captionaction.service.CaptionOverlayService
 import com.hatsunama.captionaction.service.LiveCaptionStarter
 import com.hatsunama.captionaction.service.ModelDownloadManager
 import com.hatsunama.captionaction.ui.thanks.ThankYouActivity
+import com.hatsunama.captionaction.ui.mic.MicTranslatorActivity
 import com.hatsunama.captionaction.util.Languages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -78,6 +83,17 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
+
+    private val micAudioPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startActivity(Intent(this, MicTranslatorActivity::class.java))
+        } else {
+            Toast.makeText(this, getString(R.string.error_permission), Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Charcoal under live refract so no pink flash before first draw.
@@ -92,6 +108,7 @@ class HomeActivity : AppCompatActivity() {
         bindCaptionsSection()
         bindOverlaySection()
         bindStartButton()
+        bindMicTranslatorButton()
         bindThankYouButton()
         bindStatus()
     }
@@ -232,11 +249,20 @@ class HomeActivity : AppCompatActivity() {
 
     private fun bindStartButton() {
         findViewById<MaterialButton>(R.id.btnStartLive).setOnClickListener {
-            showModelGateThenStart()
+            showModelGateThenStart {
+                lifecycleScope.launch { proceedAfterModelReady() }
+            }
         }
     }
 
-    private fun showModelGateThenStart() {
+    private fun bindMicTranslatorButton() {
+        findViewById<MaterialButton>(R.id.btnMicTranslator).setOnClickListener {
+            showModelGateThenStart { openMicTranslatorAfterAudioPerm() }
+        }
+    }
+
+    /** Shared whisper Tiny / BALANCED gate for Live Captions and Mic Translator. */
+    private fun showModelGateThenStart(onReady: () -> Unit) {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_model_gate, null)
         val group = view.findViewById<RadioGroup>(R.id.modelGroup)
         val status = view.findViewById<TextView>(R.id.modelStatus)
@@ -328,11 +354,10 @@ class HomeActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.error_model), Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            showStartingDialog(getString(R.string.starting_captions))
             lifecycleScope.launch {
                 app().settings.update { it.copy(modelTierId = tier.id) }
                 dialog.dismiss()
-                proceedAfterModelReady()
+                onReady()
             }
         }
 
@@ -414,8 +439,7 @@ class HomeActivity : AppCompatActivity() {
                         refreshStatus()
                         if (cache.isReadyForAsr(tier)) {
                             dialog.dismiss()
-                            showStartingDialog(getString(R.string.starting_captions))
-                            proceedAfterModelReady()
+                            onReady()
                         }
                     }
                     result.exceptionOrNull() is ModelDownloadManager.CancelledException -> {
@@ -440,6 +464,19 @@ class HomeActivity : AppCompatActivity() {
         }
 
         dialog.show()
+    }
+
+
+    private fun openMicTranslatorAfterAudioPerm() {
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            startActivity(Intent(this, MicTranslatorActivity::class.java))
+        } else {
+            micAudioPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     private suspend fun proceedAfterModelReady() {
