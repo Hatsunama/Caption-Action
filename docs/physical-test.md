@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.14** — overlay dynamic caption type (~12–26sp by height + content density); Live whisper Tiny multilingual + ML Kit / SenseVoice optional / wrong-script gate locked from 0.3.13. Start/projection/handoff/device-audio/green-dot unchanged.
+Current source: **0.3.16** — Home Live-only + scrollable Start/Hatsu; overlay dynamic caption type from 0.3.14; Live whisper Tiny multilingual + ML Kit / SenseVoice optional / wrong-script gate locked from 0.3.13. Start/projection/handoff/device-audio/green-dot unchanged.
 
 ## Preferred: promoted release installer
 
@@ -41,7 +41,7 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 ## 3. First-run flow
 
 1. Open **Caption Action** — single **Home** screen (languages, captions save, overlay font, status)
-2. Tap **Live Captions** (whisper Tiny / all Languages; optional SenseVoice) or **Quality Captions** (Balanced·Accurate) — separate products on Home
+2. Scroll to bottom and tap **Live Captions** (whisper Tiny / all Languages; optional SenseVoice) — single Start on Home (Quality product removed in 0.3.16)
 3. Download if needed → one-at-a-time permission walkthrough if required → return to Home → Start again
 4. On Android 10+: MediaProjection prompt; **allow** → overlay on launcher Home with Listening… (session must **stay up** even if nothing is playing — silence is OK). **Decline** → clear dialog (“Allow screen sharing…”) on Home; **no** overlay, **no** mic. Hard playback-init fail after Allow only → Toast “Could not capture device playback audio…” + Home (never for silence)
 5. Confirm overlay updates on real audio; **drag by grabbing the caption text** to move; resize via purple corner handle only; end with the green stop-dot

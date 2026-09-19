@@ -31,31 +31,22 @@
         android:layout_marginTop="14dp">
 
         <RadioButton
-            android:id="@+id/radioFast"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_card_cyan"
-            android:layout_marginBottom="8dp"
-            android:padding="12dp"
-            android:text="@string/model_fast"
-            android:checked="true" />
-
-        <RadioButton
             android:id="@+id/radioBalanced"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="@drawable/bg_card_yellow"
             android:layout_marginBottom="8dp"
             android:padding="12dp"
-            android:text="@string/model_balanced" />
+            android:text="@string/model_balanced"
+            android:checked="true" />
 
         <RadioButton
-            android:id="@+id/radioAccurate"
+            android:id="@+id/radioFast"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_card_lavender"
+            android:background="@drawable/bg_card_cyan"
             android:padding="12dp"
-            android:text="@string/model_accurate" />
+            android:text="@string/model_fast" />
     </RadioGroup>
 
     <TextView

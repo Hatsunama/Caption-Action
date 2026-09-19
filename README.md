@@ -6,7 +6,33 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.14** (versionCode 37)
+Current source version: **0.3.17** (versionCode 40)
+
+## 0.3.17
+
+Home refract motion fix + Languages bubbles (UI only — ASR/MT locked from 0.3.13):
+
+- **Static refract bg:** Choreographer could drop its frame callback while `animating` stayed true, so `setAnimating(true)` early-returned and never re-armed. Fix: always re-arm on enable; sync from `onWindowVisibilityChanged` / first layout; `postInvalidateOnAnimation`; RAY_SAMPLES 24 + slightly faster bounce/spin for unmistakable motion. Pause still freezes `t`.
+- **Languages section:** removed opaque pink `MaterialCardView`; target/passthrough/dual live as small translucent bubbles over refract. Captions/Overlay cards unchanged.
+- versionName plain `0.3.17`, versionCode 40. Debug APK: `com.hatsunama.captionaction.debug`.
+
+## 0.3.16
+
+Home Live-only + scrollable Start/Hatsu (UI only — ASR/MT locked from 0.3.13):
+
+- **Remove Quality product:** no Quality Start CTA, blurbs, or Accurate picker in the model gate. Live = Balanced (whisper Tiny) default; SenseVoice remains optional advanced.
+- **Unstick footer:** Start Live + “Hatsu Is Here For You” move inside the Home `ScrollView` (no sticky scrim). Refract background unchanged.
+- `ACCURATE` / Quality keep-up window constants remain in data/engine code for on-disk downloads — no UI entry.
+- versionName plain `0.3.16`, versionCode 39. Debug APK: `com.hatsunama.captionaction.debug`.
+
+## 0.3.15
+
+Locked Home refract background (live procedural, never video):
+
+- `RefractBackgroundView` + Choreographer: charcoal canvas, 6–8 bouncing nodes, RAYS_PER=5 hairlines, ethereal wedge films, vortex warp only (no center sprite).
+- Seed from hashed ANDROID_ID or first-run UUID (`RefractSeed` / SharedPreferences). Pause freezes `t`; resume continues.
+- Home UI cascade: background behind controls; light section/footer labels on charcoal; footer scrim. ASR/caption pipeline untouched (0.3.13 Whisper Live path).
+- versionName plain `0.3.15`, versionCode 38. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.14
 
@@ -155,7 +181,7 @@ For this private repo, authenticate first (`$env:GH_TOKEN = (gh auth token)`).
 6. Persist settings and overlay geometry locally (DataStore)
 7. Optional **Save subtitles to a text file** (Home → Captions): each live session writes a local UTF-8 `.txt` under Documents/captions
 
-**One Home screen** — languages, captions save toggle, overlay font, and status. **Live** / **Quality** CTAs open the model gate (Live = Balanced whisper Tiny default + optional SenseVoice; Quality = Balanced / Accurate), then permissions if needed, then captions (app minimizes so the overlay sits over other apps).
+**One Home screen** — languages, captions save toggle, overlay font, status, then Start Live + Hatsu at the bottom of the scroll. **Start Live** opens the model gate (Balanced whisper Tiny default + optional SenseVoice), then permissions if needed, then captions (app minimizes so the overlay sits over other apps).
 
 ## Permissions (one at a time)
 
