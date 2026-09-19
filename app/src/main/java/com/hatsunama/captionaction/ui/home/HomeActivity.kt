@@ -51,6 +51,7 @@ class HomeActivity : AppCompatActivity() {
     private var mtPrepareJob: Job? = null
     private var mtEngine: MlKitTranslationEngine? = null
     @Volatile private var mtStatusLine: String = ""
+    private var refractBackground: RefractBackgroundView? = null
 
     private val permissionFlow = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -79,8 +80,13 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Charcoal under live refract so no pink flash before first draw.
+        window.setBackgroundDrawableResource(R.color.ca_refract_charcoal)
         setContentView(R.layout.activity_home)
         cache = ModelCache(this)
+        refractBackground = findViewById(R.id.refractBackground)
+        // Arm early; View also re-arms on attach / first layout / window visible.
+        refractBackground?.setAnimating(true)
 
         bindLanguageSection()
         bindCaptionsSection()
@@ -92,11 +98,20 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Resume locked refract sim from frozen t (never reset on pause).
+        // Always re-arm even if View thinks it is already animating (callback-drop race).
+        refractBackground?.setAnimating(true)
         // Opening Home while captions run stops them — but never during Start
         // handoff / recently-started session (Seeker: goToLauncherHome → Home resume).
         val running = CaptionOverlayService.instance != null
         if (!LiveCaptionStarter.shouldAutoStopOnHomeResume(running)) return
         CaptionOverlayService.stop(this)
+    }
+
+    override fun onPause() {
+        // Freeze Choreographer clock; keep node state + tSec for seamless resume.
+        refractBackground?.setAnimating(false)
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -215,18 +230,13 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
-    private enum class CaptionProduct { LIVE, QUALITY }
-
     private fun bindStartButton() {
         findViewById<MaterialButton>(R.id.btnStartLive).setOnClickListener {
-            showModelGateThenStart(CaptionProduct.LIVE)
-        }
-        findViewById<MaterialButton>(R.id.btnStartQuality).setOnClickListener {
-            showModelGateThenStart(CaptionProduct.QUALITY)
+            showModelGateThenStart()
         }
     }
 
-    private fun showModelGateThenStart(product: CaptionProduct) {
+    private fun showModelGateThenStart() {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_model_gate, null)
         val group = view.findViewById<RadioGroup>(R.id.modelGroup)
         val status = view.findViewById<TextView>(R.id.modelStatus)
@@ -238,40 +248,18 @@ class HomeActivity : AppCompatActivity() {
         var downloading = false
         val radioFast = view.findViewById<RadioButton>(R.id.radioFast)
         val radioBalanced = view.findViewById<RadioButton>(R.id.radioBalanced)
-        val radioAccurate = view.findViewById<RadioButton>(R.id.radioAccurate)
         val titleView = view.findViewById<TextView>(R.id.modelGateTitle)
         val bodyView = view.findViewById<TextView>(R.id.modelGateBody)
-        when (product) {
-            CaptionProduct.LIVE -> {
-                titleView?.setText(R.string.product_live_gate_title)
-                bodyView?.setText(R.string.product_live_gate_body)
-                // Live default = whisper Tiny (Balanced). SenseVoice optional advanced only.
-                radioBalanced.visibility = View.VISIBLE
-                radioFast.visibility = View.VISIBLE
-                radioAccurate.visibility = View.GONE
-                radioBalanced.isChecked = true
-            }
-            CaptionProduct.QUALITY -> {
-                titleView?.setText(R.string.product_quality_gate_title)
-                bodyView?.setText(R.string.product_quality_gate_body)
-                radioFast.visibility = View.GONE
-                radioBalanced.visibility = View.VISIBLE
-                radioAccurate.visibility = View.VISIBLE
-                if (!radioBalanced.isChecked && !radioAccurate.isChecked) {
-                    radioBalanced.isChecked = true
-                }
-            }
-        }
+        // Live-only gate: Balanced (whisper Tiny) default; SenseVoice optional advanced.
+        titleView?.setText(R.string.product_live_gate_title)
+        bodyView?.setText(R.string.product_live_gate_body)
+        radioBalanced.visibility = View.VISIBLE
+        radioFast.visibility = View.VISIBLE
+        radioBalanced.isChecked = true
 
-        fun selectedTier(): ModelTier = when (product) {
-            CaptionProduct.LIVE -> when (group.checkedRadioButtonId) {
-                R.id.radioFast -> ModelTier.FAST
-                else -> ModelTier.BALANCED
-            }
-            CaptionProduct.QUALITY -> when (group.checkedRadioButtonId) {
-                R.id.radioAccurate -> ModelTier.ACCURATE
-                else -> ModelTier.BALANCED
-            }
+        fun selectedTier(): ModelTier = when (group.checkedRadioButtonId) {
+            R.id.radioFast -> ModelTier.FAST
+            else -> ModelTier.BALANCED
         }
 
         fun refreshStatus() {
@@ -323,15 +311,9 @@ class HomeActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             val s = app().settings.current()
-            when (product) {
-                CaptionProduct.LIVE -> when (ModelTier.fromId(s.modelTierId)) {
-                    ModelTier.FAST -> radioFast.isChecked = true
-                    else -> radioBalanced.isChecked = true
-                }
-                CaptionProduct.QUALITY -> when (ModelTier.fromId(s.modelTierId)) {
-                    ModelTier.ACCURATE -> radioAccurate.isChecked = true
-                    else -> radioBalanced.isChecked = true
-                }
+            when (ModelTier.fromId(s.modelTierId)) {
+                ModelTier.FAST -> radioFast.isChecked = true
+                else -> radioBalanced.isChecked = true // Balanced default; Accurate (if ever saved) maps here
             }
             refreshStatus()
         }

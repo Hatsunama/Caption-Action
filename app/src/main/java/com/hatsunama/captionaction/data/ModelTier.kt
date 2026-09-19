@@ -21,7 +21,7 @@ enum class ModelTier(
         engineFamily = EngineFamily.SHERPA_SENSEVOICE
     ),
     /**
-     * Default Live continuous path + Quality keep-up: whisper.cpp Tiny (language=auto).
+     * Default Live continuous path: whisper.cpp Tiny (language=auto).
      * Covers all Languages.all via multilingual ASR + ML Kit MT.
      */
     BALANCED(
@@ -48,7 +48,7 @@ enum class ModelTier(
 
     /** Default continuous Live product uses whisper Tiny (Balanced). */
     val isLive: Boolean get() = this == BALANCED
-    /** Quality product: Balanced keep-up or Accurate. */
+    /** Whisper.cpp family (Balanced Live default; Accurate retained for on-disk downloads). */
     val isQuality: Boolean get() = engineFamily == EngineFamily.WHISPER_CPP_GGML
     /** Optional SenseVoice lane — not “any language” Live. */
     val isOptionalSenseVoice: Boolean get() = this == FAST
