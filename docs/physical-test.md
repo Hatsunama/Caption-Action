@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.20** — Home Live-only + scrollable Start/Hatsu; the gate exposes whisper Tiny (Balanced) only; overlay dynamic caption type and wrong-script gate remain locked from 0.3.13. Start/projection/handoff/device-audio/green-dot unchanged.
+Current source: **0.3.21** — Home order Live → Mic Translator → Hatsu; shared whisper Tiny gate; Mic Translator uses microphone only (no projection). Live Start/projection/handoff/device-audio/green-dot remain mic-free.
 
 ## Preferred: promoted release installer
 

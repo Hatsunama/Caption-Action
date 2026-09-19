@@ -42,6 +42,11 @@
             android:exported="false"
             android:parentActivityName=".ui.home.HomeActivity" />
 
+        <activity
+            android:name=".ui.mic.MicTranslatorActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.home.HomeActivity" />
+
         <service
             android:name=".service.CaptionOverlayService"
             android:exported="false"

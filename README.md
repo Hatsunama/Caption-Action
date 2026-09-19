@@ -6,7 +6,16 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.20** (versionCode 43)
+Current source version: **0.3.21** (versionCode 44)
+
+## 0.3.21
+
+Mic Translator (new product entry on Home):
+
+- Home bottom order: **Live Captions** → **Mic Translator** → **Hatsu Is Here For You**.
+- Mic Translator reuses the same `dialog_model_gate` whisper Tiny / BALANCED download flow as Live (`showModelGateThenStart(onReady)`), then requires `RECORD_AUDIO` before opening the mic screen (no MediaProjection / overlay).
+- In-app mic screen: same `RefractBackgroundView`, scrolling captions, Back + Mic on/off only. Mic ON → `AudioCapture.startMicrophoneCapture()` → whisper Tiny ASR → ML Kit to Home target. Live path stays `startPlaybackCapture` only (mic-free).
+- versionName plain `0.3.21`, versionCode 44. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.20
 
