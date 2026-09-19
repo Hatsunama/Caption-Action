@@ -784,7 +784,7 @@ class CaptionOverlayService : Service() {
             this.x = x
             this.y = y
         }
-        applyFont(view, params.height)
+        applyFont(view, params.height, params.width)
         wireOverlayTouch(view, params, minW, minH)
         view.findViewById<View>(R.id.btnStopDot).setOnClickListener { stopAndReturnHome() }
         windowManager.addView(view, params)
@@ -840,7 +840,7 @@ class CaptionOverlayService : Service() {
                             params.width = min(screenW, max(minW, params.width + dx))
                             val maxH = (screenH * OVERLAY_MAX_HEIGHT_FRACTION).toInt()
                             params.height = min(maxH, max(minH, params.height + dy))
-                            applyFont(view, params.height)
+                            applyFont(view, params.height, params.width)
                         }
                         else -> {}
                     }
@@ -904,7 +904,7 @@ class CaptionOverlayService : Service() {
 
     private enum class TouchMode { NONE, MOVE, RESIZE }
 
-    private fun applyFont(view: View, heightPx: Int) {
+    private fun applyFont(view: View, heightPx: Int, widthPx: Int = layoutParams?.width ?: 0) {
         val primary = view.findViewById<TextView>(R.id.captionPrimary)
         val secondary = view.findViewById<TextView>(R.id.captionSecondary)
         val tf = when (fontIndex) {
@@ -915,11 +915,34 @@ class CaptionOverlayService : Service() {
         primary.typeface = tf
         secondary.typeface = tf
         val density = resources.displayMetrics.density
-        // Prefer smaller type + wrap so full captions fit (no ScrollingMovementMethod — drag).
-        // Flatter height→sp scale so auto-grow adds lines, not giant type.
-        val sp = ((heightPx / density) / 22f).coerceIn(10f, 16f)
+        val w = when {
+            widthPx > 0 -> widthPx
+            view.width > 0 -> view.width
+            else -> 0
+        }
+        val primaryText = primary.text?.toString().orEmpty()
+        val secondaryVisible = secondary.visibility == View.VISIBLE
+        val secondaryText =
+            if (secondaryVisible) secondary.text?.toString().orEmpty() else ""
+        val statusVisible =
+            view.findViewById<TextView>(R.id.captionStatus)?.visibility == View.VISIBLE
+        val sample = primaryText + secondaryText
+        // Dynamic type: height ceiling + content density, then fit-to-bubble binary search.
+        // Tall + short → larger sp (use spare room); long → scale down. Max ~26sp (was 16).
+        val sp = OverlayFontSize.largestFittingSp(
+            heightPx = heightPx,
+            widthPx = w,
+            density = density,
+            primaryChars = primaryText.length,
+            secondaryChars = secondaryText.length,
+            statusVisible = statusVisible,
+            cjkHeavy = OverlayFontSize.isCjkHeavy(sample)
+        )
         primary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
-        secondary.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * 0.85f)
+        secondary.setTextSize(
+            TypedValue.COMPLEX_UNIT_SP,
+            sp * OverlayFontSize.SECONDARY_RATIO
+        )
         // Primary must never ellipsize — full caption wraps inside the bubble.
         primary.maxLines = 32
         primary.ellipsize = null
@@ -970,7 +993,8 @@ class CaptionOverlayService : Service() {
     }
 
     /**
-     * Grow overlay height to fit wrapped caption text, capped at ~48% screen.
+     * Fit type into the current bubble first (dynamic sp), then grow height only if
+     * wrapped caption still overflows — capped at ~48% screen.
      * Only grows (never shrinks) so user drag-resize down sticks. Drag preserved.
      */
     private fun autoGrowOverlayToContent(view: View) {
@@ -985,13 +1009,23 @@ class CaptionOverlayService : Service() {
             val screenH = resources.displayMetrics.heightPixels
             val maxH = (screenH * OVERLAY_MAX_HEIGHT_FRACTION).toInt()
             val minH = (180 * density).toInt()
+            // Prefer larger type in spare room before growing the bubble.
+            applyFont(view, p.height, p.width)
             val widthSpec = View.MeasureSpec.makeMeasureSpec(p.width, View.MeasureSpec.EXACTLY)
             val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
             view.measure(widthSpec, heightSpec)
             val needed = view.measuredHeight.coerceIn(minH, maxH)
             if (needed > p.height + (8 * density).toInt()) {
                 p.height = needed
-                applyFont(view, p.height)
+                // Re-fit after grow: taller bubble may allow slightly larger type;
+                // long captions stay density-capped near MIN_SP (no giant feedback loop).
+                applyFont(view, p.height, p.width)
+                try {
+                    windowManager.updateViewLayout(view, p)
+                } catch (_: Exception) {
+                }
+            } else {
+                // Font may have changed even without a height grow — push layout.
                 try {
                     windowManager.updateViewLayout(view, p)
                 } catch (_: Exception) {

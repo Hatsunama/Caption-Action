@@ -6,7 +6,16 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.13** (versionCode 36)
+Current source version: **0.3.14** (versionCode 37)
+
+## 0.3.14
+
+Seeker overlay dynamic caption type (UI only — ASR/MT/Start/projection locked from 0.3.13):
+
+- **Problem:** Bubble often had unused vertical room while type stayed capped at **16sp** (`(heightDp/22).coerceIn(10,16)`).
+- **Fix:** `OverlayFontSize` — height ceiling + content-density factor, then fit-to-bubble binary search. Tall + short → up to **~26sp**; long dual captions scale toward **~12sp**. Cascaded through `applyFont`, `autoGrowOverlayToContent` (fit first, grow only if still needed), and resize-drag.
+- Drag / green-dot / geometry persist unchanged. No ASR/MT/SenseVoice/Whisper routing changes.
+- versionName plain `0.3.14`, versionCode 37. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.13
 

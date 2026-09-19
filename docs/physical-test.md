@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.13** — Live = whisper Tiny multilingual (auto) + ML Kit; SenseVoice optional; Quality kept; wrong-script final paint gate. Start/projection/handoff/device-audio/green-dot unchanged from 0.3.6–0.3.12.
+Current source: **0.3.14** — overlay dynamic caption type (~12–26sp by height + content density); Live whisper Tiny multilingual + ML Kit / SenseVoice optional / wrong-script gate locked from 0.3.13. Start/projection/handoff/device-audio/green-dot unchanged.
 
 ## Preferred: promoted release installer
 
