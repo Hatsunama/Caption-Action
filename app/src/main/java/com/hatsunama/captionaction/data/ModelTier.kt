@@ -9,8 +9,8 @@ enum class ModelTier(
     val engineFamily: EngineFamily
 ) {
     /**
-     * Optional SenseVoice fast lane (zh/en/ja/ko/yue). Not the default Live product —
-     * does not cover all Languages.all.
+     * Retained SenseVoice fast lane (zh/en/ja/ko/yue) for engine/on-disk compatibility.
+     * Not user-facing in the Live model gate.
      */
     FAST(
         id = "fast",

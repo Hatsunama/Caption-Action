@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.16** — Home Live-only + scrollable Start/Hatsu; overlay dynamic caption type from 0.3.14; Live whisper Tiny multilingual + ML Kit / SenseVoice optional / wrong-script gate locked from 0.3.13. Start/projection/handoff/device-audio/green-dot unchanged.
+Current source: **0.3.20** — Home Live-only + scrollable Start/Hatsu; the gate exposes whisper Tiny (Balanced) only; overlay dynamic caption type and wrong-script gate remain locked from 0.3.13. Start/projection/handoff/device-audio/green-dot unchanged.
 
 ## Preferred: promoted release installer
 
@@ -41,7 +41,7 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 ## 3. First-run flow
 
 1. Open **Caption Action** — single **Home** screen (languages, captions save, overlay font, status)
-2. Scroll to bottom and tap **Live Captions** (whisper Tiny / all Languages; optional SenseVoice) — single Start on Home (Quality product removed in 0.3.16)
+2. Scroll to bottom and tap **Live Captions** (whisper Tiny / all Languages) — single Start on Home (Quality product removed in 0.3.16)
 3. Download if needed → one-at-a-time permission walkthrough if required → return to Home → Start again
 4. On Android 10+: MediaProjection prompt; **allow** → overlay on launcher Home with Listening… (session must **stay up** even if nothing is playing — silence is OK). **Decline** → clear dialog (“Allow screen sharing…”) on Home; **no** overlay, **no** mic. Hard playback-init fail after Allow only → Toast “Could not capture device playback audio…” + Home (never for silence)
 5. Confirm overlay updates on real audio; **drag by grabbing the caption text** to move; resize via purple corner handle only; end with the green stop-dot
@@ -83,7 +83,7 @@ adb logcat -s CaptionOverlayService:* AudioCapture:* WhisperCppEngine:* SherpaIn
 ## 7. Engines (current)
 
 - Wrong-script ASR must never stay as primary when target script differs (held until MT)
-- Fast → `SherpaInferenceEngine` (SenseVoice OfflineRecognizer), ~3–12 s accumulated windows
+- Fast → `SherpaInferenceEngine` (SenseVoice OfflineRecognizer), ~3–12 s accumulated windows; retained but not selectable in the Live gate
 - Balanced/Accurate → `WhisperCppInferenceEngine` (ggml via whisper-android AAR)
 - MT → `MlKitTranslationEngine` (ML Kit Translate + language-id when source unknown)
 - Factory returns null on native ASR failure — session errors out (no demo fallback)
