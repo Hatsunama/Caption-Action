@@ -98,7 +98,7 @@
     <string name="starting_requesting_capture">Opening screen-share prompt…</string>
     <string name="mic_translator">Mic Translator</string>
     <string name="mic_translator_cta">Mic Translator — Speak &amp; translate</string>
-    <string name="mic_translator_blurb">Microphone → whisper Tiny (auto) → ML Kit to your Home target. Same local AI as Live; no screen share.</string>
+    <string name="mic_translator_blurb">Microphone → whisper Tiny (auto) → ML Kit to your Home target (EN target shows ASR directly). Same local AI as Live; no screen share.</string>
     <string name="mic_translator_empty">Tap the mic and speak</string>
     <string name="mic_translator_listening">Listening…</string>
     <string name="mic_translator_mic_on">Microphone on — tap to stop</string>

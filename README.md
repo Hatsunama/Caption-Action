@@ -6,7 +6,17 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.22** (versionCode 45)
+Current source version: **0.3.23** (versionCode 46)
+
+## 0.3.23
+
+Mic Translator snappier continuous ASR (mic path only — Live MediaProjection / Whisper Tiny playback path unchanged):
+
+- Whisper mic flush: `FLUSH_AT_MIC = 24_000` (~1.5 s) replaces the old 5 s `FLUSH_AT_SPEECH`; mic silence-end quiet gap **280 ms** (was 400). `FLUSH_AT_PLAYBACK` / `PLAYBACK_*` RMS untouched.
+- Mic hop ~0.5 s (`HOP_SAMPLES = 8_000`), `forceFlush=false`, pump stays open.
+- EN target (or Latin ASR + EN target): **skip ML Kit** — show raw ASR immediately (no IO applyPolicy hop). Non-EN: publish ASR first, then revise in place when MT returns.
+- Looser mic-side same-utterance revise (shared prefix / token overlap) so growing EN phrases update in place more often.
+- versionName plain `0.3.23`, versionCode 46. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.22
 
