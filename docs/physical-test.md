@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.25** — Mic Translator From/To NumberPickers + explicit Whisper source lang (`mic-source-*`); FIFO drain retained; Live still `drainToNewestWindow` + playbackCapture + source=auto; Start/projection/handoff/device-audio/green-dot remain mic-free.
+Current source: **0.3.26** — Mic always `setSourceLanguage(from)` → `mic-source-zh` etc. (never auto while From set); `translateExplicit` for short From≠To; Whisper meta/music junk suppressed; From/To wheels larger+bold; Live `hasEnoughContentForMt` + empty source/auto + `drainToNewestWindow` unchanged.
 
 ## Preferred: promoted release installer
 
@@ -70,6 +70,15 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 3. Speak continuously / slightly overlap ASR → captions should follow speech **in order** (no dropped mid-utterance words from newest-trim).
 4. logcat: `adb logcat -s MicTranslator:I AudioCapture:I WhisperCppEngine:I` — expect `drainFifo` / `emit drainMs=… asrMs=…` / `mic-en-direct`.
 5. Live Captions smoke: Start → device audio still captions; confirm no mic path (`drainToNewestWindow` / `playbackCapture=true`).
+
+
+## 4c. Mic short MT + meta junk (0.3.26)
+
+1. Mic From=**es** To=**en**: say “Hola” → expect English revision; logcat `NMT explicit ok es→en` and `mode=mic-source-es`.
+2. Mic From=**zh** To=**en**: speak Chinese → expect Chinese ASR or translated EN; **must not** show “speaking in foreign language”. logcat **`mode=mic-source-zh`** (never auto).
+3. Music/meta: `[Música]` / `(speaking in foreign language)` → no caption line.
+4. Live Captions: short crumbs still skip MT; source remains auto (no `setSourceLanguage`).
+5. From/To wheels: labels and language names slightly larger + bold; still bare (no card).
 
 ## 5. Error paths to verify
 

@@ -201,7 +201,9 @@ class WhisperCppInferenceEngine(
             val language: String
             val translate: Boolean
             when {
-                // Mic From picker (or any caller that set source): explicit lang, never whisper-translate.
+                // Mic From picker (or any caller that set source): explicit lang for ALL
+                // Languages.all codes (zh/ja/ko/ar/…), never language=auto, never whisper-translate.
+                // lastMode e.g. mic-source-zh — Live leaves source empty → branches below.
                 explicitSource.isNotEmpty() -> {
                     language = explicitSource
                     translate = false

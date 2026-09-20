@@ -6,7 +6,17 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.25** (versionCode 48)
+Current source version: **0.3.26** (versionCode 49)
+
+## 0.3.26
+
+Mic short-phrase MT + Whisper meta junk + larger From/To wheels (mic path; Live crumb MT gate unchanged):
+
+- **Bug:** Mic From≠To short words (`¡Hola!`) skipped by Live `hasEnoughContentForMt`. Fix: `translateExplicit` for all From≠To pairs (picker langs, diacritics stripped for length, no Live crumb gate).
+- **Bug:** Chinese (and other) audio could show “speaking in foreign language” meta. Fix: `isWhisperMetaLine` + music/stage tags in `isJunk` / sanitize (Live benefits too). Mic always `setSourceLanguage(from)` → Whisper `language=<from>` `translate=false` (`mic-source-zh`, etc.); Live stays source empty / auto.
+- From/To labels + wheel names slightly larger and bold (bare Apple-style).
+- Cascade audit: [`docs/0.3.26-cascade-audit.md`](docs/0.3.26-cascade-audit.md).
+- versionName plain `0.3.26`, versionCode 49. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.25
 

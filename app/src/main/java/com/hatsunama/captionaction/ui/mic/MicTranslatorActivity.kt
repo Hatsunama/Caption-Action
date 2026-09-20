@@ -2,10 +2,12 @@ package com.hatsunama.captionaction.ui.mic
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.util.TypedValue
 import android.widget.NumberPicker
 import android.widget.ScrollView
 import android.widget.TextView
@@ -42,6 +44,7 @@ import kotlin.coroutines.coroutineContext
  * while [micOn]; ASR is serialized (never cancel/skip when infer is slow).
  *
  * From/To NumberPickers (Languages.all) sit under the mic; changes apply next window.
+ * From≠To uses [MlKitTranslationEngine.translateExplicit] (short greetings OK); Live keeps applyPolicy.
  */
 class MicTranslatorActivity : AppCompatActivity() {
 
@@ -143,11 +146,12 @@ class MicTranslatorActivity : AppCompatActivity() {
             picker.displayedValues = langLabels
             picker.wrapSelectorWheel = true
             picker.value = langCodes.indexOf(initialCode).coerceAtLeast(0)
-            picker.setOnValueChangedListener { _, _, newVal ->
+            picker.setOnValueChangedListener { p, _, newVal ->
                 val code = langCodes.getOrElse(newVal) { "en" }
                 onCode(code)
                 persistLanguages()
                 maybeEnsureMtPack(code)
+                applyPickerTextStyle(p)
             }
             styleNumberPickerOpen(picker)
         }
@@ -155,7 +159,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         wire(pickerTo, toCode) { toCode = it }
     }
 
-    /** Apple-like open wheel: hide selection dividers when API allows. */
+    /** Apple-like open wheel: hide dividers; slightly larger + bold scrolled names. */
     private fun styleNumberPickerOpen(picker: NumberPicker) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -180,6 +184,48 @@ class MicTranslatorActivity : AppCompatActivity() {
         }
         try {
             picker.setBackgroundColor(Color.TRANSPARENT)
+        } catch (_: Throwable) {
+        }
+        picker.post { applyPickerTextStyle(picker) }
+    }
+
+    private fun applyPickerTextStyle(picker: NumberPicker) {
+        val sizeSp = 16f
+        fun styleTv(tv: TextView) {
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
+            tv.typeface = Typeface.create(tv.typeface, Typeface.BOLD)
+            try {
+                tv.setTextColor(getColor(R.color.ca_on_refract))
+            } catch (_: Throwable) {
+            }
+        }
+        try {
+            for (i in 0 until picker.childCount) {
+                val child = picker.getChildAt(i)
+                if (child is TextView) styleTv(child)
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            for (field in NumberPicker::class.java.declaredFields) {
+                if (field.name == "mInputText" || field.name == "mSelectorWheelPaint") {
+                    field.isAccessible = true
+                    val v = field.get(picker)
+                    if (v is TextView) styleTv(v)
+                    if (v is android.graphics.Paint) {
+                        v.textSize = TypedValue.applyDimension(
+                            TypedValue.COMPLEX_UNIT_SP,
+                            sizeSp,
+                            resources.displayMetrics
+                        )
+                        v.isFakeBoldText = true
+                        try {
+                            v.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            }
         } catch (_: Throwable) {
         }
     }
@@ -221,8 +267,8 @@ class MicTranslatorActivity : AppCompatActivity() {
             finish()
             return
         }
-        preferred.setSourceLanguage(fromCode)
-        preferred.setTargetLanguage(toCode)
+        preferred.setSourceLanguage(fromCode.trim().ifEmpty { "en" })
+        preferred.setTargetLanguage(toCode.trim().ifEmpty { "en" })
         preferred.setDualSubtitles(settings.dualSubtitles && preferred.canProvideDualSubtitles())
         preferred.setPlaybackCapture(false)
         val loaded = withContext(Dispatchers.IO) { preferred.load(cache.fileFor(tier)) }
@@ -313,9 +359,10 @@ class MicTranslatorActivity : AppCompatActivity() {
             val drainMs = System.currentTimeMillis() - drainStart
             if (!micOn) break
 
-            val source = fromCode
-            val target = toCode
-            active.setSourceLanguage(source)
+            // Product rule: Mic must tell Whisper which language — never auto while From is set.
+            val source = fromCode.trim().ifEmpty { "en" }
+            val target = toCode.trim().ifEmpty { "en" }
+            active.setSourceLanguage(source) // always non-empty → Whisper language=<code>, not auto
             active.setTargetLanguage(target)
             val settings = app().settings.current()
             val dual = active.canProvideDualSubtitles() && settings.dualSubtitles
@@ -335,35 +382,74 @@ class MicTranslatorActivity : AppCompatActivity() {
                 Log.i(TAG, "emit skip empty drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs")
                 continue
             }
-            val norm = AsrJunkFilter.normalize(primaryRaw)
+            // Shared Live path: normalize + sanitize/isJunk (yeah/filler/meta/music/blank).
+            val cleaned = AsrJunkFilter.sanitizeOrNull(primaryRaw)
+            if (cleaned == null) {
+                Log.i(
+                    TAG,
+                    "emit skip sanitize/junk mode=${active.lastAsrMode()} text=${primaryRaw.take(48)}"
+                )
+                continue
+            }
+            if (AsrJunkFilter.isWhisperMetaLine(cleaned) ||
+                AsrJunkFilter.isMusicOrSoundTag(cleaned)
+            ) {
+                Log.i(
+                    TAG,
+                    "emit skip meta/music mode=${active.lastAsrMode()} text=${cleaned.take(48)}"
+                )
+                continue
+            }
+            // From set: drop clear script mismatch (e.g. From=zh but pure Latin meta/wrong lang).
+            // Reuses Live shouldHoldSourceOffOverlay(text, expectedLang) — Mic-only call site.
+            if (AsrJunkFilter.shouldHoldSourceOffOverlay(cleaned, source)) {
+                Log.i(
+                    TAG,
+                    "emit skip wrong-script-for-from from=$source mode=${active.lastAsrMode()} " +
+                        "text=${cleaned.take(48)}"
+                )
+                continue
+            }
+
+            val norm = AsrJunkFilter.normalize(cleaned)
             if (norm.isEmpty()) continue
             if (norm == lastPublishedNorm) {
                 Log.i(TAG, "emit skip dup drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs")
                 continue
             }
-
-            Log.i(
-                TAG,
-                "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
-                    "from=$source to=$target mode=${active.lastAsrMode()} text=${primaryRaw.take(48)}"
-            )
-
+            // Live-style near-dup suppress when not a same-utterance revision (phrase extension OK).
             val now = System.currentTimeMillis()
             val silenceGap = lastEmitAtMs > 0L && (now - lastEmitAtMs) >= UTTERANCE_GAP_MS
             val reviseSameUtterance = !silenceGap &&
                 lastPublishedNorm.isNotEmpty() &&
                 lines.isNotEmpty() &&
                 isSameUtteranceRevision(lastPublishedNorm, norm)
+            if (!reviseSameUtterance &&
+                lastPublishedNorm.isNotEmpty() &&
+                !silenceGap &&
+                AsrJunkFilter.isNearDuplicate(norm, lastPublishedNorm)
+            ) {
+                Log.i(TAG, "emit skip near-dup mode=${active.lastAsrMode()} text=${cleaned.take(48)}")
+                continue
+            }
+
+            Log.i(
+                TAG,
+                "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
+                    "from=$source to=$target mode=${active.lastAsrMode()} text=${cleaned.take(48)}"
+            )
+
             lastPublishedNorm = norm
             lastEmitAtMs = now
 
+            val cleanedResult = raw.copy(text = cleaned, language = source)
             val fromNorm = MlKitTranslationEngine.normalizeLangStatic(source)
             val toNorm = MlKitTranslationEngine.normalizeLangStatic(target)
-            // Same language → ASR only (no MT). Also skip when already tagged as target.
+            // Same language → ASR only (no MT).
             val skipMt = fromNorm == toNorm
 
             if (skipMt) {
-                val line = formatDisplayLine(raw, dual, target)
+                val line = formatDisplayLine(cleanedResult, dual, target)
                 if (line.isBlank()) continue
                 withContext(Dispatchers.Main) {
                     publishCaptionLine(line, replaceLast = reviseSameUtterance)
@@ -371,25 +457,23 @@ class MicTranslatorActivity : AppCompatActivity() {
                 continue
             }
 
-            // Publish ASR immediately, then revise in place when MT returns.
-            val asrTagged = if (raw.language.isBlank() || raw.language == "auto") {
-                raw.copy(language = source)
-            } else {
-                raw
-            }
-            val asrLine = formatDisplayLine(asrTagged, dual, target)
+            // Publish ASR immediately, then revise via explicit picker MT (Mic-only;
+            // Live keeps applyPolicy + hasEnoughContentForMt).
+            val asrLine = formatDisplayLine(cleanedResult, dual, target)
             if (asrLine.isNotBlank()) {
                 withContext(Dispatchers.Main) {
                     publishCaptionLine(asrLine, replaceLast = reviseSameUtterance)
                 }
             }
-            val settingsForMt = settings.copy(targetLanguage = target)
-            val policy = try {
-                mt?.applyPolicy(asrTagged, settingsForMt) ?: asrTagged
+            val translated = try {
+                mt?.translateExplicit(cleaned, source, target)
             } catch (t: Throwable) {
-                Log.w(TAG, "applyPolicy: ${t.message}")
-                asrTagged
+                Log.w(TAG, "translateExplicit: ${t.message}")
+                null
             }
+            // If translate returns null keep ASR only as last resort.
+            if (translated.isNullOrBlank()) continue
+            val policy = cleanedResult.copy(translatedText = translated)
             val line = formatDisplayLine(policy, dual, target)
             if (line.isBlank() || line == asrLine) continue
             withContext(Dispatchers.Main) {
