@@ -6,7 +6,15 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.21** (versionCode 44)
+Current source version: **0.3.22** (versionCode 45)
+
+## 0.3.22
+
+Mic Translator continuous live streaming (mic path only — Live MediaProjection unchanged):
+
+- Mic stays open the whole time mic is ON; ASR loop feeds ~0.75 s hops (`12000` samples @ 16 kHz) with `forceFlush=false` so Whisper’s mic accumulator / speech-end flush runs (no more drain-full-Live-window then force-flush stop-and-go).
+- UI: scrolling captions update the last line in place when ASR revises the same utterance; append on norm change / silence gap. Listening hint while mic on with no lines; empty hint only when mic off and no lines.
+- versionName plain `0.3.22`, versionCode 45. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.21
 
