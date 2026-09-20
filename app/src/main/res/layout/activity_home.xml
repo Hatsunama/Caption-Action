@@ -106,13 +106,13 @@
                     android:background="@drawable/bg_bubble_pink"
                     android:paddingHorizontal="14dp"
                     android:paddingVertical="8dp"
-                    android:text="@string/target_language"
+                    android:text="@string/input_language"
                     android:textStyle="bold"
                     android:textColor="@color/ca_text"
                     android:textSize="13sp" />
 
                 <Spinner
-                    android:id="@+id/spinnerTarget"
+                    android:id="@+id/spinnerInput"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
@@ -128,28 +128,20 @@
                     android:background="@drawable/bg_bubble_pink"
                     android:paddingHorizontal="14dp"
                     android:paddingVertical="8dp"
-                    android:text="@string/passthrough_hint"
+                    android:text="@string/target_language"
                     android:textStyle="bold"
                     android:textColor="@color/ca_text"
                     android:textSize="13sp" />
 
-                <TextView
-                    android:id="@+id/passthroughSummary"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_bubble_cyan_soft"
-                    android:paddingHorizontal="12dp"
-                    android:paddingVertical="8dp"
-                    android:textColor="@color/ca_text"
-                    android:textSize="12sp" />
-
-                <com.google.android.material.chip.ChipGroup
-                    android:id="@+id/passthroughChips"
+                <Spinner
+                    android:id="@+id/spinnerTarget"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    app:chipSpacing="8dp" />
+                    android:background="@drawable/bg_bubble_pink_soft"
+                    android:paddingHorizontal="14dp"
+                    android:paddingVertical="12dp"
+                    android:popupBackground="@color/ca_card_pink" />
 
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/switchDual"

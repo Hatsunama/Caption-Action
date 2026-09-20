@@ -284,7 +284,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             val ensure = mt.ensureModels(
                 targetLanguage = toCode,
-                extraSources = setOf(fromCode) + settings.passthroughLanguages
+                extraSources = setOf(fromCode, settings.inputLanguage).filter { it.isNotBlank() }.toSet()
             )
             if (ensure is EnsureResult.Failed) {
                 Log.w(TAG, "MT packs: ${ensure.message}")

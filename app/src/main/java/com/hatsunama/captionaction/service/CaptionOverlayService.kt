@@ -355,7 +355,11 @@ class CaptionOverlayService : Service() {
             return
         }
         preferred.setTargetLanguage(settings.targetLanguage)
-        val dualAllowed = preferred.canProvideDualSubtitles() && settings.dualSubtitles
+        val inputLang = settings.inputLanguage.trim().ifEmpty { "en" }
+        preferred.setSourceLanguage(inputLang)
+        val inputDiffers = inputLang.lowercase() != settings.targetLanguage.trim().lowercase()
+        val dualAllowed =
+            preferred.canProvideDualSubtitles() && settings.dualSubtitles && inputDiffers
         preferred.setDualSubtitles(dualAllowed)
         preferred.setPlaybackCapture(true)
         val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
@@ -371,7 +375,7 @@ class CaptionOverlayService : Service() {
         scope.launch(Dispatchers.IO) {
             val ensure = mt.ensureModels(
                 targetLanguage = settings.targetLanguage,
-                extraSources = settings.passthroughLanguages
+                extraSources = setOf(settings.inputLanguage.trim().ifEmpty { "en" })
             )
             if (ensure is EnsureResult.Failed) {
                 withContext(Dispatchers.Main) {
@@ -497,8 +501,15 @@ class CaptionOverlayService : Service() {
             lastOverruns = overrunsNow
 
             val settingsNow = app.settings.current()
+            val inputNow = settingsNow.inputLanguage.trim().ifEmpty { "en" }
+            activeEngine.setSourceLanguage(inputNow)
             activeEngine.setTargetLanguage(settingsNow.targetLanguage)
-            val dualNow = activeEngine.canProvideDualSubtitles() && settingsNow.dualSubtitles
+            val inputDiffersNow =
+                inputNow.lowercase() != settingsNow.targetLanguage.trim().lowercase()
+            val dualNow =
+                activeEngine.canProvideDualSubtitles() &&
+                    settingsNow.dualSubtitles &&
+                    inputDiffersNow
             activeEngine.setDualSubtitles(dualNow)
             activeEngine.setPlaybackCapture(true)
             if (overrunsRising) {
@@ -638,14 +649,13 @@ class CaptionOverlayService : Service() {
         if (!raw.translatedText.isNullOrBlank()) return false
         val target = MlKitTranslationEngine.normalizeLangStatic(settings.targetLanguage)
         if (target.isEmpty()) return false
+        val input = MlKitTranslationEngine.normalizeLangStatic(settings.inputLanguage)
+        // ASR-only when user-chosen input matches target (replaces passthrough set).
+        if (input.isNotEmpty() && input == target) return false
         // Language-agnostic: wrong-script ASR vs target always needs MT.
         if (AsrJunkFilter.shouldHoldSourceOffOverlay(raw.text, target)) return true
+        if (input.isNotEmpty() && input != target) return true
         val detected = MlKitTranslationEngine.normalizeLangStatic(raw.language)
-        val passthrough = settings.passthroughLanguages
-            .map { MlKitTranslationEngine.normalizeLangStatic(it) }
-            .filter { it.isNotEmpty() }
-            .toSet()
-        if (detected.isNotEmpty() && detected in passthrough) return false
         if (detected.isNotEmpty() && detected == target) return false
         return true
     }

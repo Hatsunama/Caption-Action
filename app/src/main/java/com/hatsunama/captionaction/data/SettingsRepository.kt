@@ -18,7 +18,9 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val permissionsWalkthrough = booleanPreferencesKey("permissions_walkthrough_complete")
         val modelTier = stringPreferencesKey("model_tier")
+        val inputLang = stringPreferencesKey("input_lang")
         val targetLang = stringPreferencesKey("target_lang")
+        /** Legacy key — read once for inputLanguage migration; product no longer writes a set. */
         val passthrough = stringPreferencesKey("passthrough")
         val dual = booleanPreferencesKey("dual_subtitles")
         val saveSubtitlesToFile = booleanPreferencesKey("save_subtitles_to_file")
@@ -33,12 +35,9 @@ class SettingsRepository(private val context: Context) {
         AppSettings(
             permissionsWalkthroughComplete = p[Keys.permissionsWalkthrough] ?: false,
             modelTierId = p[Keys.modelTier] ?: ModelTier.BALANCED.id,
+            inputLanguage = resolveInputLanguage(p),
             targetLanguage = p[Keys.targetLang] ?: "en",
-            passthroughLanguages = (p[Keys.passthrough] ?: "en")
-                .split(",")
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-                .toSet(),
+            passthroughLanguages = emptySet(),
             dualSubtitles = p[Keys.dual] ?: false,
             saveSubtitlesToFile = p[Keys.saveSubtitlesToFile] ?: false,
             overlayX = p[Keys.overlayX] ?: 48,
@@ -57,8 +56,10 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { p ->
             p[Keys.permissionsWalkthrough] = next.permissionsWalkthroughComplete
             p[Keys.modelTier] = next.modelTierId
+            p[Keys.inputLang] = next.inputLanguage
             p[Keys.targetLang] = next.targetLanguage
-            p[Keys.passthrough] = next.passthroughLanguages.joinToString(",")
+            // Stop writing product passthrough sets (empty OK for legacy readers).
+            p[Keys.passthrough] = ""
             p[Keys.dual] = next.dualSubtitles
             p[Keys.saveSubtitlesToFile] = next.saveSubtitlesToFile
             p[Keys.overlayX] = next.overlayX
@@ -66,6 +67,21 @@ class SettingsRepository(private val context: Context) {
             p[Keys.overlayW] = next.overlayWidth
             p[Keys.overlayH] = next.overlayHeight
             p[Keys.fontIndex] = next.fontIndex
+        }
+    }
+
+    companion object {
+        /**
+         * Prefer stored input_lang; else migrate from old passthrough (single code → that, else en).
+         */
+        internal fun resolveInputLanguage(p: Preferences): String {
+            val stored = p[Keys.inputLang]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            if (stored != null) return stored
+            val oldPass = (p[Keys.passthrough] ?: "")
+                .split(",")
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+            return if (oldPass.size == 1) oldPass.first() else "en"
         }
     }
 }
