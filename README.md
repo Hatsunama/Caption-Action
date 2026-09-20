@@ -6,7 +6,19 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.23** (versionCode 46)
+Current source version: **0.3.24** (versionCode 47)
+
+## 0.3.24
+
+Mic Translator FIFO completeness (mic path only — Live MediaProjection / whisper Tiny playback path unchanged):
+
+- **Root cause fix:** Mic no longer uses `drainToNewestWindow` (which dropped earlier speech when behind). New `AudioCapture.drainFifoWindow` returns oldest-first ~1.5–2.0 s windows; Live still uses `drainToNewestWindow` for video sync.
+- Mic windows `WINDOW_SAMPLES = 28_000` (~1.75 s) with `forceFlush=true` so each window runs ASR immediately (no silence / 5 s accum wait). ASR serialized FIFO; pump stays open.
+- Mic EN: engine always `language=en` / `translate=false` (`mic-en-direct`, ignores enDirectBias); UI still skips ML Kit. Live auto / en-direct bias path unchanged.
+- Mic-only: whisper threads `coerceIn(2, 4)`; `MIC_DISCARD_RMS` 45 (was 60). Playback threads=6 / `PLAYBACK_*` / `FLUSH_AT_PLAYBACK` untouched.
+- Timing logs: `Log.i(MicTranslator)` with drainMs / asrMs / totalMs each emit.
+- Cascade audit: [`docs/0.3.24-cascade-audit.md`](docs/0.3.24-cascade-audit.md).
+- versionName plain `0.3.24`, versionCode 47. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.23
 

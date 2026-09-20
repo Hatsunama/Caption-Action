@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.23** — Mic Translator snappier continuous streaming (~0.5 s hops, shorter mic flush, EN ASR-only fast path) while mic ON; Live Start/projection/handoff/device-audio/green-dot remain mic-free.
+Current source: **0.3.24** — Mic Translator FIFO drain (~1.75 s windows, forceFlush, no newest-trim drops) + mic-en-direct; Live still `drainToNewestWindow` + playbackCapture; Start/projection/handoff/device-audio/green-dot remain mic-free.
 
 ## Preferred: promoted release installer
 
@@ -62,6 +62,14 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 - Stop via green stop-dot, notification action, or returning to Home (Home stops an active session)
 - Kill/reopen — overlay geometry and language/model settings restore
 - Devices without Google Play services may fail ML Kit pack download (ASR still works)
+
+## 4b. Mic Translator FIFO (0.3.24)
+
+1. Open **Mic Translator**, target **EN**, press mic ON.
+2. Speak a short sentence slowly → text should appear after ~1 window + infer (not a 5 s silence wait).
+3. Speak continuously / slightly overlap ASR → captions should follow speech **in order** (no dropped mid-utterance words from newest-trim).
+4. logcat: `adb logcat -s MicTranslator:I AudioCapture:I WhisperCppEngine:I` — expect `drainFifo` / `emit drainMs=… asrMs=…` / `mic-en-direct`.
+5. Live Captions smoke: Start → device audio still captions; confirm no mic path (`drainToNewestWindow` / `playbackCapture=true`).
 
 ## 5. Error paths to verify
 
