@@ -21,9 +21,9 @@ import kotlinx.coroutines.withContext
  * realtime (still ≥1000 ms native min). Short PCM is silence-padded.
  *
  * Language:
- * - EN target + !dual: prefer `language=en, translate=false` (`en-direct`) when recent captions
- *   look Latin/EN-heavy (Samsung EN content) — drops auto+translate tax. Bias falls back to
- *   `auto` + translate-to-EN when non-Latin / empty speech suggests multilingual source.
+ * - Mic EN target + !dual: always `language=en, translate=false` (`mic-en-direct`); ignores bias.
+ * - Live EN target + !dual: prefer `language=en, translate=false` (`en-direct`) when recent captions
+ *   look Latin/EN-heavy — bias falls back to `auto` + translate-to-EN for multilingual source.
  * - Dual / non-EN: always `auto` + translate=false; ML Kit fills translatedText async.
  */
 class WhisperCppInferenceEngine(
@@ -189,10 +189,17 @@ class WhisperCppInferenceEngine(
             val startMs = endMs - (pcm.size * 1000L / sampleRateHz)
 
             val enTargetSingle = target == "en" && !dualSubtitles
+            // Mic EN: always language=en / translate=false (ignore enDirectBias). Live keeps bias.
+            val micEnDirect = !playbackCapture && enTargetSingle
             val useEnDirect = enTargetSingle && enDirectBias >= 0
             val language: String
             val translate: Boolean
             when {
+                micEnDirect -> {
+                    language = "en"
+                    translate = false
+                    lastMode = "mic-en-direct"
+                }
                 useEnDirect -> {
                     language = "en"
                     translate = false
@@ -235,7 +242,7 @@ class WhisperCppInferenceEngine(
 
             CaptionResult(
                 text = text,
-                language = if (useEnDirect || (enTargetSingle && translate)) "en" else "auto",
+                language = if (micEnDirect || useEnDirect || (enTargetSingle && translate)) "en" else "auto",
                 confidence = 0.8f,
                 startMs = startMs,
                 endMs = endMs,
@@ -259,10 +266,16 @@ class WhisperCppInferenceEngine(
         wavBytes: Long,
         windowRms: Float
     ): String? {
+        // Mic: fewer threads (2–4) to avoid thrash; playback keeps 6.
+        val threadCount = if (playbackCapture) {
+            6
+        } else {
+            Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        }
         val config = WhisperConfig(
             language = language,
             translate = translate,
-            threads = 6,
+            threads = threadCount,
             maxSegmentLength = 0,
             printTimestamps = false
         )
@@ -403,7 +416,8 @@ class WhisperCppInferenceEngine(
         /** Mic-only: speech-end quiet gap before flush (was 400 ms). */
         private const val MIC_SILENCE_END_MS = 280L
         private const val MIC_SPEECH_RMS = 80f
-        private const val MIC_DISCARD_RMS = 60f
+        /** Mic-only: slightly lower so quiet speech is not discarded (Live PLAYBACK_* untouched). */
+        private const val MIC_DISCARD_RMS = 45f
         private const val PLAYBACK_SPEECH_RMS = 4f
         private const val PLAYBACK_DISCARD_RMS = 1f
 

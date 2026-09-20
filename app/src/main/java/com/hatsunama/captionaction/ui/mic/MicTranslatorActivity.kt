@@ -31,9 +31,9 @@ import kotlin.coroutines.coroutineContext
  * In-app microphone → whisper Tiny ASR → ML Kit translate.
  * Isolated from Live Captions (which stays MediaProjection / playback-only).
  *
- * Mic path uses continuous streaming: ~0.5 s hops into Whisper with
- * [forceFlush]=false so the engine mic accumulator / speech-end flush runs
- * while the capture pump stays open the whole time [micOn].
+ * Mic path uses FIFO drain (~1.5–2.0 s windows) with [forceFlush]=true so each
+ * spoken window is transcribed in order (no newest-trim drops). Pump stays open
+ * while [micOn]; ASR is serialized (never cancel/skip when infer is slow).
  */
 class MicTranslatorActivity : AppCompatActivity() {
 
@@ -191,16 +191,19 @@ class MicTranslatorActivity : AppCompatActivity() {
     }
 
     /**
-     * Continuous mic streaming: short hops (~0.5 s) with forceFlush=false so Whisper's
-     * mic accumulator / speech-end path emits mid-session; pump never stops between ASR calls.
+     * FIFO mic streaming: ~1.5–2.0 s windows via [AudioCapture.drainFifoWindow] with
+     * forceFlush=true so each window runs ASR immediately (completeness > tiny hops).
+     * Never skips windows when ASR is slow — serialize FIFO; pump stays running.
      * EN target (or Latin ASR + EN target): skip ML Kit — show raw ASR immediately.
      */
     private suspend fun runAsrLoop() {
         val active = engine ?: return
         val mt = translation
         while (coroutineContext.isActive && micOn) {
-            // Hop ~0.5 s @ 16 kHz — keep drain moving; do not wait for a full Live window.
-            val pcm = audioCapture.drainToNewestWindow(HOP_SAMPLES) ?: break
+            val drainStart = System.currentTimeMillis()
+            // FIFO oldest-first ~1.75 s @ 16 kHz — do not use drainToNewestWindow (drops speech).
+            val pcm = audioCapture.drainFifoWindow(WINDOW_SAMPLES) ?: break
+            val drainMs = System.currentTimeMillis() - drainStart
             if (!micOn) break
             val settings = app().settings.current()
             active.setTargetLanguage(settings.targetLanguage)
@@ -208,17 +211,34 @@ class MicTranslatorActivity : AppCompatActivity() {
             active.setDualSubtitles(dual)
             active.setPlaybackCapture(false)
 
-            // forceFlush=false → engine accumulates and flushes on speech-end / FLUSH_AT_MIC
-            // (~1.5 s continuous). Do not forceFlush with tiny hops (clears accum + null under
-            // NATIVE_MIN_SAMPLES). Live path separately uses forceFlush=true + playbackCapture.
-            val raw = active.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = false)
-                ?: continue
+            // forceFlush=true → each FIFO window runs ASR immediately (no silence/5s accum wait).
+            // Live path separately uses drainToNewestWindow + forceFlush=true + playbackCapture.
+            val asrStart = System.currentTimeMillis()
+            val raw = active.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = true)
+            val asrMs = System.currentTimeMillis() - asrStart
+            val totalMs = System.currentTimeMillis() - drainStart
+            if (raw == null) {
+                Log.i(TAG, "emit skip null drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size}")
+                continue
+            }
             val primaryRaw = raw.text.trim()
-            if (primaryRaw.isEmpty()) continue
+            if (primaryRaw.isEmpty()) {
+                Log.i(TAG, "emit skip empty drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs")
+                continue
+            }
             val norm = AsrJunkFilter.normalize(primaryRaw)
             if (norm.isEmpty()) continue
             // Exact-norm only: allow near-dup / growing EN phrase to revise in place.
-            if (norm == lastPublishedNorm) continue
+            if (norm == lastPublishedNorm) {
+                Log.i(TAG, "emit skip dup drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs")
+                continue
+            }
+
+            Log.i(
+                TAG,
+                "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
+                    "mode=${active.lastAsrMode()} text=${primaryRaw.take(48)}"
+            )
 
             val now = System.currentTimeMillis()
             val silenceGap = lastEmitAtMs > 0L && (now - lastEmitAtMs) >= UTTERANCE_GAP_MS
@@ -342,8 +362,8 @@ class MicTranslatorActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MicTranslator"
-        /** ~0.5 s @ 16 kHz — snappier continuous feel (was 12_000 / 0.75 s). */
-        private const val HOP_SAMPLES = 8_000
+        /** ~1.75 s @ 16 kHz (within 24_000–32_000) — completeness over tiny hops. */
+        private const val WINDOW_SAMPLES = 28_000
         /** Treat a long quiet gap as a new utterance (append, don't revise). */
         private const val UTTERANCE_GAP_MS = 1_500L
     }
