@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.24** — Mic Translator FIFO drain (~1.75 s windows, forceFlush, no newest-trim drops) + mic-en-direct; Live still `drainToNewestWindow` + playbackCapture; Start/projection/handoff/device-audio/green-dot remain mic-free.
+Current source: **0.3.25** — Mic Translator From/To NumberPickers + explicit Whisper source lang (`mic-source-*`); FIFO drain retained; Live still `drainToNewestWindow` + playbackCapture + source=auto; Start/projection/handoff/device-audio/green-dot remain mic-free.
 
 ## Preferred: promoted release installer
 
