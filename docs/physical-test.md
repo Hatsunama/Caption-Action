@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.26** — Mic always `setSourceLanguage(from)` → `mic-source-zh` etc. (never auto while From set); `translateExplicit` for short From≠To; Whisper meta/music junk suppressed; From/To wheels larger+bold; Live `hasEnoughContentForMt` + empty source/auto + `drainToNewestWindow` unchanged.
+Current source: **0.3.27** — Home Input + Target (no passthrough chips). Live `setSourceLanguage(inputLanguage)` → `mic-source-*` (not auto). input==target ASR-only; dual when input≠target. Mic From/To / FIFO / `translateExplicit` / junk filters unchanged from 0.3.26; Live still `drainToNewestWindow` + MediaProjection.
 
 ## Preferred: promoted release installer
 
@@ -48,8 +48,8 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 
 ## 4. Live session checks
 
-- Dual switch visible for any **Languages.kt** target (ML Kit MT); hint only if target unsupported
-- Target ≠ spoken/passthrough: captions must appear in the **target** language for Live (whisper) and Quality (incl. all Languages.all); never flash wrong-script ASR as primary when dual is off
+- Dual switch visible when **Input ≠ Target** and target is a supported **Languages.kt** MT lang; hint if unavailable
+- Input ≠ Target: captions must appear in the **target** language for Live (whisper); never flash wrong-script ASR as primary when dual is off. Input == Target: ASR-only
 - Dual on: original + translated when async ML Kit succeeds (whisper is single-pass on live)
 - Quality whisper: always language=auto; translate=true only for single-line EN target; dual/non-EN: ASR once + ML Kit
 - Overlay: smaller type, full caption wraps (no ellipsize); drag by caption text still moves bubble
@@ -77,8 +77,15 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 1. Mic From=**es** To=**en**: say “Hola” → expect English revision; logcat `NMT explicit ok es→en` and `mode=mic-source-es`.
 2. Mic From=**zh** To=**en**: speak Chinese → expect Chinese ASR or translated EN; **must not** show “speaking in foreign language”. logcat **`mode=mic-source-zh`** (never auto).
 3. Music/meta: `[Música]` / `(speaking in foreign language)` → no caption line.
-4. Live Captions: short crumbs still skip MT; source remains auto (no `setSourceLanguage`).
+4. Live Captions: short crumbs still skip MT (`hasEnoughContentForMt`); logcat `mode=mic-source-<input>` (Home Input), not auto.
 5. From/To wheels: labels and language names slightly larger + bold; still bare (no card).
+
+## 4d. Home Input language (0.3.27)
+
+1. Home: confirm **Input language (from)** + **Target language (to)** spinners; no passthrough chips.
+2. Input=**zh** Target=**en**: Start Live → play Chinese audio → logcat `mode=mic-source-zh`; overlay primary becomes English when MT completes.
+3. Input=**en** Target=**en**: dual hidden; ASR-only; logcat `mode=mic-source-en`.
+4. Mic From/To still independent; short “Hola” From=es To=en still revises (0.3.26 path).
 
 ## 5. Error paths to verify
 

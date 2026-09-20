@@ -21,11 +21,10 @@ import kotlinx.coroutines.withContext
  * realtime (still ≥1000 ms native min). Short PCM is silence-padded.
  *
  * Language:
- * - [setSourceLanguage] non-empty (Mic From picker): `language=<code>, translate=false`
- *   (`mic-source-*`); bypasses mic-en-direct / Live bias. Empty = Live auto path below.
- * - Live EN target + !dual: prefer `language=en, translate=false` (`en-direct`) when recent captions
- *   look Latin/EN-heavy — bias falls back to `auto` + translate-to-EN for multilingual source.
- * - Dual / non-EN (source empty): always `auto` + translate=false; ML Kit fills translatedText async.
+ * - [setSourceLanguage] non-empty (Home Input / Mic From): `language=<code>, translate=false`
+ *   (`mic-source-*`); bypasses en-direct / auto bias. Live always sets Home inputLanguage.
+ * - Empty source (legacy): Live EN target + !dual → en-direct bias / auto-translate-en;
+ *   dual / non-EN → auto + ML Kit. Prefer callers set an explicit source.
  */
 class WhisperCppInferenceEngine(
     private val appContext: Context,
@@ -39,7 +38,7 @@ class WhisperCppInferenceEngine(
     private var lastSpeechAt = 0L
     @Volatile private var dualSubtitles: Boolean = false
     @Volatile private var playbackCapture: Boolean = false
-    /** Empty = auto (Live). Non-empty = explicit From language (Mic). */
+    /** Empty = auto (legacy). Non-empty = explicit input / From language. */
     @Volatile private var sourceLanguage: String = ""
     @Volatile private var lastMode: String = ""
     @Volatile private var keepUpBehind: Boolean = false
@@ -201,9 +200,9 @@ class WhisperCppInferenceEngine(
             val language: String
             val translate: Boolean
             when {
-                // Mic From picker (or any caller that set source): explicit lang for ALL
+                // Home Input / Mic From (or any caller that set source): explicit lang for ALL
                 // Languages.all codes (zh/ja/ko/ar/…), never language=auto, never whisper-translate.
-                // lastMode e.g. mic-source-zh — Live leaves source empty → branches below.
+                // lastMode e.g. mic-source-zh (Live Input uses same mode string).
                 explicitSource.isNotEmpty() -> {
                     language = explicitSource
                     translate = false

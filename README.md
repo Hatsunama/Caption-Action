@@ -6,14 +6,25 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.26** (versionCode 49)
+Current source version: **0.3.27** (versionCode 50)
+
+## 0.3.27
+
+Home **Input language** replaces passthrough; Live Whisper always told which language to listen for:
+
+- Home Languages: **Input language (from)** + **Target language (to)** spinners (`Languages.all`); passthrough chips removed. Dual when input≠target.
+- Settings: `inputLanguage` (migrate from single-lang passthrough, else `en`); stop writing passthrough set.
+- Live ASR: `CaptionOverlayService` `setSourceLanguage(inputLanguage)` before each window → Whisper `language=<input>` `translate=false` (`mic-source-*`). input==target → ASR-only (no MT).
+- `applyPolicy` prefers inputLanguage as source; MT packs include input as extraSources. Mic From/To / FIFO / `translateExplicit` / junk filters unchanged.
+- Cascade audit: [`docs/0.3.27-cascade-audit.md`](docs/0.3.27-cascade-audit.md).
+- versionName plain `0.3.27`, versionCode 50. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.26
 
 Mic short-phrase MT + Whisper meta junk + larger From/To wheels (mic path; Live crumb MT gate unchanged):
 
 - **Bug:** Mic From≠To short words (`¡Hola!`) skipped by Live `hasEnoughContentForMt`. Fix: `translateExplicit` for all From≠To pairs (picker langs, diacritics stripped for length, no Live crumb gate).
-- **Bug:** Chinese (and other) audio could show “speaking in foreign language” meta. Fix: `isWhisperMetaLine` + music/stage tags in `isJunk` / sanitize (Live benefits too). Mic always `setSourceLanguage(from)` → Whisper `language=<from>` `translate=false` (`mic-source-zh`, etc.); Live stays source empty / auto.
+- **Bug:** Chinese (and other) audio could show “speaking in foreign language” meta. Fix: `isWhisperMetaLine` + music/stage tags in `isJunk` / sanitize (Live benefits too). Mic always `setSourceLanguage(from)` → Whisper `language=<from>` `translate=false` (`mic-source-zh`, etc.). (0.3.27: Live also sets Home Input language.)
 - From/To labels + wheel names slightly larger and bold (bare Apple-style).
 - Cascade audit: [`docs/0.3.26-cascade-audit.md`](docs/0.3.26-cascade-audit.md).
 - versionName plain `0.3.26`, versionCode 49. Debug APK: `com.hatsunama.captionaction.debug`.
@@ -23,7 +34,7 @@ Mic short-phrase MT + Whisper meta junk + larger From/To wheels (mic path; Live 
 Mic Translator From/To language wheels (mic path only — Live MediaProjection / whisper Tiny playback path unchanged):
 
 - Mic screen: bare Apple-style NumberPicker From/To under the mic (<¼ screen, ~110dp), labels "from"/"to", `Languages.all` (18). No card/chrome around wheels.
-- Whisper Mic: explicit From via `InferenceEngine.setSourceLanguage` → `language=from`, `translate=false` (`mic-source-*`). Live leaves source empty → auto / en-direct bias unchanged.
+- Whisper Mic: explicit From via `InferenceEngine.setSourceLanguage` → `language=from`, `translate=false` (`mic-source-*`). (Superseded for Live in 0.3.27: Home Input language.)
 - To drives ML Kit; skip MT when from==to. Persist From/To in SharedPreferences; To defaults to Home targetLanguage.
 - Cascade audit: [`docs/0.3.25-cascade-audit.md`](docs/0.3.25-cascade-audit.md).
 - versionName plain `0.3.25`, versionCode 48. Debug APK: `com.hatsunama.captionaction.debug`.
@@ -80,7 +91,7 @@ Live model gate simplified to the single shipping path:
 Home refract motion fix + Languages bubbles (UI only — ASR/MT locked from 0.3.13):
 
 - **Static refract bg:** Choreographer could drop its frame callback while `animating` stayed true, so `setAnimating(true)` early-returned and never re-armed. Fix: always re-arm on enable; sync from `onWindowVisibilityChanged` / first layout; `postInvalidateOnAnimation`; RAY_SAMPLES 24 + slightly faster bounce/spin for unmistakable motion. Pause still freezes `t`.
-- **Languages section:** removed opaque pink `MaterialCardView`; target/passthrough/dual live as small translucent bubbles over refract. Captions/Overlay cards unchanged.
+- **Languages section:** removed opaque pink `MaterialCardView`; input/target/dual live as small translucent bubbles over refract. Captions/Overlay cards unchanged.
 - versionName plain `0.3.17`, versionCode 40. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.16
@@ -132,7 +143,7 @@ For this private repo, authenticate first (`$env:GH_TOKEN = (gh auth token)`).
 
 1. Capture **sounds playing on the device** (MediaProjection / AudioPlaybackCapture **only** — no microphone fallback). Declining screen share cancels start with a clear message. Captions use internal playback capture and work **independent of speaker volume** when projection is granted (volume can be muted).
 2. Run on-device ASR (whisper.cpp Live; retained SenseVoice engine support is not user-facing)
-3. Translate via **ML Kit on-device** when target ≠ spoken/passthrough (optional dual = original + translated)
+3. Translate via **ML Kit on-device** when input ≠ target (optional dual = original + translated)
 4. Show a movable, **resizable** overlay above other apps
 5. End anytime with the green stop-dot
 6. Persist settings and overlay geometry locally (DataStore)

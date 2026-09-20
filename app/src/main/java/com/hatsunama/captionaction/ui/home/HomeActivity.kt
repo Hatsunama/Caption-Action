@@ -21,8 +21,6 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.chip.Chip
-import com.google.android.material.chip.ChipGroup
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
@@ -46,7 +44,6 @@ import kotlinx.coroutines.withContext
 class HomeActivity : AppCompatActivity() {
 
     private lateinit var cache: ModelCache
-    private val selectedPassthrough = mutableSetOf<String>()
     private var downloadJob: Job? = null
     private var activeDownloader: ModelDownloadManager? = null
     private var suppressPersist = true
@@ -153,8 +150,8 @@ class HomeActivity : AppCompatActivity() {
                 val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
                 val mtTargets = InferenceEngineFactory.offlineTranslationTargets(tier)
                 val target = s.targetLanguage.trim().lowercase()
-                val needsMt = target.isNotEmpty() &&
-                    target !in s.passthroughLanguages.map { it.lowercase() }
+                val input = s.inputLanguage.trim().lowercase()
+                val needsMt = target.isNotEmpty() && input.isNotEmpty() && input != target
                 status.text = buildString {
                     append("Model: ${tier.displayName}")
                     append(
@@ -165,7 +162,8 @@ class HomeActivity : AppCompatActivity() {
                         }
                     )
                     append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
-                    val dualOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
+                    val dualEngineOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
+                    val dualOk = dualEngineOk && needsMt
                     append(" Dual: ").append(
                         when {
                             !dualOk -> "unavailable"
@@ -173,22 +171,23 @@ class HomeActivity : AppCompatActivity() {
                             else -> "off"
                         }
                     )
+                    append(" · Input: ").append(s.inputLanguage)
                     append(" · Target: ").append(s.targetLanguage)
                     append(" · MT: ")
                     when {
-                        !needsMt -> append("passthrough / same-lang")
+                        !needsMt -> append("ASR-only (input=target)")
                         target in mtTargets -> append(mtStatusLine.ifBlank { getString(R.string.translation_pack_ready) })
                         else -> append(getString(R.string.translation_pack_unsupported, s.targetLanguage))
                     }
                 }
                 if (needsMt && target in mtTargets) {
-                    ensureMtPacks(s.targetLanguage, s.passthroughLanguages)
+                    ensureMtPacks(s.targetLanguage, setOf(s.inputLanguage))
                 }
             }
         }
     }
 
-    private fun ensureMtPacks(target: String, passthrough: Set<String>) {
+    private fun ensureMtPacks(target: String, extraSources: Set<String>) {
         if (mtPrepareJob?.isActive == true) return
         val engine = mtEngine ?: MlKitTranslationEngine(this).also { mtEngine = it }
         mtPrepareJob = lifecycleScope.launch {
@@ -196,7 +195,7 @@ class HomeActivity : AppCompatActivity() {
             val result = withContext(Dispatchers.IO) {
                 engine.ensureModels(
                     targetLanguage = target,
-                    extraSources = passthrough
+                    extraSources = extraSources
                 ) { line ->
                     mtStatusLine = line
                     runOnUiThread {
@@ -228,13 +227,15 @@ class HomeActivity : AppCompatActivity() {
                 append("Model: ${tier.displayName}")
                 append(if (present) " ✓ on device. " else " · not downloaded. ")
                 append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
+                val inputEqTarget = s.inputLanguage.trim().equals(s.targetLanguage.trim(), ignoreCase = true)
                 append(" Dual: ").append(
                     when {
-                        !dualOk -> "unavailable"
+                        !dualOk || inputEqTarget -> "unavailable"
                         s.dualSubtitles -> "on"
                         else -> "off"
                     }
                 )
+                append(" · Input: ").append(s.inputLanguage)
                 append(" · Target: ").append(s.targetLanguage)
                 append(" · MT: ").append(mtStatusLine)
             }
@@ -485,7 +486,7 @@ class HomeActivity : AppCompatActivity() {
         showStartingDialog(getString(R.string.starting_captions))
         val settings = app().settings.current()
         // Home optional MT status only — do not await.
-        ensureMtPacks(settings.targetLanguage, settings.passthroughLanguages)
+        ensureMtPacks(settings.targetLanguage, setOf(settings.inputLanguage))
         if (LiveCaptionStarter.needsPermissionWalkthrough(settings, this)) {
             dismissStartingDialog()
             permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
@@ -532,24 +533,35 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun bindLanguageSection() {
-        val spinner = findViewById<Spinner>(R.id.spinnerTarget)
-        spinner.adapter = ArrayAdapter(
+        val spinnerInput = findViewById<Spinner>(R.id.spinnerInput)
+        val spinnerTarget = findViewById<Spinner>(R.id.spinnerTarget)
+        val labels = Languages.all.map { it.label }
+        spinnerInput.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
-            Languages.all.map { it.label }
+            labels
         )
-        val chips = findViewById<ChipGroup>(R.id.passthroughChips)
+        spinnerTarget.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            labels
+        )
         val dual = findViewById<MaterialSwitch>(R.id.switchDual)
         val dualHint = findViewById<TextView>(R.id.dualHint)
-        val summary = findViewById<TextView>(R.id.passthroughSummary)
 
-        fun refreshDualAvailability(targetCode: String, tierId: String, savedDual: Boolean) {
+        fun refreshDualAvailability(
+            inputCode: String,
+            targetCode: String,
+            tierId: String,
+            savedDual: Boolean
+        ) {
             val tier = ModelTier.fromId(tierId)
-            val available = InferenceEngineFactory.canProvideDualSubtitles(tier, targetCode)
+            val engineOk = InferenceEngineFactory.canProvideDualSubtitles(tier, targetCode)
+            val inputDiffers = inputCode.trim().lowercase() != targetCode.trim().lowercase()
+            val available = engineOk && inputDiffers
             dual.visibility = if (available) View.VISIBLE else View.GONE
             dualHint.visibility = if (available) View.GONE else View.VISIBLE
             dualHint.text = getString(R.string.dual_unavailable_hint)
-            // Dual is available for all Languages.kt targets via ML Kit; hint only if unsupported.
             if (!available) {
                 if (dual.isChecked) dual.isChecked = false
                 if (savedDual) {
@@ -565,41 +577,33 @@ class HomeActivity : AppCompatActivity() {
         lifecycleScope.launch {
             app().settings.settingsFlow.collectLatest { s ->
                 if (suppressPersist) return@collectLatest
-                val target = Languages.all.getOrNull(spinner.selectedItemPosition)?.code
+                val input = Languages.all.getOrNull(spinnerInput.selectedItemPosition)?.code
+                    ?: s.inputLanguage
+                val target = Languages.all.getOrNull(spinnerTarget.selectedItemPosition)?.code
                     ?: s.targetLanguage
-                refreshDualAvailability(target, s.modelTierId, s.dualSubtitles)
+                refreshDualAvailability(input, target, s.modelTierId, s.dualSubtitles)
             }
         }
 
         lifecycleScope.launch {
             val s = app().settings.current()
-            selectedPassthrough.clear()
-            selectedPassthrough.addAll(s.passthroughLanguages)
             suppressPersist = true
-            spinner.setSelection(
+            spinnerInput.setSelection(
+                Languages.all.indexOfFirst { it.code == s.inputLanguage }.coerceAtLeast(0)
+            )
+            spinnerTarget.setSelection(
                 Languages.all.indexOfFirst { it.code == s.targetLanguage }.coerceAtLeast(0)
             )
-            refreshDualAvailability(s.targetLanguage, s.modelTierId, s.dualSubtitles)
-            chips.removeAllViews()
-            Languages.all.forEach { lang ->
-                val chip = Chip(this@HomeActivity).apply {
-                    text = lang.label
-                    isCheckable = true
-                    isChecked = lang.code in selectedPassthrough
-                    setOnCheckedChangeListener { _, checked ->
-                        if (checked) selectedPassthrough.add(lang.code)
-                        else selectedPassthrough.remove(lang.code)
-                        summary.text = selectedPassthrough.joinToString(", ") { Languages.label(it) }
-                        if (!suppressPersist) persistLanguageSettings()
-                    }
-                }
-                chips.addView(chip)
-            }
-            summary.text = selectedPassthrough.joinToString(", ") { Languages.label(it) }
+            refreshDualAvailability(
+                s.inputLanguage,
+                s.targetLanguage,
+                s.modelTierId,
+                s.dualSubtitles
+            )
             suppressPersist = false
         }
 
-        spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+        val selectionListener = object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(
                 parent: android.widget.AdapterView<*>?,
                 view: View?,
@@ -611,19 +615,25 @@ class HomeActivity : AppCompatActivity() {
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
+        spinnerInput.onItemSelectedListener = selectionListener
+        spinnerTarget.onItemSelectedListener = selectionListener
         dual.setOnCheckedChangeListener { _, _ -> if (!suppressPersist) persistLanguageSettings() }
     }
 
     private fun persistLanguageSettings() {
-        val spinner = findViewById<Spinner>(R.id.spinnerTarget)
+        val spinnerInput = findViewById<Spinner>(R.id.spinnerInput)
+        val spinnerTarget = findViewById<Spinner>(R.id.spinnerTarget)
         val dual = findViewById<MaterialSwitch>(R.id.switchDual)
-        val target = Languages.all.getOrNull(spinner.selectedItemPosition)?.code ?: "en"
+        val input = Languages.all.getOrNull(spinnerInput.selectedItemPosition)?.code ?: "en"
+        val target = Languages.all.getOrNull(spinnerTarget.selectedItemPosition)?.code ?: "en"
         lifecycleScope.launch {
             val tierId = app().settings.current().modelTierId
-            val dualOk = InferenceEngineFactory.canProvideDualSubtitles(
+            val engineOk = InferenceEngineFactory.canProvideDualSubtitles(
                 ModelTier.fromId(tierId),
                 target
             )
+            val inputDiffers = input.trim().lowercase() != target.trim().lowercase()
+            val dualOk = engineOk && inputDiffers
             val dualValue = dualOk && dual.isChecked
             if (!dualOk) {
                 dual.visibility = View.GONE
@@ -635,8 +645,9 @@ class HomeActivity : AppCompatActivity() {
             }
             app().settings.update {
                 it.copy(
+                    inputLanguage = input,
                     targetLanguage = target,
-                    passthroughLanguages = selectedPassthrough.toSet(),
+                    passthroughLanguages = emptySet(),
                     dualSubtitles = dualValue
                 )
             }

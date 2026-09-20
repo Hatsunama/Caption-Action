@@ -43,9 +43,9 @@
     <string name="model_gate_download_required">Download the model to start live captions.</string>
     <string name="model_gate_use_start">Use Live model &amp; start</string>
     <string name="dual_subtitles">Dual subtitles (original + translated)</string>
-    <string name="dual_unavailable_hint">Dual subtitles need a supported target language from the list (offline ML Kit MT).</string>
-    <string name="passthrough_hint">Languages left unchanged (passthrough)</string>
-    <string name="target_language">Subtitle output language</string>
+    <string name="dual_unavailable_hint">Dual subtitles need input ≠ target and a supported target language (offline ML Kit MT).</string>
+    <string name="input_language">Input language (from)</string>
+    <string name="target_language">Target language (to)</string>
     <string name="back">Back</string>
     <string name="continue_label">Continue</string>
     <string name="stop_dot_a11y">Stop captions and return home</string>
