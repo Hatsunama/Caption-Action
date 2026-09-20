@@ -30,6 +30,10 @@ import kotlin.coroutines.coroutineContext
 /**
  * In-app microphone → whisper Tiny ASR → ML Kit translate.
  * Isolated from Live Captions (which stays MediaProjection / playback-only).
+ *
+ * Mic path uses continuous streaming: short hops into Whisper with
+ * [forceFlush]=false so the engine mic accumulator / speech-end flush runs
+ * while the capture pump stays open the whole time [micOn].
  */
 class MicTranslatorActivity : AppCompatActivity() {
 
@@ -45,6 +49,7 @@ class MicTranslatorActivity : AppCompatActivity() {
     private var micOn = false
     private var engineReady = false
     private var lastPublishedNorm = ""
+    private var lastEmitAtMs = 0L
     private val lines = ArrayList<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,6 +70,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         }
         btnMic.setOnClickListener { toggleMic() }
         updateMicChrome()
+        renderCaptionUi()
 
         lifecycleScope.launch { prepareEngines() }
     }
@@ -158,6 +164,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         }
         micOn = true
         updateMicChrome()
+        renderCaptionUi()
         audioCapture.startPump(lifecycleScope)
         asrJob?.cancel()
         asrJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -171,6 +178,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         asrJob = null
         audioCapture.stop()
         updateMicChrome()
+        renderCaptionUi()
     }
 
     private fun updateMicChrome() {
@@ -182,12 +190,16 @@ class MicTranslatorActivity : AppCompatActivity() {
         btnMic.text = if (micOn) "⏹" else "🎙"
     }
 
+    /**
+     * Continuous mic streaming: short hops (~0.75 s) with forceFlush=false so Whisper's
+     * mic accumulator / speech-end path emits mid-session; pump never stops between ASR calls.
+     */
     private suspend fun runAsrLoop() {
         val active = engine ?: return
         val mt = translation
         while (coroutineContext.isActive && micOn) {
-            val windowSamples = active.preferredWindowSamples()
-            val pcm = audioCapture.drainToNewestWindow(windowSamples) ?: break
+            // Hop ~0.75 s @ 16 kHz — keep drain moving; do not wait for a full Live window.
+            val pcm = audioCapture.drainToNewestWindow(HOP_SAMPLES) ?: break
             if (!micOn) break
             val settings = app().settings.current()
             active.setTargetLanguage(settings.targetLanguage)
@@ -195,14 +207,23 @@ class MicTranslatorActivity : AppCompatActivity() {
             active.setDualSubtitles(dual)
             active.setPlaybackCapture(false)
 
-            val raw = active.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = true)
+            // forceFlush=false → engine accumulates and flushes on speech-end / max window.
+            val raw = active.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = false)
                 ?: continue
             val primaryRaw = raw.text.trim()
             if (primaryRaw.isEmpty()) continue
             val norm = AsrJunkFilter.normalize(primaryRaw)
-            if (norm.isEmpty() || norm == lastPublishedNorm) continue
-            if (AsrJunkFilter.isNearDuplicate(norm, lastPublishedNorm)) continue
+            if (norm.isEmpty()) continue
+            if (norm == lastPublishedNorm) continue
+
+            val now = System.currentTimeMillis()
+            val silenceGap = lastEmitAtMs > 0L && (now - lastEmitAtMs) >= UTTERANCE_GAP_MS
+            val reviseSameUtterance = !silenceGap &&
+                lastPublishedNorm.isNotEmpty() &&
+                lines.isNotEmpty() &&
+                isSameUtteranceRevision(lastPublishedNorm, norm)
             lastPublishedNorm = norm
+            lastEmitAtMs = now
 
             val policy = try {
                 mt?.applyPolicy(raw, settings) ?: raw
@@ -213,9 +234,15 @@ class MicTranslatorActivity : AppCompatActivity() {
             val line = formatDisplayLine(policy, dual, settings.targetLanguage)
             if (line.isBlank()) continue
             withContext(Dispatchers.Main) {
-                appendCaptionLine(line)
+                publishCaptionLine(line, replaceLast = reviseSameUtterance)
             }
         }
+    }
+
+    private fun isSameUtteranceRevision(prevNorm: String, nextNorm: String): Boolean {
+        if (AsrJunkFilter.isNearDuplicate(prevNorm, nextNorm)) return true
+        // Growing / shrinking partials for the same spoken phrase.
+        return nextNorm.startsWith(prevNorm) || prevNorm.startsWith(nextNorm)
     }
 
     private fun formatDisplayLine(
@@ -237,17 +264,36 @@ class MicTranslatorActivity : AppCompatActivity() {
         }
     }
 
-    private fun appendCaptionLine(line: String) {
-        lines.add(line)
-        // Keep a reasonable scrollback so the TextView stays snappy.
+    private fun publishCaptionLine(line: String, replaceLast: Boolean) {
+        if (replaceLast && lines.isNotEmpty()) {
+            lines[lines.lastIndex] = line
+        } else {
+            lines.add(line)
+        }
         while (lines.size > 80) lines.removeAt(0)
-        captionText.text = lines.joinToString("\n\n")
-        captionScroll.post {
-            captionScroll.fullScroll(ScrollView.FOCUS_DOWN)
+        renderCaptionUi()
+    }
+
+    /** Empty hint only when mic off and no lines; listening hint while mic on with no lines. */
+    private fun renderCaptionUi() {
+        if (!::captionText.isInitialized) return
+        captionText.text = when {
+            lines.isNotEmpty() -> lines.joinToString("\n\n")
+            micOn -> getString(R.string.mic_translator_listening)
+            else -> getString(R.string.mic_translator_empty)
+        }
+        if (lines.isNotEmpty() || micOn) {
+            captionScroll.post {
+                captionScroll.fullScroll(ScrollView.FOCUS_DOWN)
+            }
         }
     }
 
     companion object {
         private const val TAG = "MicTranslator"
+        /** ~0.75 s @ 16 kHz — within the suggested 0.5–1.0 s hop band. */
+        private const val HOP_SAMPLES = 12_000
+        /** Treat a long quiet gap as a new utterance (append, don't revise). */
+        private const val UTTERANCE_GAP_MS = 1_500L
     }
 }

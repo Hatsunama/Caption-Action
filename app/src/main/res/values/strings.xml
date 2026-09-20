@@ -100,6 +100,7 @@
     <string name="mic_translator_cta">Mic Translator — Speak &amp; translate</string>
     <string name="mic_translator_blurb">Microphone → whisper Tiny (auto) → ML Kit to your Home target. Same local AI as Live; no screen share.</string>
     <string name="mic_translator_empty">Tap the mic and speak</string>
+    <string name="mic_translator_listening">Listening…</string>
     <string name="mic_translator_mic_on">Microphone on — tap to stop</string>
     <string name="mic_translator_mic_off">Microphone off — tap to speak</string>
     <string name="error_mic_capture">Could not open the microphone. Check permission and try again.</string>
