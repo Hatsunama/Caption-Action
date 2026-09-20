@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.22** — Mic Translator continuous streaming (short hops + forceFlush=false) while mic ON; Live Start/projection/handoff/device-audio/green-dot remain mic-free.
+Current source: **0.3.23** — Mic Translator snappier continuous streaming (~0.5 s hops, shorter mic flush, EN ASR-only fast path) while mic ON; Live Start/projection/handoff/device-audio/green-dot remain mic-free.
 
 ## Preferred: promoted release installer
 

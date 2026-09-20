@@ -31,7 +31,7 @@ import kotlin.coroutines.coroutineContext
  * In-app microphone → whisper Tiny ASR → ML Kit translate.
  * Isolated from Live Captions (which stays MediaProjection / playback-only).
  *
- * Mic path uses continuous streaming: short hops into Whisper with
+ * Mic path uses continuous streaming: ~0.5 s hops into Whisper with
  * [forceFlush]=false so the engine mic accumulator / speech-end flush runs
  * while the capture pump stays open the whole time [micOn].
  */
@@ -191,14 +191,15 @@ class MicTranslatorActivity : AppCompatActivity() {
     }
 
     /**
-     * Continuous mic streaming: short hops (~0.75 s) with forceFlush=false so Whisper's
+     * Continuous mic streaming: short hops (~0.5 s) with forceFlush=false so Whisper's
      * mic accumulator / speech-end path emits mid-session; pump never stops between ASR calls.
+     * EN target (or Latin ASR + EN target): skip ML Kit — show raw ASR immediately.
      */
     private suspend fun runAsrLoop() {
         val active = engine ?: return
         val mt = translation
         while (coroutineContext.isActive && micOn) {
-            // Hop ~0.75 s @ 16 kHz — keep drain moving; do not wait for a full Live window.
+            // Hop ~0.5 s @ 16 kHz — keep drain moving; do not wait for a full Live window.
             val pcm = audioCapture.drainToNewestWindow(HOP_SAMPLES) ?: break
             if (!micOn) break
             val settings = app().settings.current()
@@ -207,13 +208,16 @@ class MicTranslatorActivity : AppCompatActivity() {
             active.setDualSubtitles(dual)
             active.setPlaybackCapture(false)
 
-            // forceFlush=false → engine accumulates and flushes on speech-end / max window.
+            // forceFlush=false → engine accumulates and flushes on speech-end / FLUSH_AT_MIC
+            // (~1.5 s continuous). Do not forceFlush with tiny hops (clears accum + null under
+            // NATIVE_MIN_SAMPLES). Live path separately uses forceFlush=true + playbackCapture.
             val raw = active.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = false)
                 ?: continue
             val primaryRaw = raw.text.trim()
             if (primaryRaw.isEmpty()) continue
             val norm = AsrJunkFilter.normalize(primaryRaw)
             if (norm.isEmpty()) continue
+            // Exact-norm only: allow near-dup / growing EN phrase to revise in place.
             if (norm == lastPublishedNorm) continue
 
             val now = System.currentTimeMillis()
@@ -225,6 +229,27 @@ class MicTranslatorActivity : AppCompatActivity() {
             lastPublishedNorm = norm
             lastEmitAtMs = now
 
+            val targetNorm = MlKitTranslationEngine.normalizeLangStatic(settings.targetLanguage)
+            val latinAsr = AsrJunkFilter.scriptFamilyOf(primaryRaw) == AsrJunkFilter.ScriptFamily.LATIN
+            // Mic EN fast path: skip MT dispatcher hop entirely (EN→EN / Latin→EN).
+            val skipMt = targetNorm == "en" || (latinAsr && targetNorm == "en")
+
+            if (skipMt) {
+                val line = formatDisplayLine(raw, dual, settings.targetLanguage)
+                if (line.isBlank()) continue
+                withContext(Dispatchers.Main) {
+                    publishCaptionLine(line, replaceLast = reviseSameUtterance)
+                }
+                continue
+            }
+
+            // Non-EN: publish ASR immediately, then revise in place when MT returns.
+            val asrLine = formatDisplayLine(raw, dual, settings.targetLanguage)
+            if (asrLine.isNotBlank()) {
+                withContext(Dispatchers.Main) {
+                    publishCaptionLine(asrLine, replaceLast = reviseSameUtterance)
+                }
+            }
             val policy = try {
                 mt?.applyPolicy(raw, settings) ?: raw
             } catch (t: Throwable) {
@@ -232,17 +257,43 @@ class MicTranslatorActivity : AppCompatActivity() {
                 raw
             }
             val line = formatDisplayLine(policy, dual, settings.targetLanguage)
-            if (line.isBlank()) continue
+            if (line.isBlank() || line == asrLine) continue
             withContext(Dispatchers.Main) {
-                publishCaptionLine(line, replaceLast = reviseSameUtterance)
+                publishCaptionLine(line, replaceLast = true)
             }
         }
     }
 
     private fun isSameUtteranceRevision(prevNorm: String, nextNorm: String): Boolean {
+        if (prevNorm.isEmpty() || nextNorm.isEmpty()) return false
         if (AsrJunkFilter.isNearDuplicate(prevNorm, nextNorm)) return true
         // Growing / shrinking partials for the same spoken phrase.
-        return nextNorm.startsWith(prevNorm) || prevNorm.startsWith(nextNorm)
+        if (nextNorm.startsWith(prevNorm) || prevNorm.startsWith(nextNorm)) return true
+        // Looser mic-side revise: shared prefix so growing EN phrases update in place.
+        val common = commonPrefixLength(prevNorm, nextNorm)
+        if (common >= 8) {
+            val lenDelta = kotlin.math.abs(nextNorm.length - prevNorm.length)
+            if (lenDelta <= 48) return true
+        }
+        // Token overlap — same utterance with mid-phrase ASR drift.
+        val prevTok = prevNorm.split(' ').filter { it.isNotEmpty() }
+        val nextTok = nextNorm.split(' ').filter { it.isNotEmpty() }
+        if (prevTok.isNotEmpty() && nextTok.isNotEmpty()) {
+            val nextSet = nextTok.toSet()
+            val overlap = prevTok.count { it in nextSet }
+            val smaller = minOf(prevTok.size, nextTok.size)
+            if (overlap * 2 >= smaller && kotlin.math.abs(prevTok.size - nextTok.size) <= 4) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun commonPrefixLength(a: String, b: String): Int {
+        val n = minOf(a.length, b.length)
+        var i = 0
+        while (i < n && a[i] == b[i]) i++
+        return i
     }
 
     private fun formatDisplayLine(
@@ -291,8 +342,8 @@ class MicTranslatorActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MicTranslator"
-        /** ~0.75 s @ 16 kHz — within the suggested 0.5–1.0 s hop band. */
-        private const val HOP_SAMPLES = 12_000
+        /** ~0.5 s @ 16 kHz — snappier continuous feel (was 12_000 / 0.75 s). */
+        private const val HOP_SAMPLES = 8_000
         /** Treat a long quiet gap as a new utterance (append, don't revise). */
         private const val UTTERANCE_GAP_MS = 1_500L
     }

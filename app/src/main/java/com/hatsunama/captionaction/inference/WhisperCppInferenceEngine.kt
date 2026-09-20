@@ -117,7 +117,8 @@ class WhisperCppInferenceEngine(
         if (speaking) lastSpeechAt = now
 
         val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
-        val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_SPEECH
+        // Mic-only shorter flush; Live playback keeps FLUSH_AT_PLAYBACK (unchanged).
+        val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_MIC
 
         val samples: ShortArray?
         if (forceFlush) {
@@ -143,9 +144,11 @@ class WhisperCppInferenceEngine(
                         else -> false
                     }
                 } else {
+                    // Mic path: snappier silence-end (~280 ms) + shorter FLUSH_AT_MIC.
+                    // Playback branch above is intentionally separate and unchanged.
                     when {
                         n >= MAX_SAMPLES -> true
-                        n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
+                        n >= minSamples && !speaking && (now - lastSpeechAt) > MIC_SILENCE_END_MS -> true
                         n >= flushAt -> true
                         else -> false
                     }
@@ -392,9 +395,13 @@ class WhisperCppInferenceEngine(
         private const val NATIVE_MIN_SAMPLES = 16_000
         private const val MIN_SAMPLES_MIC = 16_000
         private const val MIN_SAMPLES_PLAYBACK = 16_000
-        private const val FLUSH_AT_SPEECH = 16_000 * 5
+        /** Mic continuous flush ~1.5 s @ 16 kHz (was FLUSH_AT_SPEECH = 5 s). Live unchanged. */
+        private const val FLUSH_AT_MIC = 24_000
+        /** Live MediaProjection path — locked; do not tighten with mic latency work. */
         private const val FLUSH_AT_PLAYBACK = 16_000 * 4
         private const val MAX_SAMPLES = 16_000 * 8
+        /** Mic-only: speech-end quiet gap before flush (was 400 ms). */
+        private const val MIC_SILENCE_END_MS = 280L
         private const val MIC_SPEECH_RMS = 80f
         private const val MIC_DISCARD_RMS = 60f
         private const val PLAYBACK_SPEECH_RMS = 4f
