@@ -1,6 +1,7 @@
 package com.hatsunama.captionaction.inference
 
 import android.util.Log
+import java.text.Normalizer
 
 /**
  * Rejects ASR hallucination / filler tokens that are not real speech captions.
@@ -118,6 +119,72 @@ object AsrJunkFilter {
     private val CJK_FILLER_CHARS = setOf('嗯', '啊', '哦', '呃', '嘿', '哈', '哎', '咦', '唔')
 
     /**
+     * Compact (normalize + strip diacritics + no spaces) music/sound label words.
+     * Covers EN/ES/FR/DE/IT/PT/… + common CJK glyphs Whisper emits in brackets.
+     */
+    private val MUSIC_SOUND_COMPACT = setOf(
+        "music", "musica", "musik", "musique", "muziek", "muzyka", "muzica",
+        "song", "cancion", "chanson", "lied", "canzone",
+        "applause", "laughter", "laughing", "silence", "blank", "blankaudio",
+        "nospeech", "inaudible", "crying", "cough", "sigh", "clicking", "click",
+        "sound", "sonido", "son", "ruido", "noise",
+        "音楽", "音乐", "音樂", "음악",
+        "ミュージック", "音楽のみ"
+    )
+
+    /** Normalized full phrases Whisper emits instead of real speech. */
+    private val WHISPER_META_EXACT = setOf(
+        "speaking in foreign language",
+        "speaking in a foreign language",
+        "foreign language",
+        "speaks in foreign language",
+        "speaks foreign language",
+        "someone speaking in foreign language",
+        "speaking foreign language",
+        "non english speech",
+        "non english",
+        "unintelligible",
+        "indistinct",
+        "inaudible speech",
+        "blank audio",
+        "no speech",
+        "clears throat",
+        "clearing throat"
+    )
+
+    private val WHISPER_META_COMPACT = setOf(
+        "speakinginforeignlanguage",
+        "speakinginaforeignlanguage",
+        "foreignlanguage",
+        "speaksinforeignlanguage",
+        "speaksforeignlanguage",
+        "speakingforeignlanguage",
+        "nonenglishspeech",
+        "nonenglish",
+        "unintelligible",
+        "indistinct",
+        "blankaudio",
+        "nospeech",
+        "clearsthroat",
+        "clearingthroat"
+    )
+
+    /** Full normalized stage-direction phrases when entire caption is paren/bracket wrapped. */
+    private val WHISPER_STAGE_DIRECTIONS = setOf(
+        "applause", "laughter", "laughing", "laughs", "silence", "music",
+        "cough", "coughs", "sigh", "sighs", "crying", "cries",
+        "clears throat", "clearing throat", "inaudible", "indistinct",
+        "chuckles", "cheering", "crowd noise", "static"
+    )
+
+    private val WHISPER_STAGE_DIRECTION_TOKENS = setOf(
+        "applause", "laughter", "laughing", "laughs", "silence", "music",
+        "cough", "coughs", "sigh", "sighs", "crying", "cries",
+        "clears", "throat", "clearing", "inaudible", "indistinct",
+        "chuckles", "cheering", "crowd", "noise", "static", "blank", "audio"
+    )
+
+    /**
      * @return trimmed text if usable as a caption, else null (and logs at INFO).
      */
     fun sanitizeOrNull(raw: String?): String? {
@@ -135,6 +202,10 @@ object AsrJunkFilter {
     fun isJunk(text: String): Boolean {
         val t = text.trim()
         if (t.isEmpty()) return true
+        // Whisper meta / stage-direction hallucinations (foreign-language, blank audio, …).
+        if (isWhisperMetaLine(t)) return true
+        // Music / sound tags: [Music], [Música], (music), etc. — language-agnostic.
+        if (isMusicOrSoundTag(t)) return true
 
         // Bracket/paren-only token(s): [BLANK_AUDIO], (Silence), {BLANK_AUDIO], etc.
         val strippedBrackets = t
@@ -206,9 +277,107 @@ object AsrJunkFilter {
             .trim()
 
     /**
+     * Whisper meta captions that are not real speech — language-agnostic.
+     * Examples: "(speaking in foreign language)", "foreign language",
+     * parenthesis-only stage directions, blank-audio labels.
+     * Wired into [isJunk] so Mic (pre-publish) and Live ([sanitizeOrNull]) both suppress.
+     */
+    fun isWhisperMetaLine(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        val inner = t
+            .replace(Regex("""[\[\]{}()<>|]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        val normalized = normalize(stripDiacriticsForLength(inner))
+        if (normalized.isEmpty()) return t.any { it in "[](){}<>" }
+        val compact = normalized.replace(Regex("""\s+"""), "")
+
+        if (normalized in WHISPER_META_EXACT || compact in WHISPER_META_COMPACT) return true
+        // Phrase containment (Whisper variants / punctuation drift).
+        if ("foreign language" in normalized) return true
+        if ("speaking in foreign" in normalized) return true
+        if ("non english" in normalized || "nonenglish" in normalized) return true
+        if ("unintelligible" in normalized || "indistinct" in normalized) return true
+        if (compact == "blankaudio" || compact.startsWith("blankaudio")) return true
+
+        // Entire caption is a bracket/paren stage direction (no free speech outside wrappers).
+        val core = t.trimEnd('.', '!', '?', '…', ' ').trim()
+        val wrappedOnly =
+            (core.startsWith("(") && core.endsWith(")")) ||
+                (core.startsWith("[") && core.endsWith("]")) ||
+                (core.startsWith("{") && core.endsWith("}")) ||
+                (core.startsWith("<") && core.endsWith(">"))
+        if (wrappedOnly) {
+            if (isMusicOrSoundTag(t)) return true
+            // "(speaking in Chinese)" / language-label metas inside parens only
+            if (normalized.startsWith("speaking in") || normalized.startsWith("speaks in")) return true
+            // Short paren-only directions: (applause), (laughs), (clears throat), (silence)
+            if (normalized in WHISPER_STAGE_DIRECTIONS || compact in WHISPER_META_COMPACT) return true
+            val tokens = normalized.split(' ').filter { it.isNotEmpty() }
+            if (tokens.isNotEmpty() && tokens.all { it in WHISPER_STAGE_DIRECTION_TOKENS }) return true
+        }
+        return false
+    }
+
+    /**
+     * Language-agnostic music / non-speech sound tags Whisper often emits:
+     * `[Music]`, `[Música]`, `(music)`, `{Silence}`, etc.
+     * Matches bracket/paren-wrapped labels whose inner word (diacritics stripped)
+     * is a known music/sound token — not real speech captions.
+     */
+    fun isMusicOrSoundTag(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        // Require bracket/paren wrappers so bare words like "son" / "lied" stay real speech.
+        // EXACT_JUNK still covers unbracketed "music" / "silence" / fillers.
+        if (!t.any { it in "[](){}<>" }) return false
+        val inner = t
+            .replace(Regex("""[\[\]{}()<>|]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        if (inner.isEmpty()) return true
+        val compact = normalize(stripDiacriticsForLength(inner)).replace(Regex("""\s+"""), "")
+        return compact in MUSIC_SOUND_COMPACT
+    }
+
+    /**
+     * Mic explicit-MT gate (not used by Live [hasEnoughContentForMt]).
+     * Allows short dictionary-like words: ≥1 letter token after strip punct/diacritics/¡¿,
+     * Latin token length ≥2, CJK ≥1 — while still rejecting junk/music via [isJunk].
+     */
+    fun hasEnoughContentForExplicitMt(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty() || isJunk(t)) return false
+        val stripped = t
+            .replace(Regex("""[\[\]{}()<>|¡¿]+"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        val normalized = normalize(stripDiacriticsForLength(stripped))
+        if (normalized.isEmpty()) return false
+        return when (scriptFamilyOf(t)) {
+            ScriptFamily.CJK -> {
+                val compact = normalized.replace(Regex("""\s+"""), "")
+                compact.isNotEmpty()
+            }
+            else -> {
+                val tokens = normalized.split(' ').filter { it.isNotEmpty() }
+                tokens.any { tok -> tok.length >= 2 && tok.any { ch -> ch.isLetter() } }
+            }
+        }
+    }
+
+    /** NFD + strip combining marks so ¡Hola! / Música length checks are language-agnostic. */
+    fun stripDiacriticsForLength(text: String): String {
+        val nfd = Normalizer.normalize(text, Normalizer.Form.NFD)
+        return nfd.replace(Regex("""\p{Mn}+"""), "")
+    }
+
+    /**
      * Enough real phrase content to bother with ML Kit MT.
      * Language-agnostic: crumbs skip MT (nonsense target), real short speech still passes.
      * CJK family: ≥2 content chars. Latin/other: ≥2 tokens or ≥6 letters.
+     * Live keeps this gate; Mic From≠To uses [hasEnoughContentForExplicitMt] instead.
      */
     fun hasEnoughContentForMt(text: String): Boolean {
         val t = text.trim()

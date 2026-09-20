@@ -28,7 +28,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="64dp"
-        android:layout_marginBottom="220dp"
+        android:layout_marginBottom="228dp"
         android:clipToPadding="false"
         android:fillViewport="true"
         android:paddingHorizontal="24dp">
@@ -70,7 +70,7 @@
         <LinearLayout
             android:id="@+id/languageRow"
             android:layout_width="match_parent"
-            android:layout_height="110dp"
+            android:layout_height="118dp"
             android:gravity="center"
             android:orientation="horizontal"
             android:paddingHorizontal="12dp">
@@ -88,8 +88,9 @@
                     android:text="@string/mic_translator_from"
                     android:textAllCaps="false"
                     android:textColor="@color/ca_on_refract"
-                    android:textSize="12sp"
-                    android:alpha="0.55" />
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:alpha="0.7" />
 
                 <NumberPicker
                     android:id="@+id/pickerFrom"
@@ -112,8 +113,9 @@
                     android:text="@string/mic_translator_to"
                     android:textAllCaps="false"
                     android:textColor="@color/ca_on_refract"
-                    android:textSize="12sp"
-                    android:alpha="0.55" />
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:alpha="0.7" />
 
                 <NumberPicker
                     android:id="@+id/pickerTo"

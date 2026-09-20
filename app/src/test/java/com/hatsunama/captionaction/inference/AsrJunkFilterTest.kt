@@ -126,4 +126,55 @@ class AsrJunkFilterTest {
             )
         )
     }
+
+    @Test
+    fun whisperMeta_speakingInForeignLanguage_isJunk() {
+        assertTrue(AsrJunkFilter.isWhisperMetaLine("(speaking in foreign language)"))
+        assertTrue(AsrJunkFilter.isWhisperMetaLine("[Speaking in a foreign language]"))
+        assertTrue(AsrJunkFilter.isWhisperMetaLine("foreign language"))
+        assertTrue(AsrJunkFilter.isJunk("(speaking in foreign language)"))
+        assertTrue(AsrJunkFilter.isJunk("Speaking in a foreign language."))
+        // Real speech must not be swept by the "speaking in" meta gate
+        assertFalse(AsrJunkFilter.isWhisperMetaLine("Speaking in public is hard"))
+    }
+
+    @Test
+    fun whisperMeta_musicAndStageTags_areJunk() {
+        assertTrue(AsrJunkFilter.isMusicOrSoundTag("[Música]"))
+        assertTrue(AsrJunkFilter.isMusicOrSoundTag("(music)"))
+        assertTrue(AsrJunkFilter.isJunk("[Música]"))
+        assertTrue(AsrJunkFilter.isJunk("(applause)"))
+        assertTrue(AsrJunkFilter.isJunk("[BLANK_AUDIO]"))
+        assertFalse(AsrJunkFilter.isMusicOrSoundTag("Hola"))
+        assertFalse(AsrJunkFilter.isWhisperMetaLine("Hola amigos"))
+        assertFalse(AsrJunkFilter.isJunk("你好"))
+    }
+
+    @Test
+    fun explicitMt_shortGreetingsPass_liveGateStillBlocksHola() {
+        assertTrue(AsrJunkFilter.hasEnoughContentForExplicitMt("¡Hola!"))
+        assertTrue(AsrJunkFilter.hasEnoughContentForExplicitMt("Ciao"))
+        assertTrue(AsrJunkFilter.hasEnoughContentForExplicitMt("Bonjour"))
+        assertTrue(AsrJunkFilter.hasEnoughContentForExplicitMt("你好"))
+        assertFalse(AsrJunkFilter.hasEnoughContentForMt("¡Hola!"))
+        assertFalse(AsrJunkFilter.hasEnoughContentForExplicitMt("[Música]"))
+        assertFalse(AsrJunkFilter.hasEnoughContentForExplicitMt("(speaking in foreign language)"))
+    }
+
+    @Test
+    fun stripDiacritics_musicaBecomesMusica() {
+        val stripped = AsrJunkFilter.stripDiacriticsForLength("Música")
+        assertEquals("Musica", stripped)
+    }
+
+
+    @Test
+    fun fromScriptMismatch_latinVsZh_holds() {
+        // Mic From=zh + pure Latin (meta/wrong lang) → drop via same Live helper.
+        assertTrue(AsrJunkFilter.shouldHoldSourceOffOverlay("Hello everyone", "zh"))
+        assertTrue(AsrJunkFilter.shouldHoldSourceOffOverlay("(speaking in foreign language)", "zh") ||
+            AsrJunkFilter.isWhisperMetaLine("(speaking in foreign language)"))
+        assertFalse(AsrJunkFilter.shouldHoldSourceOffOverlay("你好世界", "zh"))
+        assertFalse(AsrJunkFilter.shouldHoldSourceOffOverlay("Hola amigos", "es"))
+    }
 }

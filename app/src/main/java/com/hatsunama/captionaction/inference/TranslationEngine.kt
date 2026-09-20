@@ -38,6 +38,17 @@ interface TranslationEngine {
 
     suspend fun applyPolicy(result: CaptionResult, settings: AppSettings): CaptionResult
 
+    /**
+     * Mic-only explicit MT: picker [sourceLang]→[targetLang], no language-id guess,
+     * no Live [AsrJunkFilter.hasEnoughContentForMt] crumb gate.
+     * Default: unsupported (Live engines keep applyPolicy only).
+     */
+    suspend fun translateExplicit(
+        text: String,
+        sourceLang: String,
+        targetLang: String
+    ): String? = null
+
     fun release()
 }
 
@@ -192,6 +203,42 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 result.copy(translatedText = clean)
             }
         }
+
+    /**
+     * Mic From≠To path: trust picker languages, allow short real words (Hola / Ciao / 你好),
+     * reject junk/music tags, never call hasEnoughContentForMt (Live crumb protection stays).
+     */
+    override suspend fun translateExplicit(
+        text: String,
+        sourceLang: String,
+        targetLang: String
+    ): String? = withContext(Dispatchers.IO) {
+        val source = normalizeLang(sourceLang)
+        val target = normalizeLang(targetLang)
+        if (source.isEmpty() || target.isEmpty() || source == target) return@withContext null
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return@withContext null
+        if (AsrJunkFilter.isJunk(trimmed) || AsrJunkFilter.isMusicOrSoundTag(trimmed)) {
+            Log.i(TAG, "NMT explicit skip $source→$target (junk/music)")
+            return@withContext null
+        }
+        if (!AsrJunkFilter.hasEnoughContentForExplicitMt(trimmed)) {
+            Log.i(TAG, "NMT explicit skip $source→$target (no real word)")
+            return@withContext null
+        }
+        val translated = translateHotPath(trimmed, source, target)
+        val clean = AsrJunkFilter.sanitizeOrNull(translated)
+        if (clean.isNullOrBlank() || clean == trimmed) {
+            Log.i(TAG, "NMT explicit skip $source→$target (empty, identical, or junk out)")
+            null
+        } else {
+            Log.i(
+                TAG,
+                "NMT explicit ok $source→$target in=${trimmed.take(40)} out=${clean.take(40)}"
+            )
+            clean
+        }
+    }
 
     private suspend fun identifyLanguage(text: String): String? {
         if (text.isBlank()) return null
