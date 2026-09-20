@@ -15,16 +15,17 @@ import kotlinx.coroutines.withContext
 
 /**
  * Live continuous + Quality ASR via whisper.cpp (ffmpegkit AAR).
- * Live default = Tiny (Balanced), language=auto for all Languages.all.
+ * Live default = Tiny (Balanced), language=auto for all Languages.all when sourceLanguage empty.
  *
  * Windows: ~1.5 s normally; ~1.125 s when [setKeepUpBehind] so mid-device passes finish nearer
  * realtime (still ≥1000 ms native min). Short PCM is silence-padded.
  *
  * Language:
- * - Mic EN target + !dual: always `language=en, translate=false` (`mic-en-direct`); ignores bias.
+ * - [setSourceLanguage] non-empty (Mic From picker): `language=<code>, translate=false`
+ *   (`mic-source-*`); bypasses mic-en-direct / Live bias. Empty = Live auto path below.
  * - Live EN target + !dual: prefer `language=en, translate=false` (`en-direct`) when recent captions
  *   look Latin/EN-heavy — bias falls back to `auto` + translate-to-EN for multilingual source.
- * - Dual / non-EN: always `auto` + translate=false; ML Kit fills translatedText async.
+ * - Dual / non-EN (source empty): always `auto` + translate=false; ML Kit fills translatedText async.
  */
 class WhisperCppInferenceEngine(
     private val appContext: Context,
@@ -38,6 +39,8 @@ class WhisperCppInferenceEngine(
     private var lastSpeechAt = 0L
     @Volatile private var dualSubtitles: Boolean = false
     @Volatile private var playbackCapture: Boolean = false
+    /** Empty = auto (Live). Non-empty = explicit From language (Mic). */
+    @Volatile private var sourceLanguage: String = ""
     @Volatile private var lastMode: String = ""
     @Volatile private var keepUpBehind: Boolean = false
     /** ≥0 → prefer en-direct for EN target; negative → auto+translate (multilingual). */
@@ -50,6 +53,10 @@ class WhisperCppInferenceEngine(
 
     override fun setTargetLanguage(code: String) {
         targetLanguage = code
+    }
+
+    override fun setSourceLanguage(code: String) {
+        sourceLanguage = code.trim().lowercase()
     }
 
     override fun setDualSubtitles(enabled: Boolean) {
@@ -188,17 +195,17 @@ class WhisperCppInferenceEngine(
             val endMs = System.currentTimeMillis()
             val startMs = endMs - (pcm.size * 1000L / sampleRateHz)
 
+            val explicitSource = normalizeLang(sourceLanguage)
             val enTargetSingle = target == "en" && !dualSubtitles
-            // Mic EN: always language=en / translate=false (ignore enDirectBias). Live keeps bias.
-            val micEnDirect = !playbackCapture && enTargetSingle
             val useEnDirect = enTargetSingle && enDirectBias >= 0
             val language: String
             val translate: Boolean
             when {
-                micEnDirect -> {
-                    language = "en"
+                // Mic From picker (or any caller that set source): explicit lang, never whisper-translate.
+                explicitSource.isNotEmpty() -> {
+                    language = explicitSource
                     translate = false
-                    lastMode = "mic-en-direct"
+                    lastMode = "mic-source-$explicitSource"
                 }
                 useEnDirect -> {
                     language = "en"
@@ -242,7 +249,11 @@ class WhisperCppInferenceEngine(
 
             CaptionResult(
                 text = text,
-                language = if (micEnDirect || useEnDirect || (enTargetSingle && translate)) "en" else "auto",
+                language = when {
+                    explicitSource.isNotEmpty() -> explicitSource
+                    useEnDirect || (enTargetSingle && translate) -> "en"
+                    else -> "auto"
+                },
                 confidence = 0.8f,
                 startMs = startMs,
                 endMs = endMs,
@@ -312,6 +323,7 @@ class WhisperCppInferenceEngine(
         lastMode = ""
         keepUpBehind = false
         enDirectBias = 1
+        sourceLanguage = ""
     }
 
     private fun ensureMinDuration(pcm: ShortArray, sampleRateHz: Int, minSamples: Int): ShortArray {

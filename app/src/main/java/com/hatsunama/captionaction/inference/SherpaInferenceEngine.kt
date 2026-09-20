@@ -42,6 +42,13 @@ class SherpaInferenceEngine(
         targetLanguage = code.trim().lowercase().ifBlank { "en" }
     }
 
+    /** Stored for API parity; SenseVoice load stays language=auto (stub — Live unused for Mic). */
+    @Volatile private var sourceLanguage: String = ""
+
+    override fun setSourceLanguage(code: String) {
+        sourceLanguage = code.trim().lowercase()
+    }
+
     override fun lastAsrMode(): String = lastMode
 
     override fun preferredWindowSamples(): Int = LIVE_WINDOW_SAMPLES

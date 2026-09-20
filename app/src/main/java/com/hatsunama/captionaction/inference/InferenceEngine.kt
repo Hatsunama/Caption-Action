@@ -12,6 +12,12 @@ interface InferenceEngine {
 
     fun setTargetLanguage(code: String) {}
 
+    /**
+     * Explicit ASR source language for whisper (e.g. Mic From picker).
+     * Empty / blank = auto-detect (Live default). Non-empty → language=code, translate=false.
+     */
+    fun setSourceLanguage(code: String) {}
+
     fun setDualSubtitles(enabled: Boolean) {}
 
     /**
@@ -37,7 +43,7 @@ interface InferenceEngine {
         forceFlush: Boolean = false
     ): CaptionResult?
 
-    /** Last ASR mode tag for diagnostics (`en-direct` / `auto-translate`). */
+    /** Last ASR mode tag for diagnostics (`en-direct` / `auto-translate` / `mic-source-*`). */
     fun lastAsrMode(): String = ""
 
     /**

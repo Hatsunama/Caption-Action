@@ -1,7 +1,12 @@
 package com.hatsunama.captionaction.ui.mic
 
+import android.content.Context
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.widget.NumberPicker
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -20,6 +25,7 @@ import com.hatsunama.captionaction.inference.InferenceEngine
 import com.hatsunama.captionaction.inference.InferenceEngineFactory
 import com.hatsunama.captionaction.inference.MlKitTranslationEngine
 import com.hatsunama.captionaction.ui.home.RefractBackgroundView
+import com.hatsunama.captionaction.util.Languages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -28,12 +34,14 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
 /**
- * In-app microphone → whisper Tiny ASR → ML Kit translate.
- * Isolated from Live Captions (which stays MediaProjection / playback-only).
+ * In-app microphone → whisper Tiny ASR (explicit From language) → ML Kit to To.
+ * Isolated from Live Captions (which stays MediaProjection / playback-only, source=auto).
  *
  * Mic path uses FIFO drain (~1.5–2.0 s windows) with [forceFlush]=true so each
  * spoken window is transcribed in order (no newest-trim drops). Pump stays open
  * while [micOn]; ASR is serialized (never cancel/skip when infer is slow).
+ *
+ * From/To NumberPickers (Languages.all) sit under the mic; changes apply next window.
  */
 class MicTranslatorActivity : AppCompatActivity() {
 
@@ -41,6 +49,8 @@ class MicTranslatorActivity : AppCompatActivity() {
     private lateinit var captionScroll: ScrollView
     private lateinit var captionText: TextView
     private lateinit var btnMic: MaterialButton
+    private lateinit var pickerFrom: NumberPicker
+    private lateinit var pickerTo: NumberPicker
     private var refractBackground: RefractBackgroundView? = null
 
     private var engine: InferenceEngine? = null
@@ -51,6 +61,13 @@ class MicTranslatorActivity : AppCompatActivity() {
     private var lastPublishedNorm = ""
     private var lastEmitAtMs = 0L
     private val lines = ArrayList<String>()
+
+    /** Volatile so ASR loop reads picker changes without locks. */
+    @Volatile private var fromCode: String = "en"
+    @Volatile private var toCode: String = "en"
+
+    private val langCodes: List<String> = Languages.all.map { it.code }
+    private val langLabels: Array<String> = Languages.all.map { it.label }.toTypedArray()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,6 +80,11 @@ class MicTranslatorActivity : AppCompatActivity() {
         captionScroll = findViewById(R.id.captionScroll)
         captionText = findViewById(R.id.captionText)
         btnMic = findViewById(R.id.btnMic)
+        pickerFrom = findViewById(R.id.pickerFrom)
+        pickerTo = findViewById(R.id.pickerTo)
+
+        loadPersistedLanguages()
+        setupLanguagePickers()
 
         findViewById<MaterialButton>(R.id.btnBack).setOnClickListener {
             stopMicCapture()
@@ -97,9 +119,92 @@ class MicTranslatorActivity : AppCompatActivity() {
 
     private fun app(): CaptionActionApp = application as CaptionActionApp
 
+    private fun micPrefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun loadPersistedLanguages() {
+        val prefs = micPrefs()
+        fromCode = prefs.getString(KEY_FROM, "en")?.takeIf { it in langCodes } ?: "en"
+        val savedTo = prefs.getString(KEY_TO, null)?.takeIf { it in langCodes }
+        toCode = savedTo ?: "en"
+        // If To was never saved, prepareEngines defaults To to Home targetLanguage.
+    }
+
+    private fun persistLanguages() {
+        micPrefs().edit()
+            .putString(KEY_FROM, fromCode)
+            .putString(KEY_TO, toCode)
+            .apply()
+    }
+
+    private fun setupLanguagePickers() {
+        fun wire(picker: NumberPicker, initialCode: String, onCode: (String) -> Unit) {
+            picker.minValue = 0
+            picker.maxValue = langCodes.lastIndex
+            picker.displayedValues = langLabels
+            picker.wrapSelectorWheel = true
+            picker.value = langCodes.indexOf(initialCode).coerceAtLeast(0)
+            picker.setOnValueChangedListener { _, _, newVal ->
+                val code = langCodes.getOrElse(newVal) { "en" }
+                onCode(code)
+                persistLanguages()
+                maybeEnsureMtPack(code)
+            }
+            styleNumberPickerOpen(picker)
+        }
+        wire(pickerFrom, fromCode) { fromCode = it }
+        wire(pickerTo, toCode) { toCode = it }
+    }
+
+    /** Apple-like open wheel: hide selection dividers when API allows. */
+    private fun styleNumberPickerOpen(picker: NumberPicker) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                picker.selectionDividerHeight = 0
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            for (field in NumberPicker::class.java.declaredFields) {
+                when (field.name) {
+                    "mSelectionDivider" -> {
+                        field.isAccessible = true
+                        field.set(picker, ColorDrawable(Color.TRANSPARENT))
+                    }
+                    "mSelectionDividerHeight" -> {
+                        field.isAccessible = true
+                        field.setInt(picker, 0)
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        try {
+            picker.setBackgroundColor(Color.TRANSPARENT)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun maybeEnsureMtPack(toOrFrom: String) {
+        val mt = translation ?: return
+        lifecycleScope.launch(Dispatchers.IO) {
+            mt.ensureModels(targetLanguage = toCode, extraSources = setOf(fromCode, toOrFrom))
+        }
+    }
+
     private suspend fun prepareEngines() {
         val cache = ModelCache(this)
         val settings = app().settings.current()
+        // Default To to Home target when prefs never set To.
+        if (micPrefs().getString(KEY_TO, null) == null) {
+            val home = settings.targetLanguage.takeIf { it in langCodes } ?: "en"
+            toCode = home
+            withContext(Dispatchers.Main) {
+                if (::pickerTo.isInitialized) {
+                    pickerTo.value = langCodes.indexOf(home).coerceAtLeast(0)
+                }
+            }
+            persistLanguages()
+        }
         val tier = ModelTier.BALANCED
         if (!cache.isReadyForAsr(tier)) {
             Toast.makeText(this, getString(R.string.error_model), Toast.LENGTH_LONG).show()
@@ -109,14 +214,15 @@ class MicTranslatorActivity : AppCompatActivity() {
         val preferred = InferenceEngineFactory.create(
             context = this,
             tier = tier,
-            targetLanguage = settings.targetLanguage
+            targetLanguage = toCode
         )
         if (preferred == null) {
             Toast.makeText(this, getString(R.string.error_engine_load), Toast.LENGTH_LONG).show()
             finish()
             return
         }
-        preferred.setTargetLanguage(settings.targetLanguage)
+        preferred.setSourceLanguage(fromCode)
+        preferred.setTargetLanguage(toCode)
         preferred.setDualSubtitles(settings.dualSubtitles && preferred.canProvideDualSubtitles())
         preferred.setPlaybackCapture(false)
         val loaded = withContext(Dispatchers.IO) { preferred.load(cache.fileFor(tier)) }
@@ -131,8 +237,8 @@ class MicTranslatorActivity : AppCompatActivity() {
         translation = mt
         lifecycleScope.launch(Dispatchers.IO) {
             val ensure = mt.ensureModels(
-                targetLanguage = settings.targetLanguage,
-                extraSources = settings.passthroughLanguages
+                targetLanguage = toCode,
+                extraSources = setOf(fromCode) + settings.passthroughLanguages
             )
             if (ensure is EnsureResult.Failed) {
                 Log.w(TAG, "MT packs: ${ensure.message}")
@@ -194,7 +300,8 @@ class MicTranslatorActivity : AppCompatActivity() {
      * FIFO mic streaming: ~1.5–2.0 s windows via [AudioCapture.drainFifoWindow] with
      * forceFlush=true so each window runs ASR immediately (completeness > tiny hops).
      * Never skips windows when ASR is slow — serialize FIFO; pump stays running.
-     * EN target (or Latin ASR + EN target): skip ML Kit — show raw ASR immediately.
+     * From/To read each window (volatile). Whisper: language=From, translate=false.
+     * Skip MT when from==to (ASR only).
      */
     private suspend fun runAsrLoop() {
         val active = engine ?: return
@@ -205,14 +312,16 @@ class MicTranslatorActivity : AppCompatActivity() {
             val pcm = audioCapture.drainFifoWindow(WINDOW_SAMPLES) ?: break
             val drainMs = System.currentTimeMillis() - drainStart
             if (!micOn) break
+
+            val source = fromCode
+            val target = toCode
+            active.setSourceLanguage(source)
+            active.setTargetLanguage(target)
             val settings = app().settings.current()
-            active.setTargetLanguage(settings.targetLanguage)
             val dual = active.canProvideDualSubtitles() && settings.dualSubtitles
             active.setDualSubtitles(dual)
             active.setPlaybackCapture(false)
 
-            // forceFlush=true → each FIFO window runs ASR immediately (no silence/5s accum wait).
-            // Live path separately uses drainToNewestWindow + forceFlush=true + playbackCapture.
             val asrStart = System.currentTimeMillis()
             val raw = active.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = true)
             val asrMs = System.currentTimeMillis() - asrStart
@@ -228,7 +337,6 @@ class MicTranslatorActivity : AppCompatActivity() {
             }
             val norm = AsrJunkFilter.normalize(primaryRaw)
             if (norm.isEmpty()) continue
-            // Exact-norm only: allow near-dup / growing EN phrase to revise in place.
             if (norm == lastPublishedNorm) {
                 Log.i(TAG, "emit skip dup drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs")
                 continue
@@ -237,7 +345,7 @@ class MicTranslatorActivity : AppCompatActivity() {
             Log.i(
                 TAG,
                 "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
-                    "mode=${active.lastAsrMode()} text=${primaryRaw.take(48)}"
+                    "from=$source to=$target mode=${active.lastAsrMode()} text=${primaryRaw.take(48)}"
             )
 
             val now = System.currentTimeMillis()
@@ -249,13 +357,13 @@ class MicTranslatorActivity : AppCompatActivity() {
             lastPublishedNorm = norm
             lastEmitAtMs = now
 
-            val targetNorm = MlKitTranslationEngine.normalizeLangStatic(settings.targetLanguage)
-            val latinAsr = AsrJunkFilter.scriptFamilyOf(primaryRaw) == AsrJunkFilter.ScriptFamily.LATIN
-            // Mic EN fast path: skip MT dispatcher hop entirely (EN→EN / Latin→EN).
-            val skipMt = targetNorm == "en" || (latinAsr && targetNorm == "en")
+            val fromNorm = MlKitTranslationEngine.normalizeLangStatic(source)
+            val toNorm = MlKitTranslationEngine.normalizeLangStatic(target)
+            // Same language → ASR only (no MT). Also skip when already tagged as target.
+            val skipMt = fromNorm == toNorm
 
             if (skipMt) {
-                val line = formatDisplayLine(raw, dual, settings.targetLanguage)
+                val line = formatDisplayLine(raw, dual, target)
                 if (line.isBlank()) continue
                 withContext(Dispatchers.Main) {
                     publishCaptionLine(line, replaceLast = reviseSameUtterance)
@@ -263,20 +371,26 @@ class MicTranslatorActivity : AppCompatActivity() {
                 continue
             }
 
-            // Non-EN: publish ASR immediately, then revise in place when MT returns.
-            val asrLine = formatDisplayLine(raw, dual, settings.targetLanguage)
+            // Publish ASR immediately, then revise in place when MT returns.
+            val asrTagged = if (raw.language.isBlank() || raw.language == "auto") {
+                raw.copy(language = source)
+            } else {
+                raw
+            }
+            val asrLine = formatDisplayLine(asrTagged, dual, target)
             if (asrLine.isNotBlank()) {
                 withContext(Dispatchers.Main) {
                     publishCaptionLine(asrLine, replaceLast = reviseSameUtterance)
                 }
             }
+            val settingsForMt = settings.copy(targetLanguage = target)
             val policy = try {
-                mt?.applyPolicy(raw, settings) ?: raw
+                mt?.applyPolicy(asrTagged, settingsForMt) ?: asrTagged
             } catch (t: Throwable) {
                 Log.w(TAG, "applyPolicy: ${t.message}")
-                raw
+                asrTagged
             }
-            val line = formatDisplayLine(policy, dual, settings.targetLanguage)
+            val line = formatDisplayLine(policy, dual, target)
             if (line.isBlank() || line == asrLine) continue
             withContext(Dispatchers.Main) {
                 publishCaptionLine(line, replaceLast = true)
@@ -287,15 +401,12 @@ class MicTranslatorActivity : AppCompatActivity() {
     private fun isSameUtteranceRevision(prevNorm: String, nextNorm: String): Boolean {
         if (prevNorm.isEmpty() || nextNorm.isEmpty()) return false
         if (AsrJunkFilter.isNearDuplicate(prevNorm, nextNorm)) return true
-        // Growing / shrinking partials for the same spoken phrase.
         if (nextNorm.startsWith(prevNorm) || prevNorm.startsWith(nextNorm)) return true
-        // Looser mic-side revise: shared prefix so growing EN phrases update in place.
         val common = commonPrefixLength(prevNorm, nextNorm)
         if (common >= 8) {
             val lenDelta = kotlin.math.abs(nextNorm.length - prevNorm.length)
             if (lenDelta <= 48) return true
         }
-        // Token overlap — same utterance with mid-phrase ASR drift.
         val prevTok = prevNorm.split(' ').filter { it.isNotEmpty() }
         val nextTok = nextNorm.split(' ').filter { it.isNotEmpty() }
         if (prevTok.isNotEmpty() && nextTok.isNotEmpty()) {
@@ -327,7 +438,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         val detected = MlKitTranslationEngine.normalizeLangStatic(result.language)
         val showTranslated = translated.isNotEmpty() &&
             !translated.equals(source, ignoreCase = false) &&
-            !(detected.isNotEmpty() && detected == target && target == "en")
+            !(detected.isNotEmpty() && detected == target)
         return when {
             dual && showTranslated && source.isNotEmpty() -> "$translated\n$source"
             showTranslated -> translated
@@ -362,6 +473,9 @@ class MicTranslatorActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MicTranslator"
+        private const val PREFS_NAME = "mic_translator"
+        private const val KEY_FROM = "mic_from"
+        private const val KEY_TO = "mic_to"
         /** ~1.75 s @ 16 kHz (within 24_000–32_000) — completeness over tiny hops. */
         private const val WINDOW_SAMPLES = 28_000
         /** Treat a long quiet gap as a new utterance (append, don't revise). */

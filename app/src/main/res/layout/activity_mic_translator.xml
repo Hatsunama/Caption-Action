@@ -28,7 +28,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="64dp"
-        android:layout_marginBottom="100dp"
+        android:layout_marginBottom="220dp"
         android:clipToPadding="false"
         android:fillViewport="true"
         android:paddingHorizontal="24dp">
@@ -46,15 +46,82 @@
             android:textSize="22sp" />
     </ScrollView>
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnMic"
-        android:layout_width="72dp"
-        android:layout_height="72dp"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="28dp"
-        android:contentDescription="@string/mic_translator_mic_off"
-        android:insetTop="0dp"
-        android:insetBottom="0dp"
-        android:text="🎙"
-        android:textSize="28sp" />
+    <!-- Mic above bare from/to wheels — no card/chrome around pickers -->
+    <LinearLayout
+        android:id="@+id/bottomControls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingBottom="12dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnMic"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:layout_marginBottom="4dp"
+            android:contentDescription="@string/mic_translator_mic_off"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="🎙"
+            android:textSize="28sp" />
+
+        <LinearLayout
+            android:id="@+id/languageRow"
+            android:layout_width="match_parent"
+            android:layout_height="110dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingHorizontal="12dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/mic_translator_from"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ca_on_refract"
+                    android:textSize="12sp"
+                    android:alpha="0.55" />
+
+                <NumberPicker
+                    android:id="@+id/pickerFrom"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:descendantFocusability="blocksDescendants" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center_horizontal"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/mic_translator_to"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ca_on_refract"
+                    android:textSize="12sp"
+                    android:alpha="0.55" />
+
+                <NumberPicker
+                    android:id="@+id/pickerTo"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:descendantFocusability="blocksDescendants" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
 </FrameLayout>
