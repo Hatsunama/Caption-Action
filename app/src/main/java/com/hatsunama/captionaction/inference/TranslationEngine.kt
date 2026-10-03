@@ -23,7 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
- * Offline MT owner: policy (input==target skip / prefer inputLanguage source) + ML Kit Translate.
+ * Offline MT owner: policy (input==target skip / Input as MT source hint) + ML Kit Translate.
  * ASR engines stay ASR; if they already filled [CaptionResult.translatedText] (e.g. whisper→EN), keep it.
  * Live hot path must never block on long Downloads — use short timeouts and skip if packs missing.
  */
@@ -142,8 +142,8 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
             }
             // Same ASR tag as target still needs MT when glyphs are a different script
             // (language-agnostic: mis-tagged ASR must not skip MT and flash wrong script).
-            if (detected.isNotEmpty() && detected == target &&
-                input.isEmpty() &&
+            // When Whisper auto-translate-en / en-direct already yielded target lang, skip MT.
+            if (detected.isNotEmpty() && detected != "auto" && detected == target &&
                 !AsrJunkFilter.shouldHoldSourceOffOverlay(result.text, target)
             ) {
                 return@withContext result.copy(translatedText = null)
@@ -159,25 +159,26 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 return@withContext result.copy(translatedText = existing)
             }
 
-            // Language-agnostic source resolve:
-            // 0) Prefer Home inputLanguage when set and ≠ target (Live Whisper tags it too).
-            // 1) Dominant script on ASR text beats contradictory / target-identical tags
+            // Language-agnostic source resolve (Input is a strong hint, not a hard lock):
+            // 1) Dominant script on ASR text beats contradictory / target-identical / auto tags
             //    (SenseVoice auto often mis-tags; wrong source ⇒ garbage MT).
-            // 2) Else trust ASR tag when it differs from target.
-            // 3) Else ML Kit language-id.
+            // 2) Else trust ASR tag when it differs from target and is not "auto".
+            // 3) Else Home inputLanguage when set and ≠ target (Live MT hint).
+            // 4) Else ML Kit language-id.
             val script = guessScriptLang(result.text)
             val sourceCode = when {
-                input.isNotEmpty() && input != target -> input
                 script != null && (
                     detected.isEmpty() ||
+                        detected == "auto" ||
                         detected == target ||
                         (AsrJunkFilter.scriptFamilyForLang(detected) == AsrJunkFilter.ScriptFamily.LATIN &&
                             AsrJunkFilter.scriptFamilyOf(result.text) == AsrJunkFilter.ScriptFamily.CJK)
                     ) -> script
-                detected.isNotEmpty() && detected != target -> detected
+                detected.isNotEmpty() && detected != "auto" && detected != target -> detected
+                input.isNotEmpty() && input != target -> input
                 else -> script
                     ?: identifyLanguage(result.text)
-                    ?: ""
+                    ?: input.takeIf { it.isNotEmpty() && it != target }.orEmpty()
             }
             if (sourceCode.isEmpty() || sourceCode == target) {
                 return@withContext result.copy(translatedText = null)

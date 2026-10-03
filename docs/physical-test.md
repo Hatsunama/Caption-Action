@@ -2,7 +2,7 @@
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.
 
-Current source: **0.3.27** — Home Input + Target (no passthrough chips). Live `setSourceLanguage(inputLanguage)` → `mic-source-*` (not auto). input==target ASR-only; dual when input≠target. Mic From/To / FIFO / `translateExplicit` / junk filters unchanged from 0.3.26; Live still `drainToNewestWindow` + MediaProjection.
+Current source: **0.3.28** — Home Input + Target (no passthrough chips). Live Whisper source **empty** (auto / en-direct / auto-translate-en); Input is MT hint + packs + dual gate. input==target ASR-only; dual when input≠target. Mic From/To / FIFO / `translateExplicit` / junk filters unchanged from 0.3.26; Live still `drainToNewestWindow` + MediaProjection.
 
 ## Preferred: promoted release installer
 
@@ -77,15 +77,16 @@ adb shell appops set com.hatsunama.captionaction.debug SYSTEM_ALERT_WINDOW allow
 1. Mic From=**es** To=**en**: say “Hola” → expect English revision; logcat `NMT explicit ok es→en` and `mode=mic-source-es`.
 2. Mic From=**zh** To=**en**: speak Chinese → expect Chinese ASR or translated EN; **must not** show “speaking in foreign language”. logcat **`mode=mic-source-zh`** (never auto).
 3. Music/meta: `[Música]` / `(speaking in foreign language)` → no caption line.
-4. Live Captions: short crumbs still skip MT (`hasEnoughContentForMt`); logcat `mode=mic-source-<input>` (Home Input), not auto.
+4. Live Captions: short crumbs still skip MT (`hasEnoughContentForMt`); logcat Live modes `en-direct` / `auto-translate-en` / `auto-mlkit` (not `mic-source-*`).
 5. From/To wheels: labels and language names slightly larger + bold; still bare (no card).
 
-## 4d. Home Input language (0.3.27)
+## 4d. Home Input language (0.3.27) + Live auto restore (0.3.28)
 
 1. Home: confirm **Input language (from)** + **Target language (to)** spinners; no passthrough chips.
-2. Input=**zh** Target=**en**: Start Live → play Chinese audio → logcat `mode=mic-source-zh`; overlay primary becomes English when MT completes.
-3. Input=**en** Target=**en**: dual hidden; ASR-only; logcat `mode=mic-source-en`.
-4. Mic From/To still independent; short “Hola” From=es To=en still revises (0.3.26 path).
+2. Input=**zh** Target=**en**: Start Live → play Chinese audio → logcat Live mode `auto-translate-en` or `auto-mlkit` (never `mic-source-zh`); overlay primary becomes English (Whisper translate and/or ML Kit).
+3. Input=**en** Target=**en**: dual hidden; ASR-only; logcat `en-direct` / auto path (not forced `mic-source-en`).
+4. Input=**ja** Target=**en** while playing **Chinese** audio: ASR should still recover (auto-detect), not lock to Japanese tokens; MT may use Input as hint when ASR tag is uncertain.
+5. Mic From/To still independent; short “Hola” From=es To=en still revises (0.3.26 path); Mic logcat still `mode=mic-source-es`.
 
 ## 5. Error paths to verify
 

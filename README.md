@@ -6,7 +6,18 @@ Free, fully local live subtitle overlay for Android. No accounts, no ads, no tel
 
 Package: `com.hatsunama.captionaction`  
 minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
-Current source version: **0.3.27** (versionCode 50)
+Current source version: **0.3.28** (versionCode 51)
+
+## 0.3.28
+
+Restore Live subtitle ASR→MT accuracy after 0.3.27 Input-language lock regression:
+
+- **Root cause:** 0.3.27 forced Live `setSourceLanguage(inputLanguage)` → Whisper `language=<input>` `translate=false`, disabling the multilingual auto / en-direct / auto-translate-en path that worked in 0.3.13–0.3.26.
+- **Fix:** Live leaves Whisper source empty again (auto policy). Home **Input language** spinner kept; Input is a **strong MT source hint** + MT pack extraSources + dual gate (input≠target), not a Whisper language lock.
+- `applyPolicy`: script / reliable ASR tag beat Input; Input used when ASR is auto/empty/uncertain. Skip MT when ASR already tagged as target (e.g. Whisper auto-translate-en).
+- Mic From/To / FIFO / `translateExplicit` / junk filters **unchanged**.
+- Cascade audit: [`docs/0.3.28-cascade-audit.md`](docs/0.3.28-cascade-audit.md).
+- versionName plain `0.3.28`, versionCode 51. Debug APK: `com.hatsunama.captionaction.debug`.
 
 ## 0.3.27
 
@@ -24,7 +35,7 @@ Home **Input language** replaces passthrough; Live Whisper always told which lan
 Mic short-phrase MT + Whisper meta junk + larger From/To wheels (mic path; Live crumb MT gate unchanged):
 
 - **Bug:** Mic From≠To short words (`¡Hola!`) skipped by Live `hasEnoughContentForMt`. Fix: `translateExplicit` for all From≠To pairs (picker langs, diacritics stripped for length, no Live crumb gate).
-- **Bug:** Chinese (and other) audio could show “speaking in foreign language” meta. Fix: `isWhisperMetaLine` + music/stage tags in `isJunk` / sanitize (Live benefits too). Mic always `setSourceLanguage(from)` → Whisper `language=<from>` `translate=false` (`mic-source-zh`, etc.). (0.3.27: Live also sets Home Input language.)
+- **Bug:** Chinese (and other) audio could show “speaking in foreign language” meta. Fix: `isWhisperMetaLine` + music/stage tags in `isJunk` / sanitize (Live benefits too). Mic always `setSourceLanguage(from)` → Whisper `language=<from>` `translate=false` (`mic-source-zh`, etc.). (0.3.27 briefly locked Live to Input; **0.3.28** restored Live auto.)
 - From/To labels + wheel names slightly larger and bold (bare Apple-style).
 - Cascade audit: [`docs/0.3.26-cascade-audit.md`](docs/0.3.26-cascade-audit.md).
 - versionName plain `0.3.26`, versionCode 49. Debug APK: `com.hatsunama.captionaction.debug`.
@@ -34,7 +45,7 @@ Mic short-phrase MT + Whisper meta junk + larger From/To wheels (mic path; Live 
 Mic Translator From/To language wheels (mic path only — Live MediaProjection / whisper Tiny playback path unchanged):
 
 - Mic screen: bare Apple-style NumberPicker From/To under the mic (<¼ screen, ~110dp), labels "from"/"to", `Languages.all` (18). No card/chrome around wheels.
-- Whisper Mic: explicit From via `InferenceEngine.setSourceLanguage` → `language=from`, `translate=false` (`mic-source-*`). (Superseded for Live in 0.3.27: Home Input language.)
+- Whisper Mic: explicit From via `InferenceEngine.setSourceLanguage` → `language=from`, `translate=false` (`mic-source-*`). (Live stays auto since 0.3.28; Mic still uses explicit From.)
 - To drives ML Kit; skip MT when from==to. Persist From/To in SharedPreferences; To defaults to Home targetLanguage.
 - Cascade audit: [`docs/0.3.25-cascade-audit.md`](docs/0.3.25-cascade-audit.md).
 - versionName plain `0.3.25`, versionCode 48. Debug APK: `com.hatsunama.captionaction.debug`.

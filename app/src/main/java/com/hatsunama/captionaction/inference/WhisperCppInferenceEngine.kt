@@ -21,10 +21,10 @@ import kotlinx.coroutines.withContext
  * realtime (still ≥1000 ms native min). Short PCM is silence-padded.
  *
  * Language:
- * - [setSourceLanguage] non-empty (Home Input / Mic From): `language=<code>, translate=false`
- *   (`mic-source-*`); bypasses en-direct / auto bias. Live always sets Home inputLanguage.
- * - Empty source (legacy): Live EN target + !dual → en-direct bias / auto-translate-en;
- *   dual / non-EN → auto + ML Kit. Prefer callers set an explicit source.
+ * - [setSourceLanguage] non-empty (Mic From): `language=<code>, translate=false`
+ *   (`mic-source-*`); bypasses en-direct / auto bias. Live must leave source empty.
+ * - Empty source (Live): EN target + !dual → en-direct bias / auto-translate-en;
+ *   dual / non-EN → auto + ML Kit. Home Input is an MT hint only, not a Whisper lock.
  */
 class WhisperCppInferenceEngine(
     private val appContext: Context,
@@ -38,7 +38,7 @@ class WhisperCppInferenceEngine(
     private var lastSpeechAt = 0L
     @Volatile private var dualSubtitles: Boolean = false
     @Volatile private var playbackCapture: Boolean = false
-    /** Empty = auto (legacy). Non-empty = explicit input / From language. */
+    /** Empty = auto (Live). Non-empty = explicit From language (Mic). */
     @Volatile private var sourceLanguage: String = ""
     @Volatile private var lastMode: String = ""
     @Volatile private var keepUpBehind: Boolean = false
@@ -200,9 +200,9 @@ class WhisperCppInferenceEngine(
             val language: String
             val translate: Boolean
             when {
-                // Home Input / Mic From (or any caller that set source): explicit lang for ALL
+                // Mic From (or any caller that set source): explicit lang for ALL
                 // Languages.all codes (zh/ja/ko/ar/…), never language=auto, never whisper-translate.
-                // lastMode e.g. mic-source-zh (Live Input uses same mode string).
+                // lastMode e.g. mic-source-zh — Live leaves source empty → branches below.
                 explicitSource.isNotEmpty() -> {
                     language = explicitSource
                     translate = false
