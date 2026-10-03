@@ -355,8 +355,10 @@ class CaptionOverlayService : Service() {
             return
         }
         preferred.setTargetLanguage(settings.targetLanguage)
+        // Live: empty source → Whisper auto / en-direct / auto-translate-en (0.3.13–0.3.26 quality).
+        // Home Input is an MT hint (applyPolicy / packs / dual), not a Whisper language lock.
+        preferred.setSourceLanguage("")
         val inputLang = settings.inputLanguage.trim().ifEmpty { "en" }
-        preferred.setSourceLanguage(inputLang)
         val inputDiffers = inputLang.lowercase() != settings.targetLanguage.trim().lowercase()
         val dualAllowed =
             preferred.canProvideDualSubtitles() && settings.dualSubtitles && inputDiffers
@@ -501,9 +503,10 @@ class CaptionOverlayService : Service() {
             lastOverruns = overrunsNow
 
             val settingsNow = app.settings.current()
-            val inputNow = settingsNow.inputLanguage.trim().ifEmpty { "en" }
-            activeEngine.setSourceLanguage(inputNow)
+            // Keep Live source empty every window (do not lock Whisper to Home Input).
+            activeEngine.setSourceLanguage("")
             activeEngine.setTargetLanguage(settingsNow.targetLanguage)
+            val inputNow = settingsNow.inputLanguage.trim().ifEmpty { "en" }
             val inputDiffersNow =
                 inputNow.lowercase() != settingsNow.targetLanguage.trim().lowercase()
             val dualNow =
@@ -654,8 +657,11 @@ class CaptionOverlayService : Service() {
         if (input.isNotEmpty() && input == target) return false
         // Language-agnostic: wrong-script ASR vs target always needs MT.
         if (AsrJunkFilter.shouldHoldSourceOffOverlay(raw.text, target)) return true
-        if (input.isNotEmpty() && input != target) return true
         val detected = MlKitTranslationEngine.normalizeLangStatic(raw.language)
+        // Whisper auto-translate-en / en-direct already produced target lang — do not re-MT.
+        if (detected.isNotEmpty() && detected != "auto" && detected == target) return false
+        // User expects MT when Input ≠ Target and ASR is not already in target.
+        if (input.isNotEmpty() && input != target) return true
         if (detected.isNotEmpty() && detected == target) return false
         return true
     }

@@ -3,7 +3,7 @@ package com.hatsunama.captionaction.data
 data class AppSettings(
     val permissionsWalkthroughComplete: Boolean = false,
     val modelTierId: String = ModelTier.BALANCED.id,
-    /** Incoming audio language for Live ASR (Whisper source). */
+    /** Incoming audio language hint for Live MT / dual; Live Whisper stays auto. */
     val inputLanguage: String = "en",
     val targetLanguage: String = "en",
     /**
