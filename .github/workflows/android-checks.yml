@@ -272,19 +272,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          printf 'no\n' | avdmanager create avd --force --name caption-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_2
+          printf '%s\n' "HOME=$HOME" "ANDROID_USER_HOME=${ANDROID_USER_HOME:-}" "ANDROID_EMULATOR_HOME=${ANDROID_EMULATOR_HOME:-}" "ANDROID_AVD_HOME=${ANDROID_AVD_HOME:-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-}" > ci-provenance/avd-original-paths.txt
+          export ANDROID_AVD_HOME
+          ANDROID_AVD_HOME=$(mktemp -d "$RUNNER_TEMP/caption-avd.XXXXXX")
+          printf '%s\n' "$ANDROID_AVD_HOME" > ci-provenance/avd-owned-home.txt
+          printf 'no\n' | avdmanager create avd --force --name caption-ci --path "$ANDROID_AVD_HOME/caption-ci.avd" --package 'system-images;android-35;google_apis;x86_64' --device pixel_2 2>&1 | tee ci-logs/avd-create.log
+          avdmanager list avd > ci-provenance/avdmanager-list.txt
+          "$ANDROID_HOME/emulator/emulator" -list-avds > ci-provenance/emulator-avd-list.txt
+          test -f "$ANDROID_AVD_HOME/caption-ci.ini"
+          test -f "$ANDROID_AVD_HOME/caption-ci.avd/config.ini"
+          grep -Fxq 'caption-ci' ci-provenance/emulator-avd-list.txt
+          grep -Fq "$ANDROID_AVD_HOME/caption-ci.avd" ci-provenance/avdmanager-list.txt
+          cp "$ANDROID_AVD_HOME/caption-ci.ini" ci-provenance/avd-root.ini
           "$ANDROID_HOME/emulator/emulator" -avd caption-ci -accel "$EMULATOR_ACCEL" -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 2048 -cores 2 > ci-logs/emulator.log 2>&1 &
           EMULATOR_PID=$!
           cleanup() {
+            local status=$?
+            printf '%s\n' "$status" > ci-provenance/emulator-boot-test-exit.txt
             timeout 15 adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
             kill "$EMULATOR_PID" 2>/dev/null || true
             wait "$EMULATOR_PID" 2>/dev/null || true
           }
           trap cleanup EXIT
           deadline=$((SECONDS + 600))
-          timeout 600 adb -s emulator-5554 wait-for-device
-          until [[ $(timeout 10 adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r') == 1 ]]; do
-            kill -0 "$EMULATOR_PID"
+          until [[ $(timeout 5 adb -s emulator-5554 get-state 2>/dev/null || true) == device && $(timeout 5 adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true) == 1 ]]; do
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              status=0
+              wait "$EMULATOR_PID" || status=$?
+              (( status != 0 )) || status=1
+              echo "Owned emulator exited before boot (status $status)." >&2
+              exit "$status"
+            fi
             (( SECONDS < deadline )) || { echo 'Emulator boot deadline exceeded' >&2; exit 1; }
             sleep 2
           done

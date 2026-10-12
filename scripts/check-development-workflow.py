@@ -119,6 +119,68 @@ class DevelopmentWorkflowTest(unittest.TestCase):
                 else:
                     self.assertFalse((root / 'calls').exists())
 
+    def test_boot_shares_avd_home_and_detects_early_emulator_exit(self):
+        match = re.search(r'      - name: Boot compatible emulator.*?        run: \|\n(.*?)(?=      - |\Z)', JOBS['emulator-recorder'], re.S)
+        self.assertIsNotNone(match)
+        script = ''.join(line[10:] + '\n' for line in match[1].splitlines())
+        for mode in ('success', 'early-exit', 'missing-ini'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for name in ('bin', 'home', 'xdg', 'ci-logs', 'ci-provenance', 'scripts', 'sdk/emulator', 'run'):
+                    (root / name).mkdir(parents=True)
+                programs = {
+                    'avdmanager': '''#!/usr/bin/env python3
+import os,pathlib,sys
+home=pathlib.Path(os.environ.get('ANDROID_AVD_HOME',os.environ['XDG_CONFIG_HOME']+'/.android/avd'))
+if 'create' in sys.argv:
+ home.mkdir(parents=True,exist_ok=True)
+ (home/'caption-ci.avd').mkdir(exist_ok=True)
+ (home/'caption-ci.avd/config.ini').write_text('fixture config')
+ if os.environ['BOOT_MODE']!='missing-ini':(home/'caption-ci.ini').write_text('path='+str(home/'caption-ci.avd')+'\\n')
+else:print('Name: caption-ci\\nPath: '+str(home/'caption-ci.avd'))
+''',
+                    'adb': '''#!/usr/bin/env python3
+import os,sys
+if 'get-state' in sys.argv:
+ if os.environ['BOOT_MODE']=='early-exit':sys.exit(1)
+ print('device')
+elif 'getprop' in sys.argv:print('1')
+''',
+                    'timeout': '#!/bin/sh\nif test "$1" = 600; then exit 124; fi\nwhile test "${1#-}" != "$1"; do shift; done\nshift\nexec "$@"\n',
+                    'sleep': '#!/bin/sh\n/bin/sleep 0.1\n',
+                }
+                for name, source in programs.items():
+                    path = root / 'bin' / name
+                    path.write_text(source)
+                    path.chmod(0o755)
+                emulator = root / 'sdk/emulator/emulator'
+                emulator.write_text('''#!/usr/bin/env python3
+import os,pathlib,sys,time
+home=pathlib.Path(os.environ.get('ANDROID_AVD_HOME',os.environ['HOME']+'/.android/avd'))
+if '-list-avds' in sys.argv:
+ if (home/'caption-ci.ini').exists():print('caption-ci')
+ sys.exit(0)
+pathlib.Path('launched').touch()
+if not (home/'caption-ci.ini').exists() or os.environ['BOOT_MODE']=='early-exit':sys.exit(17)
+while True:time.sleep(1)
+''')
+                emulator.chmod(0o755)
+                (root / 'scripts/run-recorder-emulator-check.sh').write_text('touch helper-called\n')
+                env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                           ANDROID_HOME=str(root / 'sdk'), RUNNER_TEMP=str(root / 'run'), HOME=str(root / 'home'),
+                           XDG_CONFIG_HOME=str(root / 'xdg'), EMULATOR_ACCEL='off', BOOT_MODE=mode)
+                for key in ('ANDROID_AVD_HOME', 'ANDROID_USER_HOME', 'ANDROID_EMULATOR_HOME'):
+                    env.pop(key, None)
+                result = subprocess.run(['bash', '-c', script], cwd=root, env=env, capture_output=True, text=True, timeout=5)
+                if mode == 'success':
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertTrue((root / 'helper-called').exists())
+                else:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertNotEqual(124, result.returncode, 'Must detect invalid AVD/owned-process exit, not wait for timeout')
+                    self.assertFalse((root / 'helper-called').exists())
+                    if mode == 'missing-ini': self.assertFalse((root / 'launched').exists())
+
     def test_default_job_builds_only_development_apk(self):
         body = JOBS.get('development-checks', JOBS.get('unsigned-build', ''))
         tasks = set(re.findall(r':app:[A-Za-z]+', body))

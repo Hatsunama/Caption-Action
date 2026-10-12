@@ -102,3 +102,27 @@ permission changes. It records the installed package version and requires the
 real emulator version command to succeed before boot. A controlled fixture of
 the prior boot step reproduces exit 127, while the updated runtime step installs
 only that library when absent and skips installation when present.
+
+## Explicit AVD ownership and early-exit detection
+
+Run `38257767682` (head `5134a37de3cd45898842590751d79978824f5fd6`)
+passed all 111 tests per variant and both lint/build paths. The vendor emulator
+37.2.12.0 version preflight passed after installing the missing client library.
+Its launch then immediately reported an unknown `caption-ci` AVD and no root
+INI under `$HOME/.android/avd`; the blind ADB wait obscured that early exit until
+ten minutes elapsed. No guest boot, native-load check or recorder test ran.
+The earlier avdmanager output confirmed x86_64 selection but did not record the
+created destination, so the precise previous destination is unknown; a different
+default home is a hypothesis, not an established fact.
+
+Creation and lookup now share the documented
+[`ANDROID_AVD_HOME`](https://developer.android.com/tools/variables), pointing to
+a unique run-owned temporary directory. Creation also receives an explicit
+content path. Both tools must list the same AVD, and the root INI plus content
+config must exist before launch. Only named path environment values, creation
+output, the root INI and lists are preserved. No global configuration is edited.
+Boot polling checks only the owned emulator PID while waiting for ADB and the
+boot property, preserving the existing ten-minute overall deadline. Early exit
+is reported immediately with its status instead of waiting out a blind ADB call.
+Controlled actual-workflow fixtures cover mismatched defaults, missing INI and
+immediate emulator failure; all three failed before the change and pass after.
