@@ -1,10 +1,19 @@
-name: Android source checks and unsigned artifacts
+name: Android development checks and deliberate release checkpoint
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_checkpoint:
+        description: Final release-ready checkpoint only; build unsigned AAB and release APK
+        type: boolean
+        default: false
+      emulator_checkpoint:
+        description: Run bounded recorder tests on an approved compatible hosted emulator
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,69 +23,245 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  unsigned-build:
-    runs-on: ubuntu-latest
+  development-checks:
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v4
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: Configure isolated SDK path
-        shell: bash
-        run: |
-          echo "ANDROID_HOME=$RUNNER_TEMP/android-sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$RUNNER_TEMP/android-sdk" >> "$GITHUB_ENV"
-      - name: Reuse only the owner-approved standard SDK agreement
-        shell: bash
-        run: |
-          # https://developer.android.com/studio/terms was approved for these builds.
-          # This is the recorded standard license hash, not an optional-license sweep.
-          mkdir -p "$ANDROID_HOME/licenses"
-          printf '%s\n' '24333f8a63b6825ea9c5514f83c2829b004d1fee' > "$ANDROID_HOME/licenses/android-sdk-license"
-      - uses: android-actions/setup-android@v4
-        with:
-          accept-android-sdk-licenses: false
-          packages: ''
-      - name: Install required SDK packages without accepting new licenses
+      - name: Reuse hosted SDK and install only exact missing build packages
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' < /dev/null
+          mkdir -p ci-provenance ci-logs
+          exec > >(tee ci-logs/sdk-setup.log) 2>&1
+          SDK_ROOT=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+          test -n "$SDK_ROOT" && test -d "$SDK_ROOT"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          missing=()
+          [[ -f "$SDK_ROOT/platforms/android-36/android.jar" ]] || missing+=('platforms;android-36')
+          [[ -x "$SDK_ROOT/build-tools/35.0.0/aapt2" ]] || missing+=('build-tools;35.0.0')
+          if (( ${#missing[@]} )); then sdkmanager --sdk_root="$SDK_ROOT" "${missing[@]}" < /dev/null; fi
+          mkdir -p ci-provenance ci-logs
+          sdkmanager --list_installed > ci-provenance/sdk-packages.txt
+      - name: Verify and record exact tested commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-provenance ci-logs
+          TESTED_SHA=$(git rev-parse HEAD)
+          test "$TESTED_SHA" = "$EXPECTED_SHA"
+          printf '%s\n' "$TESTED_SHA" > ci-provenance/TESTED_SHA
+          printf '%s\n' "$GITHUB_SHA" > ci-provenance/EVENT_SHA
       - name: Verify orientation resources and canonical source bytes
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/check-orientation-resources.py
+          python3 scripts/check-development-workflow.py 2>&1 | tee ci-logs/workflow-config.log
+          python3 scripts/test-recorder-emulator-helper.py 2>&1 | tee ci-logs/emulator-helper-fixtures.log
+          python3 scripts/check-orientation-resources.py 2>&1 | tee ci-logs/orientation-checks.log
           printf '%s\n' \
             '3ae35fd6e40bb419ef4d5a6cddc8baea7ac498e3d91f61b3b19ccfe502c9452b  app/src/main/java/com/hatsunama/refract/RefractBackgroundView.kt' \
             '4790b0f5976406755f9f2b72c5a390aad5746441f95591074382f28710e8f66d  app/src/main/java/com/hatsunama/refract/RefractSeed.kt' | sha256sum --check
-      - name: Unit tests, full lint, debug compilation and unsigned release packaging
+      - name: Full unit tests, lint and development APK only
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:lintRelease :app:preparePlayAab :app:prepareSolanaApk --no-daemon --max-workers=1 --stacktrace
-      - name: Audit archive sizes and native alignment
+          ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --max-workers=1 --no-parallel --stacktrace 2>&1 | tee ci-logs/gradle-development.log
+      - name: Audit and checksum development APK
+        shell: bash
         run: |
-          python3 scripts/audit-package.py app/build/distribution/play/*.aab app/build/distribution/solana/*.apk > app/build/distribution/package-audit.json
-          sha256sum app/build/distribution/play/*.aab app/build/distribution/solana/*.apk > app/build/distribution/SHA256SUMS
-      - name: Preserve check reports
+          set -euo pipefail
+          python3 scripts/audit-package.py app/build/outputs/apk/debug/*.apk > ci-provenance/development-package-audit.json
+          sha256sum app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk > ci-provenance/SHA256SUMS
+      - name: Preserve reports, logs and exact-commit provenance
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: caption-check-reports
+          name: caption-development-check-reports
           path: |
             app/build/reports/
             app/build/test-results/
+            ci-provenance/
+            ci-logs/
           if-no-files-found: warn
           retention-days: 7
-      - name: Preserve unsigned artifacts (never publish or sign)
-        uses: actions/upload-artifact@v4
+      - name: Preserve development and instrumentation APKs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: caption-development-apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/androidTest/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  final-release-artifacts:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_checkpoint }}
+    needs: development-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Reuse hosted SDK and install only exact missing build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-provenance ci-logs
+          exec > >(tee ci-logs/sdk-setup.log) 2>&1
+          SDK_ROOT=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+          test -n "$SDK_ROOT" && test -d "$SDK_ROOT"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          missing=()
+          [[ -f "$SDK_ROOT/platforms/android-36/android.jar" ]] || missing+=('platforms;android-36')
+          [[ -x "$SDK_ROOT/build-tools/35.0.0/aapt2" ]] || missing+=('build-tools;35.0.0')
+          if (( ${#missing[@]} )); then sdkmanager --sdk_root="$SDK_ROOT" "${missing[@]}" < /dev/null; fi
+          mkdir -p ci-provenance ci-logs
+          sdkmanager --list_installed > ci-provenance/sdk-packages.txt
+      - name: Verify and record exact tested commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-provenance ci-logs
+          TESTED_SHA=$(git rev-parse HEAD)
+          test "$TESTED_SHA" = "$EXPECTED_SHA"
+          printf '%s\n' "$TESTED_SHA" > ci-provenance/TESTED_SHA
+          printf '%s\n' "$GITHUB_SHA" > ci-provenance/EVENT_SHA
+      - name: Build deliberately requested unsigned release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:preparePlayAab :app:prepareSolanaApk --no-daemon --max-workers=1 --no-parallel --stacktrace 2>&1 | tee ci-logs/gradle-release-checkpoint.log
+      - name: Audit release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/audit-package.py app/build/distribution/play/*.aab app/build/distribution/solana/*.apk > ci-provenance/release-package-audit.json
+          sha256sum app/build/distribution/play/*.aab app/build/distribution/solana/*.apk > ci-provenance/SHA256SUMS
+      - name: Preserve checkpoint provenance and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: caption-release-checkpoint-reports
+          path: |
+            ci-provenance/
+            ci-logs/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve unsigned artifacts without publication or release signing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: caption-unsigned-review-artifacts
           path: app/build/distribution/
           if-no-files-found: error
+          retention-days: 7
+
+  emulator-recorder:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.emulator_checkpoint) || (github.event_name == 'pull_request' && github.head_ref == 'fix/recorder-session-preservation' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: development-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Reuse hosted SDK and install only exact missing build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-provenance ci-logs
+          exec > >(tee ci-logs/sdk-setup.log) 2>&1
+          SDK_ROOT=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+          test -n "$SDK_ROOT" && test -d "$SDK_ROOT"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          missing=()
+          [[ -f "$SDK_ROOT/platforms/android-36/android.jar" ]] || missing+=('platforms;android-36')
+          [[ -x "$SDK_ROOT/build-tools/35.0.0/aapt2" ]] || missing+=('build-tools;35.0.0')
+          if (( ${#missing[@]} )); then sdkmanager --sdk_root="$SDK_ROOT" "${missing[@]}" < /dev/null; fi
+          mkdir -p ci-provenance ci-logs
+          sdkmanager --list_installed > ci-provenance/sdk-packages.txt
+      - name: Verify and record exact tested commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-provenance ci-logs
+          TESTED_SHA=$(git rev-parse HEAD)
+          test "$TESTED_SHA" = "$EXPECTED_SHA"
+          printf '%s\n' "$TESTED_SHA" > ci-provenance/TESTED_SHA
+          printf '%s\n' "$GITHUB_SHA" > ci-provenance/EVENT_SHA
+      - name: Verify existing hosted virtualization access
+        shell: bash
+        run: |
+          test -r /dev/kvm && test -w /dev/kvm || { echo 'Hosted runner lacks approved KVM access; no device permissions changed.' >&2; exit 1; }
+      - name: Install only the requested emulator packages under existing approved terms
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee ci-logs/emulator-sdk-setup.log) 2>&1
+          missing=()
+          [[ -x "$ANDROID_HOME/platform-tools/adb" ]] || missing+=('platform-tools')
+          [[ -x "$ANDROID_HOME/emulator/emulator" ]] || missing+=('emulator')
+          [[ -f "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/package.xml" ]] || missing+=('system-images;android-35;google_apis;x86_64')
+          if (( ${#missing[@]} )); then sdkmanager "${missing[@]}" < /dev/null; fi
+          sdkmanager --list_installed > ci-provenance/emulator-sdk-packages.txt
+      - name: Boot compatible emulator and run real recorder flows
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'no\n' | avdmanager create avd --force --name caption-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_2
+          "$ANDROID_HOME/emulator/emulator" -avd caption-ci -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 2048 -cores 2 > ci-logs/emulator.log 2>&1 &
+          EMULATOR_PID=$!
+          cleanup() {
+            adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
+            kill "$EMULATOR_PID" 2>/dev/null || true
+            wait "$EMULATOR_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          timeout 180 adb -s emulator-5554 wait-for-device
+          deadline=$((SECONDS + 180))
+          until [[ $(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r') == 1 ]]; do
+            kill -0 "$EMULATOR_PID"
+            (( SECONDS < deadline )) || { echo 'Emulator boot deadline exceeded' >&2; exit 1; }
+            sleep 2
+          done
+          ANDROID_SERIAL=emulator-5554 bash scripts/run-recorder-emulator-check.sh
+      - name: Preserve actual emulator test evidence and failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: caption-recorder-emulator-evidence
+          path: |
+            ci-emulator-evidence/
+            ci-provenance/
+            ci-logs/
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: warn
           retention-days: 7
