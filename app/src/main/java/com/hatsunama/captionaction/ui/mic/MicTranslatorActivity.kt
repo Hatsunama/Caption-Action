@@ -260,7 +260,9 @@ class MicTranslatorActivity : AppCompatActivity() {
             persistLanguages()
         }
         val tier = ModelTier.BALANCED
-        if (!cache.isReadyForAsr(tier)) {
+        val modelVerified = cache.verify(tier)
+        if (isDestroyed) return
+        if (!modelVerified) {
             Toast.makeText(this, getString(R.string.error_model), Toast.LENGTH_LONG).show()
             finish()
             return
@@ -281,7 +283,7 @@ class MicTranslatorActivity : AppCompatActivity() {
         preferred.setPlaybackCapture(false)
         // Keep local ownership across the cancellable IO → Main return.
         try {
-            val loaded = withContext(Dispatchers.IO) { preferred.load(cache.fileFor(tier)) }
+            val loaded = cache.withVerifiedModel(tier) { preferred.load(it) } == true
             if (!loaded) {
                 Toast.makeText(this, getString(R.string.error_engine_load), Toast.LENGTH_LONG).show()
                 finish()

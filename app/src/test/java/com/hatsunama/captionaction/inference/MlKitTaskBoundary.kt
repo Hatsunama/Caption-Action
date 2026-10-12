@@ -71,6 +71,8 @@ object MlKitTaskBoundary {
     val factoryEntered = CountDownLatchHolder()
     val downloadedEntered = CountDownLatchHolder()
     val downloadCalls = AtomicInteger()
+    val downloadLanguages = CopyOnWriteArrayList<String>()
+    val downloadsByLanguage = java.util.concurrent.ConcurrentHashMap<String, Task<Void>>()
     val downloadEntered = CountDownLatchHolder()
     @Volatile var downloadTask: Task<Void>? = null
     @Volatile var downloadedTask: Task<Set<TranslateRemoteModel>>? = null
@@ -85,6 +87,7 @@ object MlKitTaskBoundary {
     class CountDownLatchHolder { @Volatile var latch = CountDownLatch(1) }
     fun reset() {
         translators.clear(); identifiers.clear()
+        downloadLanguages.clear(); downloadsByLanguage.clear()
         factoryEntered.latch = CountDownLatch(1); factoryGate = null
         downloadedEntered.latch = CountDownLatch(1); downloadedTask = null; downloadCalls.set(0)
         downloadEntered.latch = CountDownLatch(1); downloadTask = null
@@ -128,6 +131,9 @@ object MlKitTaskBoundary {
         }
         @Implementation fun download(model: RemoteModel, conditions: DownloadConditions): Task<Void> {
             downloadCalls.incrementAndGet()
+            val language = (model as TranslateRemoteModel).language
+            downloadLanguages += language
+            downloadsByLanguage[language]?.let { downloadEntered.latch.countDown(); return it }
             downloadTask?.let { downloadEntered.latch.countDown(); return it }
             return Tasks.forException(IllegalStateException("Synthetic model download failure"))
         }

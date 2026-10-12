@@ -383,8 +383,9 @@ class CaptionOverlayService : Service() {
 
         val cache = ModelCache(this)
         val tier = ModelTier.fromId(settings.modelTierId)
-        val modelFile = cache.fileFor(tier)
-        if (!cache.isReadyForAsr(tier)) {
+        val modelVerified = cache.verify(tier)
+        if (tearingDown || requestGeneration != preparationGeneration) return
+        if (!modelVerified) {
             failSession(getString(R.string.error_model))
             return
         }
@@ -409,7 +410,7 @@ class CaptionOverlayService : Service() {
         preferred.setPlaybackCapture(true)
         // Keep local ownership across the cancellable IO → Main return.
         try {
-            val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
+            val loaded = cache.withVerifiedModel(tier) { preferred.load(it) } == true
             if (tearingDown || requestGeneration != preparationGeneration) return
             if (!loaded) {
                 failSession(getString(R.string.error_engine_load))

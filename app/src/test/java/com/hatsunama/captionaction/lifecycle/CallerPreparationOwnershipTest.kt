@@ -35,8 +35,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.Continuation
+import kotlin.coroutines.intrinsics.startCoroutineUninterceptedOrReturn
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -142,6 +145,27 @@ class CallerPreparationOwnershipTest {
     class ModelAvailabilityBoundary {
         @Implementation fun isReadyForAsr(tier: ModelTier): Boolean = true
         @Implementation fun fileFor(tier: ModelTier): File = File("/fixture-only/no-model-bytes")
+
+        @Implementation
+        fun verify(tier: ModelTier, continuation: Continuation<Boolean>): Any? {
+            val operation: suspend () -> Boolean = { withContext(Dispatchers.IO) { true } }
+            return operation.startCoroutineUninterceptedOrReturn(continuation)
+        }
+
+        @Implementation
+        fun <T> withVerifiedModel(
+            tier: ModelTier,
+            block: suspend (File) -> T,
+            continuation: Continuation<T?>
+        ): Any? {
+            // Preserve the real API's structured IO child and cancellable Main return.
+            // Never runBlocking, launch an independent Job, or invoke a blocking fake
+            // native load on Main: existing ownership assertions depend on this lifetime.
+            val operation: suspend () -> T? = {
+                withContext(Dispatchers.IO) { block(fileFor(tier)) }
+            }
+            return operation.startCoroutineUninterceptedOrReturn(continuation)
+        }
     }
 
     class ControlledInference(val result: CaptionResult) {
