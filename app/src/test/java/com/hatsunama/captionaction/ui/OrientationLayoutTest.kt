@@ -15,7 +15,7 @@ import org.robolectric.annotation.Config
 
 /** Real Android resource inflation/measurement under Robolectric, not screenshot approval. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28], application = Application::class, qualifiers = "land-w640dp-h360dp-mdpi")
+@Config(sdk = [28], application = Application::class, qualifiers = "w640dp-h360dp-land-mdpi")
 class OrientationLayoutTest {
     private fun measure(view: View, width: Int = 640, height: Int = 320) {
         view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),

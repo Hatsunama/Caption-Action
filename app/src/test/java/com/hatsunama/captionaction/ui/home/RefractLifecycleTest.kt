@@ -4,6 +4,8 @@ import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.Application
 import android.view.View
+import android.os.Looper
+import org.robolectric.Shadows
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
@@ -57,6 +59,7 @@ class RefractLifecycleTest {
             val view = RefractBackgroundView(controller.get())
             controller.get().setContentView(view)
             controller.visible().windowFocusChanged(true)
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             view.setAnimating(true)
             view.viewTreeObserver.dispatchOnPreDraw()
             assertTrue("active visible view must animate; attached=${view.isAttachedToWindow}, shown=${view.isShown}, window=${view.windowVisibility}", view.isAnimating())
@@ -75,6 +78,31 @@ class RefractLifecycleTest {
             assertTrue(view.isAnimating())
             view.setAnimating(false)
             assertFalse(view.isAnimating())
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test fun disabledMotionBeforeFirstSize_cannotBeRearmedByCanonicalLayout() {
+        assertFirstLayoutRespectsPolicy(disabledMotion = true)
+    }
+
+    @Test fun ownerPauseBeforeFirstSize_cannotBeRearmedByCanonicalLayout() {
+        assertFirstLayoutRespectsPolicy(disabledMotion = false)
+    }
+
+    private fun assertFirstLayoutRespectsPolicy(disabledMotion: Boolean) {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup().visible().windowFocusChanged(true)
+        try {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            val view = RefractBackgroundView(controller.get())
+            if (disabledMotion) scale(0f)
+            view.setAnimating(disabledMotion)
+            controller.get().setContentView(view)
+            assertTrue("fixture must attach before first layout", view.isAttachedToWindow)
+            view.measure(View.MeasureSpec.makeMeasureSpec(640, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY))
+            view.layout(0, 0, 640, 320)
+            // Do not dispatch pre-draw: layout itself must not leave a queued loop.
+            assertFalse("first layout must preserve disabled/paused policy", view.isAnimating())
         } finally { controller.pause().stop().destroy() }
     }
 
