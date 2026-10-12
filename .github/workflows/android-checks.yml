@@ -46,6 +46,14 @@ jobs:
         run: |
           set -euo pipefail
           sdkmanager 'platforms;android-36' 'build-tools;35.0.0' < /dev/null
+      - name: Verify orientation resources and canonical source bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/check-orientation-resources.py
+          printf '%s\n' \
+            '3ae35fd6e40bb419ef4d5a6cddc8baea7ac498e3d91f61b3b19ccfe502c9452b  app/src/main/java/com/hatsunama/refract/RefractBackgroundView.kt' \
+            '4790b0f5976406755f9f2b72c5a390aad5746441f95591074382f28710e8f66d  app/src/main/java/com/hatsunama/refract/RefractSeed.kt' | sha256sum --check
       - name: Unit tests, full lint, debug compilation and unsigned release packaging
         shell: bash
         run: |

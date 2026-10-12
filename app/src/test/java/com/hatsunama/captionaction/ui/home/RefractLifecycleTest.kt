@@ -115,6 +115,9 @@ class RefractLifecycleTest {
             view.layout(0, 0, 640, 320)
             // Do not dispatch pre-draw: layout itself must not leave a queued loop.
             assertFalse("first layout must preserve disabled/paused policy", view.isAnimating())
+            val child = view.getChildAt(0)
+            val queued = child.javaClass.getDeclaredField("choreographerAttached").apply { isAccessible = true }
+            assertFalse("no canonical frame callback may remain queued", queued.getBoolean(child))
         } finally { controller.pause().stop().destroy() }
     }
 

@@ -3,6 +3,7 @@ package com.hatsunama.captionaction.ui.home
 import android.animation.ValueAnimator
 import android.content.Context
 import android.database.ContentObserver
+import android.graphics.Canvas
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -40,6 +41,9 @@ class RefractBackgroundView @JvmOverloads constructor(
         isFocusable = false
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         renderer = CanonicalRefractView(context).also { child ->
+            // INVISIBLE still participates in layout, but upstream callbacks cannot
+            // self-enable motion while the host draws the frozen frame explicitly.
+            child.visibility = INVISIBLE
             child.addOnAttachStateChangeListener(object : OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(v: View) { syncMotion() }
                 override fun onViewDetachedFromWindow(v: View) { child.setAnimating(false) }
@@ -59,7 +63,20 @@ class RefractBackgroundView @JvmOverloads constructor(
     private fun syncMotion() {
         val allowed = ownerActive && isAttachedToWindow && isShown &&
             windowVisibility == VISIBLE && ValueAnimator.areAnimatorsEnabled()
-        renderer?.setAnimating(allowed)
+        renderer?.let { child ->
+            child.visibility = if (allowed) VISIBLE else INVISIBLE
+            child.setAnimating(allowed)
+        }
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        syncMotion()
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        renderer?.takeIf { it.visibility != VISIBLE }?.draw(canvas)
     }
 
     override fun onAttachedToWindow() {
