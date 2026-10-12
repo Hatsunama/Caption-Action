@@ -161,6 +161,9 @@ class CallerPreparationOwnershipTest {
         @Implementation fun __constructor__(context: Context) {}
         @Implementation fun hasRecordAudioPermission(): Boolean = true
         @Implementation fun startPlaybackCapture(projection: MediaProjection): Boolean = true
+        @Implementation fun startMicrophoneCapture(): Boolean = true
+        @Implementation fun drainFifoWindow(targetSamples: Int, continuation: Continuation<ShortArray?>): Any? =
+            drainToNewestWindow(targetSamples, continuation)
         @Implementation fun getUsingPlaybackCapture(): Boolean = true
         @Implementation fun startPump(scope: CoroutineScope) {}
         @Implementation fun stop() {}
@@ -169,14 +172,17 @@ class CallerPreparationOwnershipTest {
         @Implementation fun queueDepth(): Int = 0
         @Implementation fun lastRms(): Float = 0f
         @Implementation fun drainToNewestWindow(targetSamples: Int, continuation: Continuation<ShortArray?>): Any? {
-            nextDrain.getAndSet(null)?.let { operation ->
+            (nextDrain.getAndSet(null) ?: extraDrains.poll())?.let { operation ->
                 operation.entered.countDown()
                 check(operation.proceed.await(10, TimeUnit.SECONDS)) { "Controlled capture drain was never released" }
                 return operation.pcm
             }
             return null
         }
-        companion object { val nextDrain = AtomicReference<ControlledDrain?>() }
+        companion object {
+            val nextDrain = AtomicReference<ControlledDrain?>()
+            val extraDrains = LinkedBlockingQueue<ControlledDrain>()
+        }
     }
 
     @Implements(value = MlKitTranslationEngine::class, callThroughByDefault = false)
@@ -189,7 +195,21 @@ class CallerPreparationOwnershipTest {
             continuation: Continuation<EnsureResult>
         ): Any = EnsureResult.Ready
         @Implementation fun release() {}
-        companion object { val constructions = AtomicInteger() }
+        @Implementation fun applyPolicy(result: CaptionResult, settings: AppSettings, continuation: Continuation<CaptionResult>): Any {
+            failureMessage?.let { throw IllegalStateException(it) }
+            translationGate?.let { check(it.await(10, TimeUnit.SECONDS)) }
+            return result.copy(translatedText = translatedOutput)
+        }
+        @Implementation fun translateExplicit(text: String, source: String, target: String, continuation: Continuation<String?>): Any? {
+            failureMessage?.let { throw IllegalStateException(it) }
+            return translatedOutput
+        }
+        companion object {
+            @Volatile var failureMessage: String? = null
+            val constructions = AtomicInteger()
+            @Volatile var translatedOutput: String? = null
+            @Volatile var translationGate: CountDownLatch? = null
+        }
     }
 
     @Implements(MediaProjectionManager::class)
@@ -311,13 +331,18 @@ class CallerPreparationOwnershipTest {
     @Before fun resetBoundaries() {
         FactoryBoundary.planned.clear()
         CaptureBoundary.nextDrain.set(null)
+        CaptureBoundary.extraDrains.clear()
         SettingsBoundary.configured = AppSettings()
         RecorderAppendBoundary.nextAppend.set(null)
         RecorderAppendBoundary.nextStart.set(null)
         TranslationBoundary.constructions.set(0)
+        TranslationBoundary.failureMessage = null
+        TranslationBoundary.translatedOutput = null
+        TranslationBoundary.translationGate = null
     }
 
     @After fun releaseFixture() {
+        TranslationBoundary.translationGate?.countDown()
         engines.forEach { it.allow() }
         drains.forEach { it.allow() }
         inferences.forEach { it.allow() }
@@ -636,6 +661,199 @@ class CallerPreparationOwnershipTest {
         val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
         drainMainUntil("$engineName must publish through the actual ASR consumer") { asr.isCompleted }
         return current
+    }
+
+    private fun assertLiveDecisionPrivacy(marker: String, target: String, repeat: Boolean, branch: String) {
+        org.robolectric.shadows.ShadowLog.clear()
+        SettingsBoundary.configured = AppSettings(inputLanguage = target, targetLanguage = target)
+        val inference = ControlledInference(CaptionResult(marker, "en", 1f, 0L, 1000L))
+            .also { inferences += it; it.allow() }
+        repeat(if (repeat) 2 else 1) {
+            CaptureBoundary.extraDrains.add(ControlledDrain(ShortArray(16_000) { 750 })
+                .also { drains += it; it.allow() })
+        }
+        val owner = service()
+        val ready = plan("privacy-live-decision").apply { this.inference = inference }
+        complete(ready, start(owner, ready))
+        val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
+        drainMainUntil("actual decision must finish") { asr.isCompleted }
+        val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
+        assertTrue("expected actual decision branch: $logs", logs.contains(branch))
+        assertFalse("Source speech leaked: $logs", logs.lowercase().contains(marker.lowercase()))
+    }
+
+    @Test fun liveDuplicateDecisionRetainsReasonWithoutLoggingSpeech() =
+        assertLiveDecisionPrivacy("Teal lantern guards our private phrase", "en", true, "suppressed recent duplicate")
+    @Test fun liveShortSameScriptRetainsReasonWithoutLoggingSpeech() =
+        assertLiveDecisionPrivacy("Hola", "en", false, "publish short same-script")
+    @Test fun liveShortWrongScriptRetainsReasonWithoutLoggingSpeech() =
+        assertLiveDecisionPrivacy("Hola", "zh", false, "held short wrong-script")
+
+    private fun assertLiveTranslationPrivacy(late: Boolean) {
+        org.robolectric.shadows.ShadowLog.clear()
+        SettingsBoundary.configured = AppSettings(inputLanguage = "es", targetLanguage = "en")
+        val source = "La linterna naranja guarda nuestro secreto"
+        val output = "Orange lantern guards our private phrase."
+        TranslationBoundary.translatedOutput = output
+        if (late) TranslationBoundary.translationGate = CountDownLatch(1)
+        val inference = ControlledInference(CaptionResult(source, "es", 1f, 0L, 1000L))
+            .also { inferences += it; it.allow() }
+        CaptureBoundary.nextDrain.set(ControlledDrain(ShortArray(16_000) { 750 })
+            .also { drains += it; it.allow() })
+        val owner = service()
+        val ready = plan("privacy-live-mt").apply { this.inference = inference }
+        complete(ready, start(owner, ready))
+        val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
+        drainMainUntil("consumer must finish quick wait") { asr.isCompleted }
+        TranslationBoundary.translationGate?.countDown()
+        val expectedLog = if (late) "mt applied seq=" else "mt applied-quick"
+        drainMainUntil("actual translation publication must finish") {
+            org.robolectric.shadows.ShadowLog.getLogs().any { it.msg.contains(expectedLog) } &&
+                (field(owner.value, "overlayView") as View).findViewById<TextView>(R.id.captionPrimary).text.toString().replace('\n', ' ') == (if (late) "$source $output" else output)
+        }
+        val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
+        assertFalse("Source speech leaked: $logs", logs.contains(source))
+        assertFalse("Translated speech leaked: $logs", logs.contains(output))
+    }
+
+    @Test fun liveQuickTranslationIsVisibleWithoutLoggingSpeech() = assertLiveTranslationPrivacy(late = false)
+    @Test fun liveLateTranslationIsVisibleWithoutLoggingSpeech() = assertLiveTranslationPrivacy(late = true)
+
+    private fun assertMicLogPrivacy(
+        marker: String, source: String = "en", expectedLine: Boolean,
+        target: String = source, previousNorm: String? = null, expectedBranch: String? = null,
+        failureMarker: String? = null
+    ) {
+        org.robolectric.shadows.ShadowLog.clear()
+        SettingsBoundary.configured = AppSettings(saveSubtitlesToFile = false)
+        val inference = ControlledInference(CaptionResult(marker, source, 1f, 0L, 1000L))
+            .also { inferences += it; it.allow() }
+        val ready = plan("privacy-mic").apply { this.inference = inference }
+        val (owner, preparation) = createMic(ready)
+        complete(ready, preparation)
+        for ((name, value) in listOf("fromCode" to source, "toCode" to target)) {
+            owner.value.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(owner.value, value)
+        }
+        previousNorm?.let {
+            owner.value.javaClass.getDeclaredField("lastPublishedNorm").apply { isAccessible = true }.set(owner.value, it)
+        }
+        TranslationBoundary.failureMessage = failureMarker
+        CaptureBoundary.nextDrain.set(ControlledDrain(ShortArray(28_000) { 750 })
+            .also { drains += it; it.allow() })
+        owner.value.javaClass.getDeclaredMethod("startMicCapture").apply { isAccessible = true }.invoke(owner.value)
+        val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
+        drainMainUntil("actual Mic consumer must finish") { asr.isCompleted }
+        val lines = field(owner.value, "lines") as List<*>
+        assertEquals("Mic caption behavior must remain unchanged", expectedLine, lines.any { it.toString().contains(marker) })
+        val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
+        assertTrue("actual Mic emit branch must log safe metadata", logs.contains("emit"))
+        expectedBranch?.let { assertTrue("expected Mic branch: $logs", logs.contains(it)) }
+        failureMarker?.let { assertFalse("Mic failure echoed speech: $logs", logs.contains(it)) }
+        assertFalse("Mic speech leaked into diagnostics: $logs", logs.contains(marker.take(40)))
+    }
+
+    @Test fun micAcceptedSpeechRemainsVisibleWithoutDiagnosticContent() =
+        assertMicLogPrivacy("Indigo lantern guards our private phrase.", expectedLine = true)
+
+    @Test fun micJunkRejectionDoesNotLogRecognizedSpeech() =
+        assertMicLogPrivacy("foreign language VioletPrivacyMarker", expectedLine = false)
+
+    @Test fun micWrongScriptRejectionDoesNotLogRecognizedSpeech() =
+        assertMicLogPrivacy("Scarlet compass protects our secret.", source = "zh", expectedLine = false)
+
+    @Test fun micExplicitFailureRetainsSourceWithoutDiagnosticSpeech() =
+        assertMicLogPrivacy("La linterna guarda nuestro secreto", source = "es", target = "en",
+            expectedLine = true, expectedBranch = "translateExplicit",
+            failureMarker = "MagentaMicFailurePrivacyMarker")
+
+    @Test fun micNearDuplicateDecisionDoesNotLogSpeech() =
+        assertMicLogPrivacy("Golden lantern guards our phrase", expectedLine = false,
+            previousNorm = "golden lantern guards our phrase now", expectedBranch = "emit skip near-dup")
+
+    // The shared sanitizer normally rejects this first. Control only that upstream
+    // boundary to exercise the retained defensive Mic decision, not to imply natural reachability.
+    @Implements(value = com.hatsunama.captionaction.inference.AsrJunkFilter::class, isInAndroidSdk = false)
+    class SanitizerPassthroughBoundary {
+        @Implementation fun sanitizeOrNull(raw: String?): String? = raw
+    }
+    @Test
+    @Config(shadows = [SanitizerPassthroughBoundary::class],
+        instrumentedPackages = ["com.hatsunama.captionaction.inference.AsrJunkFilter"])
+    fun micDefensiveMetaDecisionDoesNotLogSpeech() =
+        assertMicLogPrivacy("foreign language MarigoldPrivacyMarker", expectedLine = false,
+            expectedBranch = "emit skip meta/music")
+
+    @Test fun livePolicyFailureRetainsSourceWithoutDiagnosticSpeech() {
+        org.robolectric.shadows.ShadowLog.clear()
+        val marker = "UltramarineLiveFailurePrivacyMarker"
+        val source = "La linterna guarda nuestro secreto"
+        TranslationBoundary.failureMessage = marker
+        SettingsBoundary.configured = AppSettings(inputLanguage = "es", targetLanguage = "en")
+        val inference = ControlledInference(CaptionResult(source, "es", 1f, 0L, 1000L))
+            .also { inferences += it; it.allow() }
+        CaptureBoundary.nextDrain.set(ControlledDrain(ShortArray(16_000) { 750 })
+            .also { drains += it; it.allow() })
+        val owner = service()
+        val ready = plan("privacy-live-failure").apply { this.inference = inference }
+        complete(ready, start(owner, ready))
+        val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
+        drainMainUntil("fallback caption must finish") {
+            asr.isCompleted && (field(owner.value, "overlayView") as View)
+                .findViewById<TextView>(R.id.captionPrimary).text.toString().replace('\n', ' ') == "$source $source"
+        }
+        val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
+        assertTrue(logs.contains("applyPolicy failed"))
+        assertFalse("Live policy failure echoed speech: $logs", logs.contains(marker))
+        assertFalse("Live source leaked: $logs", logs.contains(source))
+    }
+
+    // CaptionDisplay normally rejects the same script mismatch. Bypass only that
+    // earlier display helper so the final publication guard is tested independently.
+    @Implements(value = com.hatsunama.captionaction.inference.CaptionDisplay::class, isInAndroidSdk = false)
+    class DisplayPassthroughBoundary {
+        @Implementation fun primaryAndSecondary(policy: CaptionResult, dual: Boolean, target: String): Pair<String, String?> =
+            (policy.translatedText ?: policy.text) to null
+    }
+    @Test
+    @Config(shadows = [DisplayPassthroughBoundary::class],
+        instrumentedPackages = ["com.hatsunama.captionaction.inference.CaptionDisplay"])
+    fun liveDefensiveFinalScriptGatePreservesUiWithoutDiagnosticSpeech() {
+        org.robolectric.shadows.ShadowLog.clear()
+        SettingsBoundary.configured = AppSettings(inputLanguage = "es", targetLanguage = "en")
+        val source = "La linterna guarda nuestro secreto"
+        val marker = "青色灯笼守护我们的秘密"
+        TranslationBoundary.translatedOutput = marker
+        val inference = ControlledInference(CaptionResult(source, "es", 1f, 0L, 1000L))
+            .also { inferences += it }
+        CaptureBoundary.nextDrain.set(ControlledDrain(ShortArray(16_000) { 750 })
+            .also { drains += it; it.allow() })
+        val owner = service()
+        val ready = plan("privacy-final-script").apply { this.inference = inference }
+        complete(ready, start(owner, ready))
+        drainMainUntil("inference must reach controlled boundary") { inference.entered.count == 0L }
+        val text = (field(owner.value, "overlayView") as View).findViewById<TextView>(R.id.captionPrimary)
+        val before = text.text.toString()
+        inference.allow()
+        val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
+        drainMainUntil("script rejection must finish") { asr.isCompleted }
+        assertEquals("rejected translation must not change visible caption", before, text.text.toString())
+        val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
+        assertTrue(logs.contains("final script gate blocked"))
+        assertFalse("Final script gate leaked speech: $logs", logs.contains(marker))
+    }
+
+    @Test fun liveCaptionIsVisibleButAbsentFromApplicationLogsWithRecordingDisabled() {
+        org.robolectric.shadows.ShadowLog.clear()
+        SettingsBoundary.configured = AppSettings(saveSubtitlesToFile = false)
+        val marker = "Saffron lantern guards the private phrase."
+        val owner = service()
+        publishControlledCaption(owner, "privacy-service", marker)
+        val overlay = field(owner.value, "overlayView") as View
+        assertEquals(marker, overlay.findViewById<TextView>(R.id.captionPrimary).text.toString().replace('\n', ' '))
+        val recorder = field(owner.value, "subtitleRecorder") as SubtitleFileRecorder
+        assertFalse(recorder.isRecording)
+        val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
+        assertFalse("Visible speech leaked into diagnostics: $logs", logs.contains(marker))
     }
 
     @Test fun disablingRecordingClosesPriorFilePreservesBytesAndReenableOwnsNewFile() {

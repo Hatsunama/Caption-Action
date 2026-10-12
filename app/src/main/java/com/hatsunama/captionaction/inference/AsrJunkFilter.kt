@@ -192,8 +192,8 @@ object AsrJunkFilter {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
         if (isJunk(trimmed)) {
-            Log.i(TAG, "filtered junk ASR text: ${trimmed.take(80)}")
-            Log.i("CaptionAction", "filtered=true junk=${trimmed.take(80)}")
+            Log.i(TAG, "filtered junk ASR chars=${trimmed.length}")
+            Log.i("CaptionAction", "filtered=true reason=junk chars=${trimmed.length}")
             return null
         }
         return trimmed

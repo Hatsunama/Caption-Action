@@ -198,12 +198,12 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 clean.length < result.text.length
             ) {
                 // Tiny EN crumb from longer source is usually a failed MT — drop.
-                Log.i(TAG, "NMT skip $sourceCode→$target (crumb out=${clean.take(40)})")
+                Log.i(TAG, "NMT skip $sourceCode→$target (crumb outChars=${clean.length})")
                 result.copy(translatedText = null)
             } else {
                 Log.i(
                     TAG,
-                    "NMT ok $sourceCode→$target in=${result.text.take(40)} out=${clean.take(40)}"
+                    "NMT ok $sourceCode→$target inChars=${result.text.length} outChars=${clean.length}"
                 )
                 result.copy(translatedText = clean)
             }
@@ -239,7 +239,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
         } else {
             Log.i(
                 TAG,
-                "NMT explicit ok $source→$target in=${trimmed.take(40)} out=${clean.take(40)}"
+                "NMT explicit ok $source→$target inChars=${trimmed.length} outChars=${clean.length}"
             )
             clean
         }
@@ -252,7 +252,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
             val n = normalizeLang(tag ?: "")
             if (n.isEmpty() || n == "und") null else n
         } catch (t: Throwable) {
-            Log.w(TAG, "language-id failed: ${t.message}")
+            Log.w(TAG, "language-id failed errorType=${t.javaClass.simpleName}")
             null
         }
     }
@@ -295,7 +295,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
             val translator = translatorFor(sourceTag, targetTag)
             Tasks.await(translator.translate(text), TRANSLATE_TIMEOUT_SEC, TimeUnit.SECONDS)?.trim()
         } catch (t: Throwable) {
-            Log.w(TAG, "translate $source→$target failed/skipped: ${t.message}")
+            Log.w(TAG, "translate $source→$target failed/skipped errorType=${t.javaClass.simpleName}")
             null
         }
     }

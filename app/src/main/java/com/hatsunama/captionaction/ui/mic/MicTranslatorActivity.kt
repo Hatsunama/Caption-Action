@@ -392,7 +392,7 @@ class MicTranslatorActivity : AppCompatActivity() {
             if (cleaned == null) {
                 Log.i(
                     TAG,
-                    "emit skip sanitize/junk mode=${active.lastAsrMode()} text=${primaryRaw.take(48)}"
+                    "emit skip sanitize/junk mode=${active.lastAsrMode()} textChars=${primaryRaw.length}"
                 )
                 continue
             }
@@ -401,7 +401,7 @@ class MicTranslatorActivity : AppCompatActivity() {
             ) {
                 Log.i(
                     TAG,
-                    "emit skip meta/music mode=${active.lastAsrMode()} text=${cleaned.take(48)}"
+                    "emit skip meta/music mode=${active.lastAsrMode()} textChars=${cleaned.length}"
                 )
                 continue
             }
@@ -411,7 +411,7 @@ class MicTranslatorActivity : AppCompatActivity() {
                 Log.i(
                     TAG,
                     "emit skip wrong-script-for-from from=$source mode=${active.lastAsrMode()} " +
-                        "text=${cleaned.take(48)}"
+                        "textChars=${cleaned.length}"
                 )
                 continue
             }
@@ -434,14 +434,14 @@ class MicTranslatorActivity : AppCompatActivity() {
                 !silenceGap &&
                 AsrJunkFilter.isNearDuplicate(norm, lastPublishedNorm)
             ) {
-                Log.i(TAG, "emit skip near-dup mode=${active.lastAsrMode()} text=${cleaned.take(48)}")
+                Log.i(TAG, "emit skip near-dup mode=${active.lastAsrMode()} textChars=${cleaned.length}")
                 continue
             }
 
             Log.i(
                 TAG,
                 "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
-                    "from=$source to=$target mode=${active.lastAsrMode()} text=${cleaned.take(48)}"
+                    "from=$source to=$target mode=${active.lastAsrMode()} textChars=${cleaned.length}"
             )
 
             lastPublishedNorm = norm
@@ -473,7 +473,7 @@ class MicTranslatorActivity : AppCompatActivity() {
             val translated = try {
                 mt?.translateExplicit(cleaned, source, target)
             } catch (t: Throwable) {
-                Log.w(TAG, "translateExplicit: ${t.message}")
+                Log.w(TAG, "translateExplicit failed errorType=${t.javaClass.simpleName}")
                 null
             }
             // If translate returns null keep ASR only as last resort.

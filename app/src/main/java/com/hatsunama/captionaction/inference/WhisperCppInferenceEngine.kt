@@ -331,7 +331,7 @@ class WhisperCppInferenceEngine(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (t: Throwable) {
-            Log.e(TAG, "whisper transcribe failed", t)
+            Log.e(TAG, "whisper transcribe failed errorType=${t.javaClass.simpleName}")
             synchronized(lock) { if (model === owner) lastMode = "" }
             null
         } finally {
@@ -372,7 +372,7 @@ class WhisperCppInferenceEngine(
             TAG,
             "whisper native pcmMs=$pcmMs wavBytes=$wavBytes windowRms=${"%.1f".format(windowRms)} " +
                 "lang=$language translate=$translate processingTimeMs=${result.processingTimeMs} " +
-                "rawLen=$rawLen rawPreview=${raw.trim().take(64).replace('\n', ' ')}"
+                "rawLen=$rawLen"
         )
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) {

@@ -194,7 +194,7 @@ class SherpaInferenceEngine(
                 if (AsrJunkFilter.scriptFamilyOf(text) == AsrJunkFilter.ScriptFamily.CJK &&
                     scriptBias < 0
                 ) {
-                    Log.i(TAG, "rejected CJK dump on Latin-biased session text=${text.take(40)}")
+                    Log.i(TAG, "rejected CJK dump on Latin-biased session chars=${text.length}")
                     lastMode = "auto-reject-cjk-dump"
                     return@withContext null
                 }
@@ -216,7 +216,7 @@ class SherpaInferenceEngine(
                     translatedText = null
                 )
             } catch (t: Throwable) {
-                Log.e(TAG, "transcribe failed", t)
+                Log.e(TAG, "transcribe failed errorType=${t.javaClass.simpleName}")
                 null
             } finally {
                 try {

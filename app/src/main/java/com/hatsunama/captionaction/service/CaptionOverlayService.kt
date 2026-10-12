@@ -600,14 +600,13 @@ class CaptionOverlayService : Service() {
             if (!coroutineContext.isActive) break
             val inferMs = SystemClock.elapsedRealtime() - t0
             val asrMode = activeEngine.lastAsrMode().ifBlank { "-" }
-            val textPreview = raw?.text?.take(48)?.replace('\n', ' ') ?: ""
             // Junk filter logs CaptionAction filtered=true separately; null here also means "too short / quiet".
             Log.i(
                 DIAG_TAG,
                 "asr pcmMs=$pcmMs queueDepth=$depthBefore→$depthAfter " +
                     "overruns=$overrunsNow(+${overrunsNow - overrunsBefore}) " +
                     "rms=$rms chunks=$chunksNow advancing=$chunksAdvancing " +
-                    "inferMs=$inferMs mode=$asrMode hasCaption=${raw != null} textPreview=$textPreview"
+                    "inferMs=$inferMs mode=$asrMode hasCaption=${raw != null} textChars=${raw?.text?.length ?: 0}"
             )
             if (raw == null) {
                 // Keep Listening / catching-up until a non-junk caption arrives; do not set hasRealCaption.
@@ -633,7 +632,7 @@ class CaptionOverlayService : Service() {
             val publishNow = SystemClock.elapsedRealtime()
             // Exact and near duplicates both expire. Phrase extensions remain valid.
             if (duplicateGate.shouldSuppress(norm, publishNow)) {
-                Log.i(DIAG_TAG, "suppressed recent duplicate caption norm=${norm.take(48)}")
+                Log.i(DIAG_TAG, "suppressed recent duplicate caption normalizedChars=${norm.length}")
                 continue
             }
             val targetLang = settingsNow.targetLanguage
@@ -642,10 +641,10 @@ class CaptionOverlayService : Service() {
             // Language-agnostic: never paint wrong-script crumbs; same-script short speech may publish.
             if (!enoughForMt) {
                 if (holdWrongScript) {
-                    Log.i(DIAG_TAG, "held short wrong-script caption norm=${norm.take(48)}")
+                    Log.i(DIAG_TAG, "held short wrong-script caption normalizedChars=${norm.length}")
                     continue
                 }
-                Log.i(DIAG_TAG, "publish short same-script without MT norm=${norm.take(48)}")
+                Log.i(DIAG_TAG, "publish short same-script without MT normalizedChars=${norm.length}")
                 duplicateGate.onPublished(norm, publishNow)
                 val seqShort = acceptCaption(session, publishNow) ?: break
                 publishCaption(raw, dualNow, seqShort, appendSubtitle = true, targetLang = targetLang, session = session)
@@ -668,7 +667,7 @@ class CaptionOverlayService : Service() {
                 try {
                     mtEngine.applyPolicy(raw, settingsNow)
                 } catch (t: Throwable) {
-                    Log.w(TAG, "applyPolicy failed: ${t.message}")
+                    Log.w(TAG, "applyPolicy failed errorType=${t.javaClass.simpleName}")
                     raw
                 }
             }
@@ -683,7 +682,7 @@ class CaptionOverlayService : Service() {
                 publishCaption(quick, dualNow, seq, appendSubtitle = true, targetLang = targetLang, session = session)
                 Log.i(
                     DIAG_TAG,
-                    "mt applied-quick seq=$seq primary=${quick.translatedText.orEmpty().take(48)}"
+                    "mt applied-quick seq=$seq translatedChars=${quick.translatedText.orEmpty().length}"
                 )
             } else if (holdWrongScript) {
                 // Language-agnostic: NEVER flash wrong-script ASR while MT pending.
@@ -760,7 +759,7 @@ class CaptionOverlayService : Service() {
         if (hasMt) {
             Log.i(
                 DIAG_TAG,
-                "mt applied seq=$seq primary=${policy.translatedText.orEmpty().take(48)}"
+                "mt applied seq=$seq translatedChars=${policy.translatedText.orEmpty().length}"
             )
         } else {
             Log.i(DIAG_TAG, "mt applied-source seq=$seq (no translation; append source)")
@@ -809,7 +808,7 @@ class CaptionOverlayService : Service() {
         ) {
             Log.i(
                 DIAG_TAG,
-                "publishCaption final script gate blocked seq=$seq primary=${primaryRaw.take(48)}"
+                "publishCaption final script gate blocked seq=$seq primaryChars=${primaryRaw.length}"
             )
             return
         }
