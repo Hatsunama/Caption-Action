@@ -24,6 +24,13 @@ elif args[-2:] == ['getprop','ro.product.cpu.abilist']:
 elif 'logcat' in args:
  print('controlled emulator logcat')
  sys.exit(int(os.environ.get('FAKE_LOGCAT_EXIT','0')))
+elif 'pm' in args and 'path' in args:
+ if os.environ.get('FAKE_APK_MODE')=='missing': sys.exit(0)
+ print('package:/data/app/'+args[-1]+'/base.apk')
+ if os.environ.get('FAKE_APK_MODE')=='split':print('package:/data/app/split.apk')
+elif 'pull' in args:
+ import pathlib
+ pathlib.Path(args[-1]).write_bytes(('installed '+args[-2]).encode())
 elif 'exec-out' in args:
  sys.stdout.buffer.write('verified fixture 🌏\\n'.encode('utf-8'))
 else:
@@ -31,6 +38,7 @@ else:
 '''
 GRADLE = '''#!/usr/bin/env python3
 import os,pathlib,shutil,sys,xml.etree.ElementTree as ET
+assert '-Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true' in sys.argv, 'AGP must retain both runtime APKs for identity capture'
 classname=next(arg.split('=',1)[1] for arg in sys.argv if arg.startswith('-Pandroid.testInstrumentationRunnerArguments.class='))
 phase='NATIVE' if classname.endswith('WhisperNativeLoadPreflightTest') else 'RECORDER'
 with open('invocations.txt','a') as f:f.write(phase+'\\n')
@@ -57,12 +65,12 @@ class EmulatorHelperEvidenceTest(unittest.TestCase):
             shutil.copyfile(HELPER, root / 'scripts/run-recorder-emulator-check.sh')
             binaries = root / 'bin'
             binaries.mkdir()
-            for name, source in [('adb', ADB), ('gradle', GRADLE), ('git', '#!/bin/sh\nprintf "%s\\n" 0000000000000000000000000000000000000000\n')]:
+            for name, source in [('adb', ADB), ('apksigner', '#!/bin/sh\nprintf \"Signer #1 certificate SHA-256 digest: fixture\\n\"\n'), ('gradle', GRADLE), ('git', '#!/bin/sh\nprintf "%s\\n" 0000000000000000000000000000000000000000\n')]:
                 path = binaries / name
                 path.write_text(source)
                 path.chmod(0o755)
             evidence = root / 'evidence'
-            env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ['PATH'], ANDROID_SERIAL='emulator-5554', GRADLE_BIN=str(binaries / 'gradle'), RECORDER_EMULATOR_EVIDENCE=str(evidence), **settings)
+            env = dict(os.environ, APKSIGNER=str(binaries / 'apksigner'), PATH=str(binaries) + os.pathsep + os.environ['PATH'], ANDROID_SERIAL='emulator-5554', GRADLE_BIN=str(binaries / 'gradle'), RECORDER_EMULATOR_EVIDENCE=str(evidence), **settings)
             result = subprocess.run(['bash', str(root / 'scripts/run-recorder-emulator-check.sh')], env=env, capture_output=True, text=True, timeout=10)
             yield result, root, evidence
 
@@ -113,11 +121,26 @@ class EmulatorHelperEvidenceTest(unittest.TestCase):
                     self.assertEqual(3, len(cases))
                 self.assert_final_evidence(evidence, result.returncode)
 
+    def test_missing_or_split_runtime_apk_identity_is_not_a_pass(self):
+        for mode in ('missing', 'split'):
+            with self.subTest(mode=mode), self.fixture(FAKE_APK_MODE=mode) as (result, root, evidence):
+                self.assertEqual(4, result.returncode, result.stdout + result.stderr)
+                self.assertEqual('4', (evidence / 'native-preflight-installed-exit.txt').read_text().strip())
+                self.assert_final_evidence(evidence, 4)
+        with self.fixture(FAKE_APK_MODE='missing', FAKE_NATIVE_EXIT='7') as (result, root, evidence):
+            self.assertEqual(7, result.returncode)
+            self.assert_final_evidence(evidence, 7)
+
     def test_success_keeps_phase_results_and_actual_stdout_bytes(self):
         with self.fixture() as (result, root, evidence):
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             for phase in ('native-preflight', 'recorder-sequences'):
                 self.assertTrue((evidence / (phase + '-results/TEST-fixture.xml')).is_file())
+                for package in ('com.hatsunama.captionaction.debug', 'com.hatsunama.captionaction.debug.test'):
+                    apk = evidence / (phase + '-installed') / (package + '.apk')
+                    self.assertEqual(('installed /data/app/' + package + '/base.apk').encode(), apk.read_bytes())
+                    self.assertIn('certificate SHA-256 digest', apk.with_suffix('.signing.txt').read_text())
+                self.assertTrue((evidence / (phase + '-installed/SHA256SUMS')).is_file())
                 self.assertEqual('0', (evidence / (phase + '-gradle-exit.txt')).read_text().strip())
             self.assertEqual('verified fixture 🌏\n'.encode(), (evidence / 'first-session.txt').read_bytes())
             self.assertTrue((evidence / 'transcript-SHA256SUMS').is_file())

@@ -228,10 +228,20 @@ jobs:
           test "$TESTED_SHA" = "$EXPECTED_SHA"
           printf '%s\n' "$TESTED_SHA" > ci-provenance/TESTED_SHA
           printf '%s\n' "$GITHUB_SHA" > ci-provenance/EVENT_SHA
-      - name: Verify existing hosted virtualization access
+      - name: Select existing acceleration or bounded experimental software emulation
         shell: bash
         run: |
-          test -r /dev/kvm && test -w /dev/kvm || { echo 'Hosted runner lacks approved KVM access; no device permissions changed.' >&2; exit 1; }
+          set -euo pipefail
+          if test -r /dev/kvm && test -w /dev/kvm; then
+            mode=on
+            description='existing KVM access'
+          else
+            mode=off
+            description='unsupported slow experimental software emulation'
+            echo 'ANDROID_I_WANT_MY_TCG=yes' >> "$GITHUB_ENV"
+          fi
+          echo "EMULATOR_ACCEL=$mode" >> "$GITHUB_ENV"
+          printf '%s\n' "$mode: $description" | tee ci-provenance/emulator-acceleration.txt
       - name: Install only the requested emulator packages under existing approved terms
         shell: bash
         run: |
@@ -247,23 +257,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          "$ANDROID_HOME/emulator/emulator" -version > ci-provenance/emulator-version.txt 2>&1
           printf 'no\n' | avdmanager create avd --force --name caption-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_2
-          "$ANDROID_HOME/emulator/emulator" -avd caption-ci -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 2048 -cores 2 > ci-logs/emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -avd caption-ci -accel "$EMULATOR_ACCEL" -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 2048 -cores 2 > ci-logs/emulator.log 2>&1 &
           EMULATOR_PID=$!
           cleanup() {
-            adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
+            timeout 15 adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
             kill "$EMULATOR_PID" 2>/dev/null || true
             wait "$EMULATOR_PID" 2>/dev/null || true
           }
           trap cleanup EXIT
-          timeout 180 adb -s emulator-5554 wait-for-device
-          deadline=$((SECONDS + 180))
-          until [[ $(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r') == 1 ]]; do
+          deadline=$((SECONDS + 600))
+          timeout 600 adb -s emulator-5554 wait-for-device
+          until [[ $(timeout 10 adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r') == 1 ]]; do
             kill -0 "$EMULATOR_PID"
             (( SECONDS < deadline )) || { echo 'Emulator boot deadline exceeded' >&2; exit 1; }
             sleep 2
           done
-          ANDROID_SERIAL=emulator-5554 bash scripts/run-recorder-emulator-check.sh
+          ANDROID_SERIAL=emulator-5554 timeout --signal=TERM --kill-after=30s 1200 bash scripts/run-recorder-emulator-check.sh
       - name: Preserve actual emulator test evidence and failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

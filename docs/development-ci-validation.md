@@ -51,3 +51,40 @@ of all three actual workflow setup blocks, with packages present and missing,
 failed six subcases before this change and passes afterward. The fake SDK tool
 also checks missing-package installation receives empty stdin. Hosted Android
 verification remains pending on the updated exact commit.
+
+## Bounded software-emulation experiment and runtime identity
+
+Hosted run `38253081537` at exact head
+`84e5e662d4336b02c42300ecf706b4ccc8e85a46` passed 111 unit tests in each
+of debug/release, including six recorder cases per variant, with no failures,
+errors or skips. Both lint tasks and both development/instrumentation APK builds
+passed. These are variant executions, not 222 unique tests. Its emulator job
+stopped at KVM access checks before any boot, ABI check or device assertion.
+
+The [official command-line documentation](https://developer.android.com/studio/run/emulator-commandline)
+now explicitly calls `-accel off` unsupported and very slow, requiring
+`ANDROID_I_WANT_MY_TCG=yes`. The next attempt uses that documented experimental
+opt-in only when existing KVM read/write access is absent. It changes no device
+permissions, records mode and emulator version, keeps the same API 35 Google APIs
+x86_64 image and ARM64/native-load preflight, and bounds boot to ten minutes and
+the combined test helper to twenty minutes (35-minute job ceiling). A timeout is
+an environment/performance blocker, not a product pass or an automatic rerun.
+
+The emulator job rebuilds APKs and may have a different disposable signing key
+from the development job. After each test phase, the helper queries the installed
+app and test-package paths, pulls their actual base APK bytes, verifies and logs
+signing certificates with `apksigner`, and stores SHA256 plus the pulled APKs with
+that phase's results. Missing packages, split packages or unverifiable signatures
+prevent a passing result; failed Gradle status remains primary. The guarded disposable-emulator command passes
+`-Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true`, verified against
+Caption's actual AGP 8.10.1 bytecode (not Finder's 8.13.2).
+`DeviceProviderInstrumentTestTask.CreationAction` maps this option to
+`keepInstalledApks`; `TestRunnerFactory` negates it for UTP
+`uninstallApksAfterTest`. `UtpConfigFactory.createApkInstallerPlugin` sets that
+boolean on both the target-app and test-APK install entries. Therefore both
+remain available for capture; emulator teardown still disposes of the runtime.
+AGP 8.13.2's installer was also checked and uses the same per-APK flag.
+The fake Gradle boundary asserts the exact retention property on every invocation. No
+claim is made that the separately uploaded development-job APK was device-tested.
+Controlled fixtures verify both acceleration branches, exact installed-byte
+capture, missing/split identity rejection and preservation of original failures.

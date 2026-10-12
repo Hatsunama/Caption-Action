@@ -27,15 +27,32 @@ printf '%s\n' "$(git rev-parse HEAD)" > "$EVIDENCE/TESTED_SHA"
 adb -s "$SERIAL" shell getprop ro.product.cpu.abilist > "$EVIDENCE/abis.txt"
 grep -q 'arm64-v8a' "$EVIDENCE/abis.txt" || { echo 'This runtime lacks the existing app ARM64 ABI.' >&2; exit 3; }
 GRADLE=${GRADLE_BIN:-./gradlew}
+capture_installed_apks() {
+  local destination=$1 package device_path apk
+  local signer=${APKSIGNER:-${ANDROID_HOME:?}/build-tools/35.0.0/apksigner}
+  mkdir -p "$destination" || return $?
+  for package in com.hatsunama.captionaction.debug com.hatsunama.captionaction.debug.test; do
+    device_path=$(adb -s "$SERIAL" shell pm path "$package" | tr -d '\r') || return $?
+    # This app uses one base APK. Refuse absent/split packages rather than claiming
+    # identity from a different build job or silently selecting just one split.
+    [[ "$device_path" == package:/* && "$device_path" != *$'\n'* ]] || return 4
+    printf '%s\n' "$device_path" > "$destination/$package.device-path.txt"
+    apk="$destination/$package.apk"
+    adb -s "$SERIAL" pull "${device_path#package:}" "$apk" || return $?
+    "$signer" verify --print-certs "$apk" > "$destination/$package.signing.txt" 2>&1 || return $?
+  done
+  sha256sum "$destination"/*.apk > "$destination/SHA256SUMS"
+}
 run_phase() {
   local phase=$1 class=$2 expected=$3
   assert_emulator_only
   local -a pipeline_status
-  local copy_status=0
+  local copy_status=0 identity_status=0
   # Do not let errexit discard the failed run's raw evidence. Preserve Gradle's own
   # status separately from tee/copy/validation failures, which must not replace it.
   set +e
   "$GRADLE" :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=$class" \
+    -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
     --no-daemon --max-workers=1 --no-parallel --stacktrace 2>&1 | tee "$EVIDENCE/$phase.log"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e
@@ -49,9 +66,12 @@ run_phase() {
     copy_status=1
   fi
   printf '%s\n' "$copy_status" > "$EVIDENCE/$phase-evidence-exit.txt"
+  capture_installed_apks "$EVIDENCE/$phase-installed" > "$EVIDENCE/$phase-installed.log" 2>&1 || identity_status=$?
+  printf '%s\n' "$identity_status" > "$EVIDENCE/$phase-installed-exit.txt"
   if (( pipeline_status[0] != 0 )); then return "${pipeline_status[0]}"; fi
   if (( pipeline_status[1] != 0 )); then return "${pipeline_status[1]}"; fi
   if (( copy_status != 0 )); then return "$copy_status"; fi
+  if (( identity_status != 0 )); then return "$identity_status"; fi
   python3 - "$EVIDENCE/$phase-results" "$class" "$expected" <<'PY'
 import sys, pathlib, xml.etree.ElementTree as ET
 folder, classname, expected = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])

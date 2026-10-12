@@ -49,6 +49,34 @@ class DevelopmentWorkflowTest(unittest.TestCase):
                     self.assertIn(str(tool_dir), (folder / 'path').read_text())
                     self.assertIn(str(sdk / 'platform-tools'), (folder / 'path').read_text())
 
+    def test_software_emulation_is_explicit_bounded_and_records_runtime_identity(self):
+        body = JOBS['emulator-recorder']
+        self.assertIn('ANDROID_I_WANT_MY_TCG=yes', body)
+        self.assertIn('-accel "$EMULATOR_ACCEL"', body)
+        self.assertIn('unsupported slow experimental software emulation', body)
+        self.assertIn('SECONDS + 600', body)
+        self.assertIn('timeout --signal=TERM --kill-after=30s 1200', body)
+        self.assertIn('emulator-acceleration.txt', body)
+        self.assertNotRegex(body, r'(?m)^\s+(sudo|chmod|chown|usermod) ')
+        self.assertIn('-version', body)
+
+    def test_acceleration_selection_records_both_modes_without_changing_permissions(self):
+        match = re.search(r'      - name: Select existing acceleration.*?        run: \|\n(.*?)(?=      - |\Z)', JOBS['emulator-recorder'], re.S)
+        self.assertIsNotNone(match)
+        script = ''.join(line[10:] + '\n' for line in match[1].splitlines())
+        for available in ('0', '1'):
+            with self.subTest(kvm=available), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'ci-provenance').mkdir()
+                env = dict(os.environ, GITHUB_ENV=str(root / 'env'), FAKE_KVM=available)
+                boundary = 'test() { if [[ "$2" == /dev/kvm ]]; then [[ "$FAKE_KVM" == 1 ]]; else builtin test "$@"; fi; };\n'
+                result = subprocess.run(['bash', '-c', boundary + script], cwd=root, env=env, capture_output=True, text=True, timeout=5)
+                self.assertEqual(0, result.returncode, result.stderr)
+                settings = (root / 'env').read_text()
+                self.assertIn('EMULATOR_ACCEL=' + ('on' if available == '1' else 'off'), settings)
+                self.assertEqual(available == '0', 'ANDROID_I_WANT_MY_TCG=yes' in settings)
+                self.assertTrue((root / 'ci-provenance/emulator-acceleration.txt').is_file())
+
     def test_default_job_builds_only_development_apk(self):
         body = JOBS.get('development-checks', JOBS.get('unsigned-build', ''))
         tasks = set(re.findall(r':app:[A-Za-z]+', body))
