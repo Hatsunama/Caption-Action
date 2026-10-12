@@ -6,6 +6,7 @@ import android.app.Service
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.hardware.display.VirtualDisplay
@@ -55,8 +56,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.coroutineContext
-import kotlin.math.max
-import kotlin.math.min
 
 class CaptionOverlayService : Service() {
 
@@ -778,27 +777,49 @@ class CaptionOverlayService : Service() {
     private fun showOverlay(x: Int, y: Int, w: Int, h: Int) {
         if (overlayView != null) return
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_caption, null)
-        val density = resources.displayMetrics.density
-        val minW = (160 * density).toInt()
-        val minH = (180 * density).toInt()
+        val metrics = resources.displayMetrics
+        val initial = OverlayBounds.clamp(x, y, w, h, metrics.widthPixels, metrics.heightPixels, metrics.density)
         val params = WindowManager.LayoutParams(
-            max(w, minW),
-            max(h, minH),
+            initial.width,
+            initial.height,
             overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            this.x = x
-            this.y = y
+            this.x = initial.x
+            this.y = initial.y
         }
         applyFont(view, params.height, params.width)
-        wireOverlayTouch(view, params, minW, minH)
+        wireOverlayTouch(view, params)
         view.findViewById<View>(R.id.btnStopDot).setOnClickListener { stopAndReturnHome() }
         windowManager.addView(view, params)
         overlayView = view
         layoutParams = params
+    }
+
+    private fun clampOverlayParams(params: WindowManager.LayoutParams) {
+        val metrics = resources.displayMetrics
+        val rect = OverlayBounds.clamp(params.x, params.y, params.width, params.height,
+            metrics.widthPixels, metrics.heightPixels, metrics.density)
+        params.x = rect.x
+        params.y = rect.y
+        params.width = rect.width
+        params.height = rect.height
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val view = overlayView ?: return
+        val params = layoutParams ?: return
+        clampOverlayParams(params)
+        applyFont(view, params.height, params.width)
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: IllegalArgumentException) {
+            // Teardown may have removed the overlay before configuration delivery.
+        }
     }
 
     private fun stopAndReturnHome() {
@@ -815,9 +836,7 @@ class CaptionOverlayService : Service() {
 
     private fun wireOverlayTouch(
         view: View,
-        params: WindowManager.LayoutParams,
-        minW: Int,
-        minH: Int
+        params: WindowManager.LayoutParams
     ) {
         val handle = view.findViewById<View>(R.id.resizeHandle)
         var mode = TouchMode.NONE
@@ -844,15 +863,13 @@ class CaptionOverlayService : Service() {
                             params.y += dy
                         }
                         TouchMode.RESIZE -> {
-                            val screenW = resources.displayMetrics.widthPixels
-                            val screenH = resources.displayMetrics.heightPixels
-                            params.width = min(screenW, max(minW, params.width + dx))
-                            val maxH = (screenH * OVERLAY_MAX_HEIGHT_FRACTION).toInt()
-                            params.height = min(maxH, max(minH, params.height + dy))
-                            applyFont(view, params.height, params.width)
+                            params.width += dx
+                            params.height += dy
                         }
                         else -> {}
                     }
+                    clampOverlayParams(params)
+                    applyFont(view, params.height, params.width)
                     try {
                         windowManager.updateViewLayout(view, params)
                     } catch (_: Exception) {
@@ -1016,16 +1033,16 @@ class CaptionOverlayService : Service() {
             val p = layoutParams ?: return@post
             val density = resources.displayMetrics.density
             val screenH = resources.displayMetrics.heightPixels
-            val maxH = (screenH * OVERLAY_MAX_HEIGHT_FRACTION).toInt()
-            val minH = (180 * density).toInt()
+            clampOverlayParams(p)
             // Prefer larger type in spare room before growing the bubble.
             applyFont(view, p.height, p.width)
             val widthSpec = View.MeasureSpec.makeMeasureSpec(p.width, View.MeasureSpec.EXACTLY)
             val heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
             view.measure(widthSpec, heightSpec)
-            val needed = view.measuredHeight.coerceIn(minH, maxH)
+            val needed = OverlayBounds.growthHeight(view.measuredHeight, screenH, density)
             if (needed > p.height + (8 * density).toInt()) {
                 p.height = needed
+                clampOverlayParams(p)
                 // Re-fit after grow: taller bubble may allow slightly larger type;
                 // long captions stay density-capped near MIN_SP (no giant feedback loop).
                 applyFont(view, p.height, p.width)
@@ -1215,8 +1232,6 @@ class CaptionOverlayService : Service() {
         private const val MT_PREFER_WAIT_MS = 850L
         /** Extra prefer-wait when holding wrong-script ASR off overlay (any lang → any target). */
         private const val MT_PREFER_WAIT_WRONG_SCRIPT_MS = 1_400L
-        /** Auto-grow overlay up to this fraction of screen height (drag-safe; no scroll). */
-        private const val OVERLAY_MAX_HEIGHT_FRACTION = 0.48f
         /** Whisper/Quality long infer → show catching-up, not no-audio. */
         private const val LONG_INFER_STATUS_MS = 3_000L
         /** No new caption while capture advancing → catching-up status (keep last line). */
