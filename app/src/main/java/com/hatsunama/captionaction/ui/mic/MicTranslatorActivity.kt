@@ -271,14 +271,19 @@ class MicTranslatorActivity : AppCompatActivity() {
         preferred.setTargetLanguage(toCode.trim().ifEmpty { "en" })
         preferred.setDualSubtitles(settings.dualSubtitles && preferred.canProvideDualSubtitles())
         preferred.setPlaybackCapture(false)
-        val loaded = withContext(Dispatchers.IO) { preferred.load(cache.fileFor(tier)) }
-        if (!loaded) {
-            preferred.release()
-            Toast.makeText(this, getString(R.string.error_engine_load), Toast.LENGTH_LONG).show()
-            finish()
-            return
+        // Keep local ownership across the cancellable IO → Main return.
+        try {
+            val loaded = withContext(Dispatchers.IO) { preferred.load(cache.fileFor(tier)) }
+            if (!loaded) {
+                Toast.makeText(this, getString(R.string.error_engine_load), Toast.LENGTH_LONG).show()
+                finish()
+                return
+            }
+            if (isDestroyed) return
+            engine = preferred
+        } finally {
+            if (engine !== preferred) preferred.release()
         }
-        engine = preferred
         val mt = MlKitTranslationEngine(this)
         translation = mt
         lifecycleScope.launch(Dispatchers.IO) {

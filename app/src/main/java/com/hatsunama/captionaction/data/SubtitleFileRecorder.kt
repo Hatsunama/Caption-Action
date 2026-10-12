@@ -79,9 +79,18 @@ class SubtitleFileRecorder internal constructor(
      * (final primary — e.g. EN after MT — not source then translated duplicate).
      */
     fun appendCaption(primary: String, secondary: String?) {
+        appendCaptionChecked(null, primary, secondary)
+    }
+
+    /** Append only to the exact session that produced this caption, never a replacement. */
+    fun appendCaptionForSession(expectedPath: String, primary: String, secondary: String?) {
+        appendCaptionChecked(expectedPath, primary, secondary)
+    }
+
+    private fun appendCaptionChecked(expectedPath: String?, primary: String, secondary: String?) {
         val line = formatLine(primary, secondary) ?: return
         lock.withLock {
-            if (!active) return
+            if (!active || (expectedPath != null && file?.absolutePath != expectedPath)) return
             val w = writer ?: return
             try {
                 w.write(line)
@@ -98,6 +107,13 @@ class SubtitleFileRecorder internal constructor(
         val path = file?.absolutePath
         closeUnlocked()
         path
+    }
+
+    /** Close only the captured session; cancellation cleanup cannot close a newer writer. */
+    fun stopSessionForSession(expectedPath: String): String? = lock.withLock {
+        if (file?.absolutePath != expectedPath) return null
+        closeUnlocked()
+        expectedPath
     }
 
     fun discard() = lock.withLock { closeUnlocked() }

@@ -11,7 +11,7 @@ These are configuration and shell-boundary checks, not executed Android builds o
 ## Candidate routes
 
 - Normal main-branch push and PR runs: both existing unit-test variants, both lint variants, debug compilation, development APK and instrumentation APK. No AAB or release APK packaging.
-- Same-repository PR branch `fix/recorder-session-preservation`: after development checks pass, run the bounded recorder emulator checkpoint. This named-branch route avoids requiring a workflow-dispatch connector. An explicit `emulator_checkpoint` manual input is also available.
+- Experimental emulator checkpoint: only an explicit `workflow_dispatch` with `emulator_checkpoint=true`, default false, after development checks pass. PR updates and main-branch pushes do not run this experiment. An opted-in test failure still fails its job and preserves evidence.
 - Final-release artifacts: only an explicit workflow_dispatch with `release_checkpoint=true`, default false, after the same exact-head development checks pass. This produces unsigned artifacts without release signing or publication.
 
 All jobs checkout and verify the PR head SHA or dispatch/push event SHA, and preserve tested/event identity. Actions are pinned to immutable commits verified from their official repositories. Standard public `ubuntu-24.04` runners are used; no larger runner or cache is introduced. Artifacts have seven-day retention. Shell pipelines use pipefail and key setup/build/test logs are retained on failure.
@@ -126,3 +126,10 @@ boot property, preserving the existing ten-minute overall deadline. Early exit
 is reported immediately with its status instead of waiting out a blind ADB call.
 Controlled actual-workflow fixtures cover mismatched defaults, missing INI and
 immediate emulator failure; all three failed before the change and pass after.
+
+
+## Manual-only experimental emulator checkpoint
+
+The bounded CPU-only attempt in [run 38260671869](https://github.com/Hatsunama/Caption-Action/actions/runs/38260671869), at head `8fcdee2977c0e58cd6b2251ae4320448a86a4179`, took 532,803 ms to boot and hit a startup ANR before any native-preflight or recorder case ran. This is not a product pass; sole environmental causation is not proven. Further branch updates no longer repeat this experiment automatically. Any deliberate retry keeps the existing deadlines, native/ABI checks, failure propagation and evidence capture.
+
+The normal full debug/release unit and lint checks, debug compile, development/instrumentation APK builds and exact-commit reports remain mandatory. Physical validation remains a separate requirement using the exact reviewed app/test APK pair with recorded hashes and signing certificates. Earlier phone results apply only to those tested bytes and cases; they do not validate subsequent lifecycle repairs. A skipped experimental emulator job does not establish device correctness or release readiness. No new emulator or physical run is claimed by this configuration change.

@@ -186,8 +186,12 @@ while True:time.sleep(1)
         tasks = set(re.findall(r':app:[A-Za-z]+', body))
         self.assertNotIn(':app:preparePlayAab', tasks, 'Normal development runs must not generate an AAB')
         self.assertNotIn(':app:prepareSolanaApk', tasks, 'Normal development runs must not package release APKs')
-        self.assertTrue({':app:compileDebugKotlin', ':app:testDebugUnitTest', ':app:testReleaseUnitTest', ':app:lintDebug', ':app:lintRelease', ':app:assembleDebug'} <= tasks)
+        self.assertTrue({':app:compileDebugKotlin', ':app:testDebugUnitTest', ':app:testReleaseUnitTest', ':app:lintDebug', ':app:lintRelease', ':app:assembleDebug', ':app:assembleDebugAndroidTest'} <= tasks)
         self.assertIn('app/build/outputs/apk/debug/', body)
+        self.assertIn('app/build/outputs/apk/androidTest/debug/*.apk', body)
+        self.assertIn('name: caption-development-apks', body)
+        self.assertIn('if-no-files-found: error', body)
+        self.assertNotRegex(body, r'(?m)^    if:', 'Normal development checks must stay unconditional')
 
     def test_release_artifacts_require_deliberate_checkpoint(self):
         self.assertRegex(WORKFLOW, r'release_checkpoint:\n\s+description:.*\n\s+type: boolean\n\s+default: false')
@@ -209,6 +213,25 @@ while True:time.sleep(1)
         self.assertIn('if: always()', JOBS.get('development-checks', ''))
         self.assertIn('app/build/test-results/', JOBS.get('development-checks', ''))
 
+    def test_emulator_checkpoint_requires_explicit_manual_opt_in(self):
+        emulator = JOBS['emulator-recorder']
+        guard = re.search(r'(?m)^    if: (.+)$', emulator)
+        self.assertIsNotNone(guard)
+        self.assertEqual(
+            "${{ github.event_name == 'workflow_dispatch' && inputs.emulator_checkpoint }}",
+            guard[1],
+            'Branch updates must not start the experimental emulator checkpoint',
+        )
+        self.assertRegex(WORKFLOW, r'emulator_checkpoint:\n\s+description:.*experimental.*\n\s+type: boolean\n\s+default: false')
+
+    def test_manual_emulator_checkpoint_keeps_failures_visible(self):
+        emulator = JOBS['emulator-recorder']
+        self.assertNotIn('continue-on-error:', WORKFLOW)
+        self.assertRegex(emulator, r'(?m)^          ANDROID_SERIAL=emulator-5554 timeout --signal=TERM --kill-after=30s 1200 bash scripts/run-recorder-emulator-check\.sh$')
+        self.assertIn('set -euo pipefail', emulator)
+        self.assertIn('if: always()', emulator)
+        self.assertIn('app/build/outputs/androidTest-results/', emulator)
+
     def test_emulator_checkpoint_requires_real_tests_and_no_license_sweep(self):
         emulator = JOBS.get('emulator-recorder', '')
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.emulator_checkpoint", emulator)
@@ -218,7 +241,6 @@ while True:time.sleep(1)
         self.assertIn('ci-emulator-evidence/', emulator)
         self.assertNotIn('sdkmanager --licenses', WORKFLOW)
         self.assertIn("missing+=('system-images;android-35;google_apis;x86_64')", emulator)
-        self.assertIn("github.head_ref == 'fix/recorder-session-preservation'", emulator)
         self.assertIn('sdkmanager "${missing[@]}" < /dev/null', emulator)
         self.assertNotIn('24333f8a63b6825ea9c5514f83c2829b004d1fee', WORKFLOW)
         self.assertNotRegex(WORKFLOW, r'uses: [^\n]+@v[0-9]')

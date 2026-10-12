@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
       emulator_checkpoint:
-        description: Run bounded recorder tests on an approved compatible hosted emulator
+        description: Opt in to bounded experimental recorder emulator tests; CPU-only mode may be unusable
         type: boolean
         default: false
 
@@ -184,7 +184,7 @@ jobs:
           retention-days: 7
 
   emulator-recorder:
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.emulator_checkpoint) || (github.event_name == 'pull_request' && github.head_ref == 'fix/recorder-session-preservation' && github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.emulator_checkpoint }}
     needs: development-checks
     runs-on: ubuntu-24.04
     timeout-minutes: 35

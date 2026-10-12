@@ -32,6 +32,7 @@ import androidx.core.app.NotificationCompat
 import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
 import com.hatsunama.captionaction.audio.AudioCapture
+import com.hatsunama.captionaction.data.AppSettings
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
 import com.hatsunama.captionaction.data.SubtitleFileRecorder
@@ -46,6 +47,10 @@ import com.hatsunama.captionaction.inference.SubtitleComposer
 import com.hatsunama.captionaction.ui.home.HomeActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -75,6 +80,10 @@ class CaptionOverlayService : Service() {
     private var translation: MlKitTranslationEngine? = null
     private lateinit var subtitleRecorder: SubtitleFileRecorder
     private var engine: InferenceEngine? = null
+    private var preparationJob: Job? = null
+    @Volatile private var preparationGeneration = 0L
+    private val recordingTransition = Mutex()
+    private data class CaptionSession(val generation: Long, val recordingPath: String?)
     private var mediaProjection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
     /** Tiny VirtualDisplay keeps MediaProjection alive (required API 34+; audio-only). */
@@ -105,6 +114,18 @@ class CaptionOverlayService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
+                if (tearingDown) return START_NOT_STICKY
+                val requestGeneration = ++preparationGeneration
+                preparationJob?.cancel()
+                asrJob?.cancel()
+                asrJob = null
+                cancelMtJobs()
+                // Main owns session/output state; old IO work cannot commit into this lifetime.
+                composer.reset()
+                lastPublishedAtMs = 0L
+                subtitleAppendSeq = -1L
+                captionSeq = 0L
+                hasRealCaption = false
                 // mediaProjection FGS type required before getMediaProjection (API 34+).
                 startForegroundForProjection()
                 val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
@@ -119,7 +140,9 @@ class CaptionOverlayService : Service() {
                 audioCapture.stop()
                 val wanted = StartHandoffGate.isProjectionResultGranted(resultCode, data != null)
                 val projection = claimProjectionSync(resultCode, data)
-                scope.launch { beginSession(projection, wantedProjection = wanted) }
+                preparationJob = scope.launch {
+                    beginSession(projection, wantedProjection = wanted, requestGeneration = requestGeneration)
+                }
                 // NOT sticky: sticky redelivery reuses a single-use MediaProjection Intent → false "allow".
                 return START_NOT_STICKY
             }
@@ -224,9 +247,14 @@ class CaptionOverlayService : Service() {
         }
     }
 
-    private suspend fun beginSession(projection: MediaProjection?, wantedProjection: Boolean) {
+    private suspend fun beginSession(
+        projection: MediaProjection?,
+        wantedProjection: Boolean,
+        requestGeneration: Long
+    ) {
         val app = application as CaptionActionApp
         val settings = app.settings.current()
+        if (tearingDown || requestGeneration != preparationGeneration) return
         fontIndex = settings.fontIndex
 
         Log.i(
@@ -363,13 +391,23 @@ class CaptionOverlayService : Service() {
             preferred.canProvideDualSubtitles() && settings.dualSubtitles && inputDiffers
         preferred.setDualSubtitles(dualAllowed)
         preferred.setPlaybackCapture(true)
-        val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
-        if (!loaded) {
-            preferred.release()
-            failSession(getString(R.string.error_engine_load))
-            return
+        // Keep local ownership across the cancellable IO → Main return.
+        try {
+            val loaded = withContext(Dispatchers.IO) { preferred.load(modelFile) }
+            if (tearingDown || requestGeneration != preparationGeneration) return
+            if (!loaded) {
+                failSession(getString(R.string.error_engine_load))
+                return
+            }
+            val previous = engine
+            engine = preferred
+            if (previous != null && previous !== preferred) {
+                asrJob?.cancel()
+                previous.release()
+            }
+        } finally {
+            if (engine !== preferred) preferred.release()
         }
-        engine = preferred
 
         val mt = MlKitTranslationEngine(this)
         translation = mt
@@ -390,20 +428,14 @@ class CaptionOverlayService : Service() {
         }
 
         val activeEngine = engine!!
-        if (settings.saveSubtitlesToFile) {
-            val path = withContext(Dispatchers.IO) {
-                subtitleRecorder.startSession(
-                    targetLanguage = settings.targetLanguage,
-                    dualSubtitles = dualAllowed
-                )
-            }
-            if (path == null) {
-                Toast.makeText(
-                    this@CaptionOverlayService,
-                    getString(R.string.subtitles_save_error),
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+        val recordingPath = prepareRecording(settings, requestGeneration, dualAllowed)
+        if (tearingDown || requestGeneration != preparationGeneration) return
+        if (settings.saveSubtitlesToFile && recordingPath == null) {
+            Toast.makeText(
+                this,
+                getString(R.string.subtitles_save_error),
+                Toast.LENGTH_LONG
+            ).show()
         }
 
         setSessionStatus(getString(R.string.listening), loading = false)
@@ -412,15 +444,56 @@ class CaptionOverlayService : Service() {
         }
 
         asrJob?.cancel()
+        val session = CaptionSession(requestGeneration, recordingPath)
         asrJob = scope.launch(Dispatchers.IO) {
-            runAsrConsumer(app, activeEngine)
+            runAsrConsumer(app, activeEngine, session)
         }
     }
 
-    private suspend fun runAsrConsumer(app: CaptionActionApp, activeEngine: InferenceEngine) {
+    /** Serialize file-session transitions off Main and retain ownership across IO return. */
+    private suspend fun prepareRecording(
+        settings: AppSettings,
+        requestGeneration: Long,
+        dualAllowed: Boolean
+    ): String? {
+        var openedPath: String? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                recordingTransition.withLock {
+                    if (!coroutineContext.isActive || requestGeneration != preparationGeneration) {
+                        return@withLock null
+                    }
+                    if (settings.saveSubtitlesToFile) {
+                        subtitleRecorder.startSession(settings.targetLanguage, dualAllowed)
+                            .also { openedPath = it }
+                    } else {
+                        // Snapshot and close belong to this serialized IO transition. A newer
+                        // transition cannot overtake it, and the recorder also validates identity.
+                        subtitleRecorder.currentPath?.let { subtitleRecorder.stopSessionForSession(it) }
+                        null
+                    }
+                }
+            }
+        } finally {
+            if (!currentCoroutineContext().isActive || requestGeneration != preparationGeneration) {
+                openedPath?.let { abandoned ->
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        recordingTransition.withLock {
+                            subtitleRecorder.stopSessionForSession(abandoned)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun runAsrConsumer(
+        app: CaptionActionApp,
+        activeEngine: InferenceEngine,
+        session: CaptionSession
+    ) {
         // A restarted consumer must never inherit duplicate suppression from a prior session.
         val duplicateGate = CaptionDuplicateGate()
-        lastPublishedAtMs = 0L
         var shownTranscribing = false
         var lastOverruns = audioCapture.overrunCount()
         var lastChunkCount = audioCapture.chunkCount()
@@ -524,6 +597,7 @@ class CaptionOverlayService : Service() {
             val t0 = SystemClock.elapsedRealtime()
             // Force-flush: each drained window is a complete utterance — no re-accum across calls.
             val raw = activeEngine.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = true)
+            if (!coroutineContext.isActive) break
             val inferMs = SystemClock.elapsedRealtime() - t0
             val asrMode = activeEngine.lastAsrMode().ifBlank { "-" }
             val textPreview = raw?.text?.take(48)?.replace('\n', ' ') ?: ""
@@ -573,24 +647,18 @@ class CaptionOverlayService : Service() {
                 }
                 Log.i(DIAG_TAG, "publish short same-script without MT norm=${norm.take(48)}")
                 duplicateGate.onPublished(norm, publishNow)
-                lastPublishedAtMs = publishNow
-                val seqShort = ++captionSeq
-                hasRealCaption = true
-                withContext(Dispatchers.Main) { setCaptionDimmed(false) }
-                publishCaption(raw, dualNow, seqShort, appendSubtitle = true, targetLang = targetLang)
+                val seqShort = acceptCaption(session, publishNow) ?: break
+                publishCaption(raw, dualNow, seqShort, appendSubtitle = true, targetLang = targetLang, session = session)
                 continue
             }
             duplicateGate.onPublished(norm, publishNow)
-            lastPublishedAtMs = publishNow
-            val seq = ++captionSeq
-            hasRealCaption = true
-            withContext(Dispatchers.Main) { setCaptionDimmed(false) }
+            val seq = acceptCaption(session, publishNow) ?: break
 
             val mtEngine = translation
             // Force MT when scripts disagree even if ASR tag == target (mis-tag).
             val needsMt = mtEngine != null && (likelyNeedsMt(raw, settingsNow) || holdWrongScript)
             if (!needsMt || mtEngine == null) {
-                publishCaption(raw, dualNow, seq, appendSubtitle = true, targetLang = targetLang)
+                publishCaption(raw, dualNow, seq, appendSubtitle = true, targetLang = targetLang, session = session)
                 continue
             }
 
@@ -612,7 +680,7 @@ class CaptionOverlayService : Service() {
                 continue
             }
             if (quick != null && !quick.translatedText.isNullOrBlank()) {
-                publishCaption(quick, dualNow, seq, appendSubtitle = true, targetLang = targetLang)
+                publishCaption(quick, dualNow, seq, appendSubtitle = true, targetLang = targetLang, session = session)
                 Log.i(
                     DIAG_TAG,
                     "mt applied-quick seq=$seq primary=${quick.translatedText.orEmpty().take(48)}"
@@ -622,15 +690,15 @@ class CaptionOverlayService : Service() {
                 Log.i(DIAG_TAG, "holding wrong-script source pending MT seq=$seq")
                 val job = scope.launch(Dispatchers.IO) {
                     val policy = quick ?: deferred.await()
-                    applyMtResult(policy, dualNow, seq, allowSourceAppend = false, targetLang = targetLang)
+                    applyMtResult(policy, dualNow, seq, allowSourceAppend = false, targetLang = targetLang, session = session)
                 }
                 trackMtJob(job)
             } else {
                 // Same-script timeout: paint source, then swap when MT arrives.
-                publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false, targetLang = targetLang)
+                publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false, targetLang = targetLang, session = session)
                 val job = scope.launch(Dispatchers.IO) {
                     val policy = quick ?: deferred.await()
-                    applyMtResult(policy, dualNow, seq, allowSourceAppend = true, targetLang = targetLang)
+                    applyMtResult(policy, dualNow, seq, allowSourceAppend = true, targetLang = targetLang, session = session)
                 }
                 trackMtJob(job)
             }
@@ -677,7 +745,8 @@ class CaptionOverlayService : Service() {
         dualNow: Boolean,
         seq: Long,
         allowSourceAppend: Boolean,
-        targetLang: String
+        targetLang: String,
+        session: CaptionSession
     ) {
         if (seq != captionSeq) {
             Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (seq mismatch)")
@@ -696,15 +765,30 @@ class CaptionOverlayService : Service() {
         } else {
             Log.i(DIAG_TAG, "mt applied-source seq=$seq (no translation; append source)")
         }
-        publishCaption(policy, dualNow, seq, appendSubtitle = true, targetLang = targetLang)
+        publishCaption(policy, dualNow, seq, appendSubtitle = true, targetLang = targetLang, session = session)
     }
+
+    /** Main serializes this commit with START/STOP; no native or file IO runs here. */
+    private suspend fun acceptCaption(session: CaptionSession, publishedAt: Long): Long? =
+        withContext(Dispatchers.Main) {
+            if (!isCurrentSession(session)) return@withContext null
+            lastPublishedAtMs = publishedAt
+            hasRealCaption = true
+            setCaptionDimmed(false)
+            ++captionSeq
+        }
+
+    /** Called only at Main-owned state/UI commit boundaries. */
+    private fun isCurrentSession(session: CaptionSession): Boolean =
+        !tearingDown && session.generation == preparationGeneration
 
     private suspend fun publishCaption(
         result: CaptionResult,
         dualNow: Boolean,
         seq: Long,
         appendSubtitle: Boolean,
-        targetLang: String
+        targetLang: String,
+        session: CaptionSession
     ) {
         if (seq != captionSeq) {
             Log.i(DIAG_TAG, "publish skipped seq=$seq latest=$captionSeq")
@@ -731,13 +815,23 @@ class CaptionOverlayService : Service() {
         }
         // Dual off / EN-only: never show source as secondary.
         val secondary = if (dualNow) secondaryRaw else null
-        val primary = composer.compose(primaryRaw)
-        if (appendSubtitle && subtitleRecorder.isRecording && subtitleAppendSeq != seq) {
-            subtitleRecorder.appendCaption(primary, secondary)
-            subtitleAppendSeq = seq
+        val output = withContext(Dispatchers.Main) {
+            if (!isCurrentSession(session) || seq != captionSeq) return@withContext null
+            val primary = composer.compose(primaryRaw)
+            val append = appendSubtitle && session.recordingPath != null && subtitleAppendSeq != seq
+            if (append) subtitleAppendSeq = seq
+            primary to append
+        } ?: return
+        val primary = output.first
+        if (output.second) {
+            // A START can occur after the Main commit. The recorder validates the captured
+            // unique path under its own lock, so old work cannot append to a new transcript.
+            withContext(Dispatchers.IO) {
+                subtitleRecorder.appendCaptionForSession(session.recordingPath!!, primary, secondary)
+            }
         }
         withContext(Dispatchers.Main) {
-            if (seq != captionSeq) {
+            if (!isCurrentSession(session) || seq != captionSeq) {
                 Log.i(DIAG_TAG, "mt/ui skipped seq=$seq latest=$captionSeq (seq mismatch on main)")
                 return@withContext
             }
@@ -1176,6 +1270,9 @@ class CaptionOverlayService : Service() {
     private fun stopSelfSafe() {
         if (tearingDown) return
         tearingDown = true
+        preparationGeneration += 1
+        preparationJob?.cancel()
+        preparationJob = null
         LiveCaptionStarter.endStartHandoff()
         asrJob?.cancel()
         cancelMtJobs()
@@ -1208,6 +1305,10 @@ class CaptionOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        tearingDown = true
+        preparationGeneration += 1
+        preparationJob?.cancel()
+        preparationJob = null
         asrJob?.cancel()
         cancelMtJobs()
         audioCapture.stop()

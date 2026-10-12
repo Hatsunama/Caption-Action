@@ -17,11 +17,13 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -35,36 +37,42 @@ import kotlin.coroutines.coroutineContext
  */
 class AudioCapture(private val context: Context) {
 
-    @Volatile
-    private var record: AudioRecord? = null
+    /** Every producer/consumer holds one owner, never a queue belonging to a later start. */
+    private class Session(val record: AudioRecord, val playback: Boolean) {
+        val liveWindowDrainer = LiveWindowDrainer()
+        val pcmQueue = ArrayBlockingQueue<ShortArray>(QUEUE_CAPACITY)
+        val overrunCount = AtomicLong(0)
+        val chunkCount = AtomicLong(0)
+        val lastRms = AtomicReference(0f)
+        @Volatile var pumpJob: Job? = null
+        @Volatile var retired = false
+        @Volatile var fifoBacklogWarned = false
+        @Volatile var fifoRemainder: ShortArray? = null
+        // Protected by this Session's monitor; never held across a hardware read/stop.
+        var pumpRunning = false
+        var stopFinished = false
+        var released = false
+    }
 
-    @Volatile
-    var usingPlaybackCapture: Boolean = false
-        private set
+    @Volatile private var session: Session? = null
 
-    private val liveWindowDrainer = LiveWindowDrainer()
-    private val pcmQueue = ArrayBlockingQueue<ShortArray>(QUEUE_CAPACITY)
-    private val overrunCount = AtomicLong(0)
-    private val chunkCount = AtomicLong(0)
-    private val lastRms = AtomicReference(0f)
-    private var pumpJob: Job? = null
-    @Volatile private var fifoBacklogWarned = false
-    /** Leftover PCM from an overshot FIFO window — consumed before the next queue poll. */
-    @Volatile private var fifoRemainder: ShortArray? = null
+    val usingPlaybackCapture: Boolean
+        get() = session?.playback == true
 
     fun hasRecordAudioPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    fun overrunCount(): Long = overrunCount.get()
+    fun overrunCount(): Long = session?.overrunCount?.get() ?: 0L
 
-    fun queueDepth(): Int = pcmQueue.size
+    fun queueDepth(): Int = session?.pcmQueue?.size ?: 0
 
-    fun chunkCount(): Long = chunkCount.get()
+    fun chunkCount(): Long = session?.chunkCount?.get() ?: 0L
 
     /** Most recent pump-chunk RMS (PCM16 mono). */
-    fun lastRms(): Float = lastRms.get()
+    fun lastRms(): Float = session?.lastRms?.get() ?: 0f
 
+    @Synchronized
     fun startPlaybackCapture(projection: MediaProjection): Boolean {
         stopPumpAndRecord()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -112,6 +120,7 @@ class AudioCapture(private val context: Context) {
      * Live captions must keep using [startPlaybackCapture] (device audio / MediaProjection) —
      * never call this from the Live overlay path.
      */
+    @Synchronized
     fun startMicrophoneCapture(): Boolean {
         stopPumpAndRecord()
         if (!hasRecordAudioPermission()) {
@@ -122,6 +131,7 @@ class AudioCapture(private val context: Context) {
             )
             return false
         }
+        var allocated: AudioRecord? = null
         return try {
             val minBuf = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
@@ -144,6 +154,7 @@ class AudioCapture(private val context: Context) {
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufBytes
             )
+            allocated = ar
             val state = ar.state
             if (state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(
@@ -152,7 +163,6 @@ class AudioCapture(private val context: Context) {
                         "reason=AudioRecord_STATE_UNINITIALIZED audioRecordState=$state " +
                         "minBuf=$minBuf bufBytes=$bufBytes captureMode=none"
                 )
-                ar.release()
                 return false
             }
             ar.startRecording()
@@ -164,8 +174,8 @@ class AudioCapture(private val context: Context) {
                         "recordingState=$recState audioRecordState=$state (continuing)"
                 )
             }
-            record = ar
-            usingPlaybackCapture = false
+            session = Session(ar, playback = false)
+            allocated = null
             Log.i(
                 CA_TAG,
                 "startMicrophoneCapture ok captureMode=microphone " +
@@ -178,6 +188,8 @@ class AudioCapture(private val context: Context) {
         } catch (e: Exception) {
             Log.e(CA_TAG, "EXCEPTION startMicrophoneCapture catch", e)
             false
+        } finally {
+            allocated?.let { releaseRecord(it) }
         }
     }
 
@@ -191,6 +203,7 @@ class AudioCapture(private val context: Context) {
         usages: IntArray,
         attemptLabel: String
     ): Boolean {
+        var allocated: AudioRecord? = null
         return try {
             val configBuilder = AudioPlaybackCaptureConfiguration.Builder(projection)
             for (u in usages) configBuilder.addMatchingUsage(u)
@@ -227,6 +240,7 @@ class AudioCapture(private val context: Context) {
                 builder.setContext(context)
             }
             val ar = builder.build()
+            allocated = ar
             val state = ar.state
             // Hard fail only on STATE_UNINITIALIZED — never on silence / zero energy.
             if (state != AudioRecord.STATE_INITIALIZED) {
@@ -236,7 +250,6 @@ class AudioCapture(private val context: Context) {
                         "reason=AudioRecord_STATE_UNINITIALIZED audioRecordState=$state " +
                         "minBuf=$minBuf bufBytes=$bufBytes attempt=$attemptLabel captureMode=none"
                 )
-                ar.release()
                 return false
             }
             ar.startRecording()
@@ -252,8 +265,8 @@ class AudioCapture(private val context: Context) {
                 )
             }
             // Do not probe first-read energy: idle silence is a valid live session.
-            record = ar
-            usingPlaybackCapture = true
+            session = Session(ar, playback = true)
+            allocated = null
             Log.i(
                 CA_TAG,
                 "buildAndStartPlayback ok attempt=$attemptLabel captureMode=playback " +
@@ -299,45 +312,60 @@ class AudioCapture(private val context: Context) {
                 e
             )
             false
+        } finally {
+            allocated?.let { releaseRecord(it) }
         }
     }
 
     /** Start the non-blocking capture pump. Call after [startPlaybackCapture] or [startMicrophoneCapture]. */
+    @Synchronized
     fun startPump(scope: CoroutineScope) {
-        pumpJob?.cancel()
-        pcmQueue.clear()
-        overrunCount.set(0)
-        chunkCount.set(0)
-        lastRms.set(0f)
-        fifoBacklogWarned = false
-        fifoRemainder = null
-        liveWindowDrainer.reset()
-        pumpJob = scope.launch(Dispatchers.IO) {
-            val buf = ShortArray(READ_SAMPLES)
-            var lastDiagAt = 0L
-            while (isActive) {
-                val ar = record ?: break
-                val n = ar.read(buf, 0, buf.size)
-                if (n > 0) {
-                    val copy = if (n == buf.size) buf.copyOf() else buf.copyOf(n)
-                    lastRms.set(rms(copy))
-                    enqueueDropOldest(copy)
-                    val c = chunkCount.incrementAndGet()
-                    val now = System.currentTimeMillis()
-                    if (now - lastDiagAt >= DIAG_INTERVAL_MS) {
-                        lastDiagAt = now
-                        Log.d(
-                            TAG,
-                            "captureMode=${if (usingPlaybackCapture) "playback" else "microphone"} usingPlaybackCapture=$usingPlaybackCapture " +
-                                "chunks=$c overruns=${overrunCount.get()} " +
-                                "q=${pcmQueue.size} rms=${lastRms.get()}"
-                        )
+        val owner = session ?: return
+        synchronized(owner) {
+            // One reader per record, including repeated startPump calls.
+            if (owner.retired || owner.pumpJob != null) return
+            owner.pumpRunning = true
+            val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                val buf = ShortArray(READ_SAMPLES)
+                var lastDiagAt = 0L
+                while (isActive && !owner.retired) {
+                    val n = try {
+                        owner.record.read(buf, 0, buf.size)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "AudioRecord.read failed", e)
+                        break
                     }
-                } else if (n < 0) {
-                    Log.w(TAG, "AudioRecord.read error=$n")
-                    break
+                    if (n > 0) {
+                        val copy = buf.copyOf(n)
+                        synchronized(owner) {
+                            if (owner.retired || !isActive) return@launch
+                            owner.lastRms.set(rms(copy))
+                            enqueueDropOldest(owner, copy)
+                            val count = owner.chunkCount.incrementAndGet()
+                            val now = System.currentTimeMillis()
+                            if (now - lastDiagAt >= DIAG_INTERVAL_MS) {
+                                lastDiagAt = now
+                                Log.d(TAG, "captureMode=${if (owner.playback) "playback" else "microphone"} " +
+                                    "usingPlaybackCapture=${owner.playback} chunks=$count " +
+                                    "overruns=${owner.overrunCount.get()} q=${owner.pcmQueue.size} " +
+                                    "rms=${owner.lastRms.get()}")
+                            }
+                        }
+                    } else if (n < 0) {
+                        Log.w(TAG, "AudioRecord.read error=$n")
+                        break
+                    }
                 }
             }
+            owner.pumpJob = job
+            // Unlike a coroutine-body finally, this also runs if its scope was already cancelled.
+            job.invokeOnCompletion {
+                synchronized(owner) {
+                    owner.pumpRunning = false
+                    releaseIfFinished(owner)
+                }
+            }
+            job.start()
         }
     }
 
@@ -346,11 +374,16 @@ class AudioCapture(private val context: Context) {
      * or when the pump has stopped and the queue is empty.
      */
     suspend fun takeChunk(timeoutMs: Long = TAKE_TIMEOUT_MS): ShortArray? {
-        while (coroutineContext.isActive) {
-            val chunk = pcmQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
+        val owner = session ?: return null
+        return takeChunk(owner, timeoutMs)
+    }
+
+    private suspend fun takeChunk(owner: Session, timeoutMs: Long = TAKE_TIMEOUT_MS): ShortArray? {
+        while (coroutineContext.isActive && !owner.retired) {
+            val chunk = owner.pcmQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
+            if (!coroutineContext.isActive || owner.retired) return null
             if (chunk != null) return chunk
-            if (record == null && pcmQueue.isEmpty()) return null
-            if (pumpJob?.isActive != true && pcmQueue.isEmpty()) return null
+            if (owner.pumpJob?.isActive != true && owner.pcmQueue.isEmpty()) return null
         }
         return null
     }
@@ -361,16 +394,19 @@ class AudioCapture(private val context: Context) {
      * return its exact newest contiguous window for video sync. Short windows are
      * returned only when capture ends. Mic retains its separate FIFO policy.
      */
-    suspend fun drainToNewestWindow(targetSamples: Int = DEFAULT_WINDOW_SAMPLES): ShortArray? =
-        liveWindowDrainer.drain(
+    suspend fun drainToNewestWindow(targetSamples: Int = DEFAULT_WINDOW_SAMPLES): ShortArray? {
+        val owner = session ?: return null
+        val result = owner.liveWindowDrainer.drain(
             targetSamples = targetSamples,
-            takeChunk = { takeChunk() },
-            queuedChunkCount = { pcmQueue.size },
-            pollChunk = { pcmQueue.poll() },
+            takeChunk = { takeChunk(owner) },
+            queuedChunkCount = { owner.pcmQueue.size },
+            pollChunk = { owner.pcmQueue.poll() },
             onDropSamples = { dropped ->
-                Log.i(TAG, "drainToNewest: dropped=$dropped keep=$targetSamples overruns=${overrunCount.get()}")
+                Log.i(TAG, "drainToNewest: dropped=$dropped keep=$targetSamples overruns=${owner.overrunCount.get()}")
             }
         )
+        return if (owner.retired || !coroutineContext.isActive) null else result
+    }
 
     /**
      * Mic Translator FIFO drain: contiguous oldest-first accumulation to ~[targetSamples]
@@ -381,49 +417,58 @@ class AudioCapture(private val context: Context) {
      * Live captions must keep using [drainToNewestWindow].
      */
     suspend fun drainFifoWindow(targetSamples: Int = DEFAULT_WINDOW_SAMPLES): ShortArray? {
-        trimFifoBacklogIfNeeded()
+        require(targetSamples > 0)
+        val active = coroutineContext
+        if (!active.isActive) return null
+        val owner = session ?: return null
+        val pending = synchronized(owner) {
+            if (owner.retired || !active.isActive) return null
+            trimFifoBacklogIfNeeded(owner, active)
+            // Keep the previous remainder owned until a live drain commits its result.
+            // Cancellation while polling must not consume uncommitted remainder.
+            owner.fifoRemainder
+        }
 
         val chunks = ArrayList<ShortArray>(QUEUE_CAPACITY)
         var total = 0
 
         // Consume prior overshoot before polling the pump queue.
-        fifoRemainder?.let { rem ->
-            fifoRemainder = null
+        pending?.let { rem ->
             chunks.add(rem)
             total += rem.size
         }
         if (total < targetSamples) {
-            val first = takeChunk() ?: run {
+            val first = takeChunk(owner) ?: run {
                 if (chunks.isEmpty()) return null
                 // Capture ended with only a remainder — return what we have.
-                return concatFifo(chunks, targetSamples)
+                return concatFifo(owner, chunks, targetSamples)
             }
             chunks.add(first)
             total += first.size
         }
 
-        while (total < targetSamples && coroutineContext.isActive) {
+        while (total < targetSamples && coroutineContext.isActive && !owner.retired) {
             var drained = false
             while (total < targetSamples) {
-                val next = pcmQueue.poll() ?: break
+                val next = owner.pcmQueue.poll() ?: break
                 chunks.add(next)
                 total += next.size
                 drained = true
             }
             if (total >= targetSamples) break
 
-            val capturing = record != null && pumpJob?.isActive == true
-            if (!capturing && pcmQueue.isEmpty()) {
+            val capturing = !owner.retired && owner.pumpJob?.isActive == true
+            if (!capturing && owner.pcmQueue.isEmpty()) {
                 break
             }
 
-            val waited = pcmQueue.poll(TAKE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            val waited = owner.pcmQueue.poll(TAKE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             if (waited != null) {
                 chunks.add(waited)
                 total += waited.size
-            } else if (record == null && pcmQueue.isEmpty()) {
+            } else if (owner.retired && owner.pcmQueue.isEmpty()) {
                 break
-            } else if (pumpJob?.isActive != true && pcmQueue.isEmpty()) {
+            } else if (owner.pumpJob?.isActive != true && owner.pcmQueue.isEmpty()) {
                 break
             }
             if (!drained && waited == null && !capturing) break
@@ -431,20 +476,20 @@ class AudioCapture(private val context: Context) {
 
         if (chunks.isEmpty()) return null
 
-        val depth = pcmQueue.size
+        val depth = owner.pcmQueue.size
         if (depth >= 4 || total > targetSamples) {
             Log.i(
                 TAG,
                 "drainFifo: depthQ=$depth drainedSamples=$total target=$targetSamples " +
-                    "overruns=${overrunCount.get()} (oldest-first, no newest trim)"
+                    "overruns=${owner.overrunCount.get()} (oldest-first, no newest trim)"
             )
         }
 
-        return concatFifo(chunks, targetSamples)
+        return concatFifo(owner, chunks, targetSamples)
     }
 
-    /** Concatenate oldest-first; stash overshoot as [fifoRemainder] for the next call. */
-    private fun concatFifo(chunks: List<ShortArray>, targetSamples: Int): ShortArray? {
+    /** Concatenate oldest-first; stash overshoot as the session remainder for the next call. */
+    private suspend fun concatFifo(owner: Session, chunks: List<ShortArray>, targetSamples: Int): ShortArray? {
         if (chunks.isEmpty()) return null
         var outLen = 0
         for (c in chunks) outLen += c.size
@@ -454,23 +499,31 @@ class AudioCapture(private val context: Context) {
             System.arraycopy(c, 0, out, pos, c.size)
             pos += c.size
         }
-        if (out.size <= targetSamples) return out
-        fifoRemainder = out.copyOfRange(targetSamples, out.size)
-        return out.copyOfRange(0, targetSamples)
+        val active = coroutineContext
+        return synchronized(owner) {
+            if (owner.retired || !active.isActive) return null
+            if (out.size <= targetSamples) {
+                owner.fifoRemainder = null
+                out
+            } else {
+                owner.fifoRemainder = out.copyOfRange(targetSamples, out.size)
+                out.copyOfRange(0, targetSamples)
+            }
+        }
     }
 
     /**
      * If queued PCM exceeds ~10 s (~[FIFO_BACKLOG_CAP_CHUNKS] × READ_SAMPLES), drop oldest
      * excess so the queue cannot grow without bound while ASR is slow. Logs once per pump.
      */
-    private fun trimFifoBacklogIfNeeded() {
+    private fun trimFifoBacklogIfNeeded(owner: Session, active: CoroutineContext) {
         var dropped = 0
-        while (pcmQueue.size > FIFO_BACKLOG_CAP_CHUNKS) {
-            val oldest = pcmQueue.poll() ?: break
+        while (!owner.retired && active.isActive && owner.pcmQueue.size > FIFO_BACKLOG_CAP_CHUNKS) {
+            val oldest = owner.pcmQueue.poll() ?: break
             dropped += oldest.size
         }
-        if (dropped > 0 && !fifoBacklogWarned) {
-            fifoBacklogWarned = true
+        if (dropped > 0 && !owner.fifoBacklogWarned) {
+            owner.fifoBacklogWarned = true
             Log.w(
                 TAG,
                 "drainFifo: backlog >~10s — dropped oldest $dropped samples " +
@@ -479,31 +532,59 @@ class AudioCapture(private val context: Context) {
         }
     }
 
+    @Synchronized
     fun stop() {
-        pumpJob?.cancel()
-        pumpJob = null
         stopPumpAndRecord()
-        pcmQueue.clear()
-        fifoRemainder = null
-        liveWindowDrainer.reset()
     }
 
+    /**
+     * Preserve platform stop-before-next-start ordering, but never join a blocking read on UI.
+     * OEM stop() itself may block, as before. A read that never returns retains its retired
+     * record; no timeout may free a resource still in use by native capture.
+     */
     private fun stopPumpAndRecord() {
-        try {
-            record?.stop()
-        } catch (_: IllegalStateException) {
+        val owner = session ?: return
+        session = null
+        synchronized(owner) {
+            owner.retired = true
+            owner.pumpJob?.cancel()
+            owner.pcmQueue.clear()
+            owner.fifoRemainder = null
+            owner.liveWindowDrainer.reset()
         }
-        record?.release()
-        record = null
-        usingPlaybackCapture = false
+        try {
+            owner.record.stop()
+        } catch (_: IllegalStateException) {
+        } finally {
+            synchronized(owner) {
+                owner.stopFinished = true
+                releaseIfFinished(owner)
+            }
+        }
     }
 
-    private fun enqueueDropOldest(chunk: ShortArray) {
-        if (pcmQueue.offer(chunk)) return
-        pcmQueue.poll()
-        overrunCount.incrementAndGet()
-        if (!pcmQueue.offer(chunk)) {
-            overrunCount.incrementAndGet()
+    /** Called with owner's monitor. Only the completed pump and stop can relinquish it. */
+    private fun releaseIfFinished(owner: Session) {
+        if (owner.retired && owner.stopFinished && !owner.pumpRunning && !owner.released) {
+            owner.released = true
+            releaseRecord(owner.record)
+        }
+    }
+
+    private fun releaseRecord(record: AudioRecord) {
+        try {
+            record.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioRecord.release failed", e)
+        }
+    }
+
+    private fun enqueueDropOldest(owner: Session, chunk: ShortArray) {
+        if (owner.pcmQueue.offer(chunk)) return
+        owner.pcmQueue.poll()
+        owner.overrunCount.incrementAndGet()
+        if (!owner.pcmQueue.offer(chunk)) {
+            owner.overrunCount.incrementAndGet()
         }
     }
 
