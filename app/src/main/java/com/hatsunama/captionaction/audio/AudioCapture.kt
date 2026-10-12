@@ -11,6 +11,7 @@ import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -41,6 +42,7 @@ class AudioCapture(private val context: Context) {
     var usingPlaybackCapture: Boolean = false
         private set
 
+    private val liveWindowDrainer = LiveWindowDrainer()
     private val pcmQueue = ArrayBlockingQueue<ShortArray>(QUEUE_CAPACITY)
     private val overrunCount = AtomicLong(0)
     private val chunkCount = AtomicLong(0)
@@ -183,6 +185,7 @@ class AudioCapture(private val context: Context) {
      * Build AudioPlaybackCaptureConfiguration + AudioRecord and startRecording.
      * Returns false on hard init failure (never on silence). Always Log.e on fail.
      */
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun buildAndStartPlayback(
         projection: MediaProjection,
         usages: IntArray,
@@ -308,6 +311,7 @@ class AudioCapture(private val context: Context) {
         lastRms.set(0f)
         fifoBacklogWarned = false
         fifoRemainder = null
+        liveWindowDrainer.reset()
         pumpJob = scope.launch(Dispatchers.IO) {
             val buf = ShortArray(READ_SAMPLES)
             var lastDiagAt = 0L
@@ -352,93 +356,21 @@ class AudioCapture(private val context: Context) {
     }
 
     /**
-     * Pull a full ASR window (~[targetSamples] PCM; Live ~3.0 s / Quality ~1.5 s). Accumulates from
-     * the queue, waiting (poll with timeout) while the pump is still capturing, so live
-     * windows are never a single READ_SAMPLES crumb. Only returns a short/partial window when capture
-     * has ended and the queue is empty (final flush). When behind (depth ≥ threshold or
-     * total > target), keeps a contiguous newest ~[targetSamples] slice.
+     * Pull a full Live window, preserving normal read-chunk overshoot. If newer
+     * chunks are already queued after filling it, drain that bounded backlog and
+     * return its exact newest contiguous window for video sync. Short windows are
+     * returned only when capture ends. Mic retains its separate FIFO policy.
      */
-    suspend fun drainToNewestWindow(targetSamples: Int = DEFAULT_WINDOW_SAMPLES): ShortArray? {
-        val chunks = ArrayList<ShortArray>(QUEUE_CAPACITY)
-        var total = 0
-
-        val first = takeChunk() ?: return null
-        chunks.add(first)
-        total += first.size
-
-        // Drain whatever is already queued, then wait for more until we hit targetSamples.
-        while (total < targetSamples && coroutineContext.isActive) {
-            var drained = false
-            while (true) {
-                val next = pcmQueue.poll() ?: break
-                chunks.add(next)
-                total += next.size
-                drained = true
-                if (total >= targetSamples) break
+    suspend fun drainToNewestWindow(targetSamples: Int = DEFAULT_WINDOW_SAMPLES): ShortArray? =
+        liveWindowDrainer.drain(
+            targetSamples = targetSamples,
+            takeChunk = { takeChunk() },
+            queuedChunkCount = { pcmQueue.size },
+            pollChunk = { pcmQueue.poll() },
+            onDropSamples = { dropped ->
+                Log.i(TAG, "drainToNewest: dropped=$dropped keep=$targetSamples overruns=${overrunCount.get()}")
             }
-            if (total >= targetSamples) break
-
-            val capturing = record != null && pumpJob?.isActive == true
-            if (!capturing && pcmQueue.isEmpty()) {
-                // Capture ended — allow a short final window rather than blocking forever.
-                break
-            }
-
-            val waited = pcmQueue.poll(TAKE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            if (waited != null) {
-                chunks.add(waited)
-                total += waited.size
-            } else if (record == null && pcmQueue.isEmpty()) {
-                break
-            } else if (pumpJob?.isActive != true && pcmQueue.isEmpty()) {
-                break
-            }
-            // else: timeout while still capturing — keep waiting for a full window
-            if (!drained && waited == null && !capturing) break
-        }
-
-        if (chunks.isEmpty()) return null
-
-        val depth = chunks.size
-        val behind = depth >= BACKLOG_CHUNK_THRESHOLD || total > targetSamples
-        if (behind && total > targetSamples) {
-            Log.i(
-                TAG,
-                "drainToNewest: behind depth=$depth samples=$total overruns=${overrunCount.get()} " +
-                    "→ keep newest ~${targetSamples} samples"
-            )
-        }
-
-        // Keep contiguous newest window (always contiguous from the end of drained chunks).
-        val keepFrom: Int
-        if (behind || total > targetSamples) {
-            var need = targetSamples
-            var i = chunks.size - 1
-            while (i > 0 && need > 0) {
-                need -= chunks[i].size
-                if (need > 0) i--
-            }
-            keepFrom = if (need <= 0) i else 0
-        } else {
-            keepFrom = 0
-        }
-
-        var outLen = 0
-        for (i in keepFrom until chunks.size) outLen += chunks[i].size
-        val out = ShortArray(outLen)
-        var pos = 0
-        for (i in keepFrom until chunks.size) {
-            val c = chunks[i]
-            System.arraycopy(c, 0, out, pos, c.size)
-            pos += c.size
-        }
-        // If the oldest kept chunk is larger than remaining budget, trim from the front.
-        if (out.size > targetSamples && (behind || total > targetSamples)) {
-            val start = out.size - targetSamples
-            return out.copyOfRange(start, out.size)
-        }
-        return out
-    }
+        )
 
     /**
      * Mic Translator FIFO drain: contiguous oldest-first accumulation to ~[targetSamples]
@@ -553,6 +485,7 @@ class AudioCapture(private val context: Context) {
         stopPumpAndRecord()
         pcmQueue.clear()
         fifoRemainder = null
+        liveWindowDrainer.reset()
     }
 
     private fun stopPumpAndRecord() {
@@ -619,8 +552,6 @@ class AudioCapture(private val context: Context) {
         const val QUALITY_WINDOW_BEHIND_SAMPLES = 18_000
         /** Optional SenseVoice lane ~3.0 s — phrase-level (not default Live; Live uses whisper Tiny windows). */
         const val LIVE_WINDOW_SAMPLES = 48_000
-        /** If drained chunk count ≥ this, skip intermediate audio. */
-        private const val BACKLOG_CHUNK_THRESHOLD = 4
         /** Mic FIFO absolute backlog cap ~10 s @ 16 kHz (~20 × 0.5 s chunks). */
         private const val FIFO_BACKLOG_CAP_CHUNKS = 20
     }

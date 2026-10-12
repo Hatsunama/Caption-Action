@@ -49,6 +49,7 @@ class HomeActivity : AppCompatActivity() {
     private var suppressPersist = true
     private var fontIndex = 0
     private var modelGateDialog: AlertDialog? = null
+    private var closeModelGate: (() -> Unit)? = null
     private var startingDialog: AlertDialog? = null
     private var mtPrepareJob: Job? = null
     private var mtEngine: MlKitTranslationEngine? = null
@@ -129,6 +130,7 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        closeModelGate?.invoke()
         activeDownloader?.cancel()
         downloadJob?.cancel()
         mtPrepareJob?.cancel()
@@ -264,6 +266,13 @@ class HomeActivity : AppCompatActivity() {
 
     /** Shared whisper Tiny / BALANCED gate for Live Captions and Mic Translator. */
     private fun showModelGateThenStart(onReady: () -> Unit) {
+        // Opening either entry replaces the previous gate and invalidates its callbacks.
+        val previousDialog = modelGateDialog
+        closeModelGate?.invoke()
+        previousDialog?.dismiss()
+        val session = ModelGateSession()
+        var gateJob: Job? = null
+        var gateDownloader: ModelDownloadManager? = null
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_model_gate, null)
         val group = view.findViewById<RadioGroup>(R.id.modelGroup)
         val status = view.findViewById<TextView>(R.id.modelStatus)
@@ -344,8 +353,25 @@ class HomeActivity : AppCompatActivity() {
             .create()
         modelGateDialog = dialog
 
+        fun closeGate() {
+            session.close()
+            gateDownloader?.cancel()
+            gateJob?.cancel()
+            if (activeDownloader === gateDownloader) activeDownloader = null
+            if (downloadJob === gateJob) downloadJob = null
+            if (modelGateDialog === dialog) {
+                closeModelGate = null
+            }
+        }
+        closeModelGate = ::closeGate
+        fun gateIsCurrent(): Boolean = session.isActive && dialog.isShowing && modelGateDialog === dialog
+        dialog.setOnCancelListener { closeGate() }
+        dialog.setOnDismissListener {
+            closeGate()
+            if (modelGateDialog === dialog) modelGateDialog = null
+        }
         btnCancel.setOnClickListener {
-            activeDownloader?.cancel()
+            closeGate()
             dialog.dismiss()
         }
 
@@ -355,15 +381,21 @@ class HomeActivity : AppCompatActivity() {
                 Toast.makeText(this, getString(R.string.error_model), Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            lifecycleScope.launch {
+            if (!gateIsCurrent()) return@setOnClickListener
+            btnUse.isEnabled = false
+            gateJob = lifecycleScope.launch {
                 app().settings.update { it.copy(modelTierId = tier.id) }
-                dialog.dismiss()
-                onReady()
+                if (!gateIsCurrent()) return@launch
+                session.complete {
+                    dialog.dismiss()
+                    onReady()
+                }
             }
+            downloadJob = gateJob
         }
 
         btnDownload.setOnClickListener {
-            if (downloading || !btnDownload.isEnabled) return@setOnClickListener
+            if (!gateIsCurrent() || downloading || !btnDownload.isEnabled) return@setOnClickListener
             val tier = selectedTier()
             if (cache.isReadyForAsr(tier)) {
                 Toast.makeText(this, getString(R.string.download_already_on_device), Toast.LENGTH_SHORT).show()
@@ -410,11 +442,13 @@ class HomeActivity : AppCompatActivity() {
             group.isEnabled = false
             for (i in 0 until group.childCount) group.getChildAt(i).isEnabled = false
             val mgr = ModelDownloadManager(cache)
+            gateDownloader = mgr
             activeDownloader = mgr
-            downloadJob = lifecycleScope.launch {
+            gateJob = lifecycleScope.launch {
                 val result = withContext(Dispatchers.IO) {
                     mgr.download(tier) { p ->
                         runOnUiThread {
+                            if (!gateIsCurrent() || gateDownloader !== mgr) return@runOnUiThread
                             onceHint.visibility = View.VISIBLE
                             progress.visibility = View.VISIBLE
                             percent.visibility = View.VISIBLE
@@ -428,19 +462,23 @@ class HomeActivity : AppCompatActivity() {
                         }
                     }
                 }
+                if (!gateIsCurrent()) return@launch
                 downloading = false
                 group.isEnabled = true
                 for (i in 0 until group.childCount) group.getChildAt(i).isEnabled = true
-                activeDownloader = null
+                if (activeDownloader === mgr) activeDownloader = null
                 refreshStatus()
                 when {
                     result.isSuccess -> {
                         app().settings.update { it.copy(modelTierId = tier.id) }
+                        if (!gateIsCurrent()) return@launch
                         Toast.makeText(this@HomeActivity, getString(R.string.model_ready), Toast.LENGTH_SHORT).show()
                         refreshStatus()
                         if (cache.isReadyForAsr(tier)) {
-                            dialog.dismiss()
-                            onReady()
+                            session.complete {
+                                dialog.dismiss()
+                                onReady()
+                            }
                         }
                     }
                     result.exceptionOrNull() is ModelDownloadManager.CancelledException -> {
@@ -462,6 +500,7 @@ class HomeActivity : AppCompatActivity() {
                     }
                 }
             }
+            downloadJob = gateJob
         }
 
         dialog.show()

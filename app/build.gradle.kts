@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.hatsunama.captionaction"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.hatsunama.captionaction"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 51
         versionName = "0.3.28"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -23,7 +23,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            // Production credentials stay off this build. Sign reviewed artifacts separately.
+            signingConfig = null
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -47,8 +48,8 @@ android {
         buildConfig = true
     }
     lint {
-        checkReleaseBuilds = false
-        abortOnError = false
+        checkReleaseBuilds = true
+        abortOnError = true
     }
 
     packaging {
@@ -81,4 +82,26 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.24")
+}
+
+// Separate destinations avoid confusing a Play upload bundle with a Solana APK.
+// Both use the same existing applicationId/version and remain deliberately unsigned.
+tasks.register<Copy>("preparePlayAab") {
+    group = "distribution"
+    description = "Build and stage the unsigned Google Play upload bundle."
+    dependsOn("bundleRelease")
+    from(layout.buildDirectory.file("outputs/bundle/release/app-release.aab"))
+    into(layout.buildDirectory.dir("distribution/play"))
+    rename { "caption-action-play-unsigned.aab" }
+    doFirst { check(android.buildTypes.getByName("release").signingConfig == null) }
+}
+
+tasks.register<Copy>("prepareSolanaApk") {
+    group = "distribution"
+    description = "Build and stage the unsigned Solana distribution APK."
+    dependsOn("assembleRelease")
+    from(layout.buildDirectory.file("outputs/apk/release/app-release-unsigned.apk"))
+    into(layout.buildDirectory.dir("distribution/solana"))
+    rename { "caption-action-solana-unsigned.apk" }
+    doFirst { check(android.buildTypes.getByName("release").signingConfig == null) }
 }
