@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Opt-in QA uses a separate install identity; never replace existing production/debug data.
+val isolatedQaProperty = providers.gradleProperty("caption.isolatedQa").orNull
+require(isolatedQaProperty == null || isolatedQaProperty == "true" || isolatedQaProperty == "false") {
+    "caption.isolatedQa must be exactly true or false"
+}
+val isolatedQa = isolatedQaProperty == "true"
+
 android {
     namespace = "com.hatsunama.captionaction"
     compileSdk = 36
@@ -32,7 +39,9 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            applicationIdSuffix = ".debug"
+            // Public development and instrumentation artifacts are signed only later on C.
+            signingConfig = null
+            applicationIdSuffix = if (isolatedQa) ".qa" else ".debug"
         }
     }
 
@@ -86,6 +95,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.24")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
 // Separate destinations avoid confusing a Play upload bundle with a Solana APK.
@@ -109,3 +120,6 @@ tasks.register<Copy>("prepareSolanaApk") {
     rename { "caption-action-solana-unsigned.apk" }
     doFirst { check(android.buildTypes.getByName("release").signingConfig == null) }
 }
+
+// Verify resolved app/test signing and the execution graph before any tasks run.
+apply(from = rootProject.file("scripts/unsigned-build.gradle"))

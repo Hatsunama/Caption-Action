@@ -1,3 +1,5 @@
+> Isolated QA safety: this document contains legacy `.debug` install/uninstall commands. They must not be used when preserving existing phone app data. Follow [isolated QA identity](isolated-qa.md) for the separate `.qa` pair and its explicit approval gates.
+
 # Physical device test (device-agnostic)
 
 Works on any Android phone with USB debugging (or wireless debugging). Examples use `adb`; PowerShell-friendly notes included.

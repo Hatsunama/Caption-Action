@@ -48,123 +48,147 @@ class ModelDownloadManager(private val cache: ModelCache) {
         tier: ModelTier,
         onProgress: (Progress) -> Unit
     ): Result<Unit> {
-        var connection: HttpURLConnection? = null
         try {
             checkActive()
-            val dest = cache.fileFor(tier)
             val tmp = cache.partFileFor(tier)
-            var existing = if (tmp.exists()) tmp.length().coerceAtLeast(0L) else 0L
-
-            if (cache.isPresent(tier)) {
-                onProgress(Progress(tier.approxBytes, tier.approxBytes))
+            val total = cache.identity(tier).bytes
+            if (cache.verifyLocked(tier, ::checkActive)) {
+                onProgress(Progress(total, total))
+                checkActive()
                 return Result.success(Unit)
             }
 
-            val needBytes = (tier.approxBytes - existing).coerceAtLeast(0L)
-            if (cache.freeBytes() < needBytes + 5L * 1024 * 1024) {
-                return Result.failure(StorageException("Not enough storage"))
-            }
-
-            onProgress(Progress(existing, tier.approxBytes.coerceAtLeast(1L)))
-
-            val conn = (URL(tier.downloadUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 30_000
-                readTimeout = 60_000
-                setRequestProperty("User-Agent", "CaptionAction/0.2 (local; user-initiated)")
-                if (existing > 0L) {
-                    setRequestProperty("Range", "bytes=$existing-")
-                }
-            }
-            connection = conn
-            if (!control.attach { runCatching { conn.disconnect() } }) throw CancelledException()
-            checkActive()
-            conn.connect()
-            val code = conn.responseCode
-            checkActive()
-
-            val append: Boolean
-            val total: Long
-            when {
-                code == HttpURLConnection.HTTP_PARTIAL && existing > 0L -> {
-                    append = true
-                    val contentLen = conn.contentLengthLong
-                    total = if (contentLen > 0L) existing + contentLen else tier.approxBytes
-                }
-                code in 200..299 -> {
-                    if (existing > 0L) {
-                        tmp.delete()
-                        existing = 0L
-                    }
-                    append = false
-                    val contentLen = conn.contentLengthLong
-                    total = if (contentLen > 0L) contentLen else tier.approxBytes
-                }
-                else -> {
-                    conn.disconnect()
-                    return Result.failure(IllegalStateException("HTTP $code"))
-                }
-            }
-
-            onProgress(Progress(existing, total))
-
-            try {
-                checkActive()
-                BufferedInputStream(conn.inputStream).use { input ->
+            var existing = tmp.length()
+            if (existing == total) {
+                if (cache.promoteLocked(tier, ::checkActive)) {
+                    onProgress(Progress(total, total))
                     checkActive()
-                    FileOutputStream(tmp, append).use { out ->
-                        val buf = ByteArray(64 * 1024)
-                        var read = existing
-                        while (true) {
-                            checkActive()
-                            val n = input.read(buf)
-                            checkActive()
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            read += n
-                            onProgress(Progress(read, total))
-                        }
-                        out.fd.sync()
-                    }
+                    return Result.success(Unit)
                 }
-            } finally {
-                conn.disconnect()
+                resetPartial(tmp)
+                existing = 0
+            } else if (existing > total) {
+                resetPartial(tmp)
+                existing = 0
             }
 
-            checkActive()
-
-            val finalLen = tmp.length()
-            val minReady = ModelCache.minReadyBytes(tier)
-            if (finalLen < minReady) {
-                return Result.failure(
-                    IllegalStateException("Download incomplete (${finalLen} bytes)")
-                )
+            var reset416 = false
+            while (true) {
+                checkActive()
+                requireSpace(total - existing)
+                onProgress(Progress(existing, total))
+                val conn = (URL(tier.downloadUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = true
+                    connectTimeout = 30_000
+                    readTimeout = 60_000
+                    setRequestProperty("User-Agent", "CaptionAction/0.2 (local; user-initiated)")
+                    setRequestProperty("Accept-Encoding", "identity")
+                    if (existing > 0) setRequestProperty("Range", "bytes=$existing-")
+                }
+                try {
+                    if (!control.attach { runCatching { conn.disconnect() } }) throw CancelledException()
+                    checkActive()
+                    conn.connect()
+                    val code = conn.responseCode
+                    checkActive()
+                    if (code == 416 && !reset416) {
+                        reset416 = true
+                        resetPartial(tmp)
+                        existing = 0
+                        continue
+                    }
+                    val encoding = conn.getHeaderField("Content-Encoding")
+                    check(encoding == null || encoding.equals("identity", ignoreCase = true)) { "Unexpected content encoding" }
+                    val append: Boolean
+                    val responseBytes: Long
+                    when (code) {
+                        HttpURLConnection.HTTP_OK -> {
+                            append = false
+                            responseBytes = total
+                            existing = 0
+                            requireSpace(total)
+                        }
+                        HttpURLConnection.HTTP_PARTIAL -> {
+                            check(existing > 0) { "Unsolicited partial response" }
+                            val range = parseRange(conn.getHeaderField("Content-Range"))
+                            check(range != null && range.first == existing && range.third == total &&
+                                range.second >= range.first && range.second < total) { "Invalid Content-Range" }
+                            append = true
+                            responseBytes = range.second - range.first + 1
+                        }
+                        else -> error("HTTP $code")
+                    }
+                    val declaredLength = conn.contentLengthLong
+                    check(declaredLength < 0 || declaredLength == responseBytes) { "Incorrect Content-Length" }
+                    checkActive()
+                    BufferedInputStream(conn.inputStream).use { input ->
+                        checkActive()
+                        FileOutputStream(tmp, append).use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            var received = 0L
+                            while (true) {
+                                checkActive()
+                                val n = input.read(buf)
+                                checkActive()
+                                if (n < 0) break
+                                if (n == 0) continue
+                                if (n.toLong() > responseBytes - received || n.toLong() > total - existing - received) {
+                                    // Do not write out-of-bounds bytes. The response is known unusable.
+                                    throw InvalidBodyException("Response exceeded expected bounds")
+                                }
+                                out.write(buf, 0, n)
+                                received += n
+                                onProgress(Progress(existing + received, total))
+                            }
+                            cache.syncLocked(out)
+                            check(received == responseBytes && existing + received == total) { "Download incomplete" }
+                        }
+                    }
+                } catch (e: InvalidBodyException) {
+                    resetPartial(tmp)
+                    throw e
+                } finally {
+                    control.detach()
+                    runCatching { conn.disconnect() }
+                }
+                checkActive()
+                if (!cache.promoteLocked(tier, ::checkActive)) {
+                    // A full wrong entity cannot be resumed into the approved artifact.
+                    resetPartial(tmp)
+                    error("Downloaded model failed integrity verification")
+                }
+                checkActive()
+                return Result.success(Unit)
             }
-
-            if (dest.exists()) dest.delete()
-            if (!tmp.renameTo(dest)) {
-                tmp.copyTo(dest, overwrite = true)
-                tmp.delete()
-            }
-            if (!cache.isPresent(tier)) {
-                dest.delete()
-                return Result.failure(
-                    IllegalStateException("Downloaded file failed size validation")
-                )
-            }
-            return Result.success(Unit)
         } catch (c: CancellationException) {
             throw c
         } catch (c: CancelledException) {
             return Result.failure(c)
         } catch (t: Exception) {
-            // disconnect() may surface as an IOException instead of our cancellation marker.
+            // disconnect() may surface as IOException rather than our cancellation marker.
             return Result.failure(if (control.isCancelled) CancelledException() else t)
         } finally {
             control.detach()
-            connection?.let { runCatching { it.disconnect() } }
         }
     }
+
+    private suspend fun resetPartial(file: java.io.File) {
+        checkActive()
+        java.nio.file.Files.deleteIfExists(file.toPath())
+    }
+
+    private fun requireSpace(remaining: Long) {
+        if (cache.freeBytes() < remaining + 5L * 1024 * 1024) throw StorageException("Not enough storage")
+    }
+
+    private fun parseRange(value: String?): Triple<Long, Long, Long>? {
+        val parts = Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matchEntire(value?.trim() ?: return null) ?: return null
+        return Triple(parts.groupValues[1].toLongOrNull() ?: return null,
+            parts.groupValues[2].toLongOrNull() ?: return null,
+            parts.groupValues[3].toLongOrNull() ?: return null)
+    }
+
+    private class InvalidBodyException(message: String) : Exception(message)
 
     class StorageException(message: String) : Exception(message)
 }

@@ -10,6 +10,16 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -33,17 +43,23 @@ class WhisperCppInferenceEngine(
     override val name: String = "whisper.cpp"
 
     private val lock = Any()
-    private var model: WhisperModel? = null
-    private val pcmAccum = ArrayList<Short>(16_000 * 4)
-    private var lastSpeechAt = 0L
+    private class NativeModel(val value: WhisperModel) {
+        var users = 0
+        var retired = false
+        var freeScheduled = false
+        val pcmAccum = ArrayList<Short>(16_000 * 4)
+        var lastSpeechAt = 0L
+        var enDirectBias = 1
+    }
+    private var model: NativeModel? = null
+    private var generation = 0L
+    private val inferenceMutex = Mutex()
     @Volatile private var dualSubtitles: Boolean = false
     @Volatile private var playbackCapture: Boolean = false
     /** Empty = auto (Live). Non-empty = explicit From language (Mic). */
     @Volatile private var sourceLanguage: String = ""
     @Volatile private var lastMode: String = ""
     @Volatile private var keepUpBehind: Boolean = false
-    /** ≥0 → prefer en-direct for EN target; negative → auto+translate (multilingual). */
-    @Volatile private var enDirectBias: Int = 1
 
     override fun offlineTranslationTargets(): Set<String> =
         com.hatsunama.captionaction.util.Languages.all.map { it.code }.toSet()
@@ -75,29 +91,55 @@ class WhisperCppInferenceEngine(
     override fun preferredWindowSamples(): Int =
         if (keepUpBehind) QUALITY_WINDOW_BEHIND_SAMPLES else QUALITY_WINDOW_SAMPLES
 
-    override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
-        release()
-        if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
-            Log.w(TAG, "ggml model missing or too small: ${modelFile.absolutePath}")
-            return@withContext false
+    override suspend fun load(modelFile: File): Boolean {
+        // Reserve before dispatch: release/newer load invalidates even a not-yet-started load.
+        val ticket = synchronized(lock) {
+            generation += 1
+            model?.let { retireLocked(it) }
+            model = null
+            generation
         }
-        val nameLower = modelFile.name.lowercase()
-        if (!nameLower.endsWith(".bin") && !nameLower.contains("ggml")) {
-            Log.w(TAG, "Expected ggml .bin, got ${modelFile.name}")
-            return@withContext false
-        }
-        return@withContext try {
-            val loaded = Whisper.loadModel(appContext, modelFile.absolutePath)
-            synchronized(lock) {
-                model = loaded
-                pcmAccum.clear()
+        var allocated: NativeModel? = null
+        var published = false
+        try {
+            return withContext(Dispatchers.IO) {
+                if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
+                    Log.w(TAG, "ggml model missing or too small: ${modelFile.absolutePath}")
+                    return@withContext false
+                }
+                val nameLower = modelFile.name.lowercase()
+                if (!nameLower.endsWith(".bin") && !nameLower.contains("ggml")) {
+                    Log.w(TAG, "Expected ggml .bin, got ${modelFile.name}")
+                    return@withContext false
+                }
+                // JNI cannot be cancelled. Capture its handle before any cancellable return
+                // can discard it; only allocation ownership is non-cancellable, never inference.
+                withContext(NonCancellable) {
+                    allocated = NativeModel(Whisper.loadModel(appContext, modelFile.absolutePath))
+                }
+                currentCoroutineContext().ensureActive()
+                synchronized(lock) {
+                    if (generation != ticket) return@synchronized false
+                    model = allocated
+                    published = true
+                    true
+                }
             }
-            Log.i(TAG, "Loaded whisper ggml from ${modelFile.absolutePath}")
-            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to load whisper model", t)
-            release()
-            false
+            return false
+        } finally {
+            // Covers cancellation at the outer IO return as well as stale allocation.
+            if (!published || !currentCoroutineContext().isActive) {
+                synchronized(lock) {
+                    allocated?.let {
+                        if (model === it) model = null
+                        retireLocked(it)
+                    }
+                }
+            }
         }
     }
 
@@ -106,21 +148,45 @@ class WhisperCppInferenceEngine(
         sampleRateHz: Int,
         forceFlush: Boolean
     ): CaptionResult? = withContext(Dispatchers.Default) {
-        val m = synchronized(lock) { model }
-        if (m == null) {
-            lastMode = ""
-            return@withContext null
+        val owner = synchronized(lock) { model } ?: return@withContext null
+        inferenceMutex.withLock {
+            currentCoroutineContext().ensureActive()
+            val acquired = synchronized(lock) {
+                if (model !== owner || owner.retired) false else {
+                    owner.users += 1
+                    true
+                }
+            }
+            if (!acquired) return@withLock null
+            try {
+                transcribeOwned(owner, pcm16le, sampleRateHz, forceFlush)
+            } finally {
+                synchronized(lock) {
+                    owner.users -= 1
+                    if (owner.retired) retireLocked(owner)
+                }
+            }
         }
+    }
+
+    private suspend fun transcribeOwned(
+        owner: NativeModel,
+        pcm16le: ShortArray,
+        sampleRateHz: Int,
+        forceFlush: Boolean
+    ): CaptionResult? {
+        val m = owner.value
+        val pcmAccum = owner.pcmAccum
         if (pcm16le.isEmpty()) {
-            lastMode = ""
-            return@withContext null
+            publishMode(owner, "")
+            return null
         }
 
         val now = System.currentTimeMillis()
         val energy = rms(pcm16le)
         val speechGate = if (playbackCapture) PLAYBACK_SPEECH_RMS else MIC_SPEECH_RMS
         val speaking = energy >= speechGate
-        if (speaking) lastSpeechAt = now
+        if (speaking) owner.lastSpeechAt = now
 
         val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
         // Mic-only shorter flush; Live playback keeps FLUSH_AT_PLAYBACK (unchanged).
@@ -154,7 +220,7 @@ class WhisperCppInferenceEngine(
                     // Playback branch above is intentionally separate and unchanged.
                     when {
                         n >= MAX_SAMPLES -> true
-                        n >= minSamples && !speaking && (now - lastSpeechAt) > MIC_SILENCE_END_MS -> true
+                        n >= minSamples && !speaking && (now - owner.lastSpeechAt) > MIC_SILENCE_END_MS -> true
                         n >= flushAt -> true
                         else -> false
                     }
@@ -175,28 +241,28 @@ class WhisperCppInferenceEngine(
 
         val pcm = samples
         if (pcm == null) {
-            lastMode = ""
-            return@withContext null
+            publishMode(owner, "")
+            return null
         }
         val windowRms = rms(pcm)
         val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
         if (windowRms < discardGate) {
-            lastMode = ""
-            return@withContext null
+            publishMode(owner, "")
+            return null
         }
 
         // whisper.cpp: "input is too short - %d ms < 1000 ms" — pad so native actually runs.
         val pcmForWhisper = ensureMinDuration(pcm, sampleRateHz, NATIVE_MIN_SAMPLES)
 
         val wav = writeTempWav(pcmForWhisper, sampleRateHz)
-        try {
+        return try {
             val target = normalizeLang(targetLanguage)
             val endMs = System.currentTimeMillis()
             val startMs = endMs - (pcm.size * 1000L / sampleRateHz)
 
             val explicitSource = normalizeLang(sourceLanguage)
             val enTargetSingle = target == "en" && !dualSubtitles
-            val useEnDirect = enTargetSingle && enDirectBias >= 0
+            val useEnDirect = enTargetSingle && owner.enDirectBias >= 0
             val language: String
             val translate: Boolean
             when {
@@ -206,22 +272,22 @@ class WhisperCppInferenceEngine(
                 explicitSource.isNotEmpty() -> {
                     language = explicitSource
                     translate = false
-                    lastMode = "mic-source-$explicitSource"
+                    publishMode(owner, "mic-source-$explicitSource")
                 }
                 useEnDirect -> {
                     language = "en"
                     translate = false
-                    lastMode = "en-direct"
+                    publishMode(owner, "en-direct")
                 }
                 enTargetSingle -> {
                     language = "auto"
                     translate = true
-                    lastMode = "auto-translate-en"
+                    publishMode(owner, "auto-translate-en")
                 }
                 else -> {
                     language = "auto"
                     translate = false
-                    lastMode = "auto-mlkit"
+                    publishMode(owner, "auto-mlkit")
                 }
             }
             val text = runWhisper(
@@ -233,18 +299,20 @@ class WhisperCppInferenceEngine(
                 wavBytes = wav.length(),
                 windowRms = windowRms
             )
+            currentCoroutineContext().ensureActive()
+            if (synchronized(lock) { model !== owner }) return null
             if (text == null) {
                 // Speech-ish window but no usable text → nudge away from en-direct.
                 if (enTargetSingle && windowRms >= discardGate * 2f) {
-                    enDirectBias = (enDirectBias - 1).coerceAtLeast(-3)
+                    owner.enDirectBias = (owner.enDirectBias - 1).coerceAtLeast(-3)
                 }
-                return@withContext null
+                return null
             }
             if (enTargetSingle) {
-                enDirectBias = if (looksMostlyLatin(text)) {
-                    (enDirectBias + 1).coerceAtMost(3)
+                owner.enDirectBias = if (looksMostlyLatin(text)) {
+                    (owner.enDirectBias + 1).coerceAtMost(3)
                 } else {
-                    (enDirectBias - 2).coerceAtLeast(-3)
+                    (owner.enDirectBias - 2).coerceAtLeast(-3)
                 }
             }
 
@@ -260,13 +328,19 @@ class WhisperCppInferenceEngine(
                 endMs = endMs,
                 translatedText = null
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
-            Log.e(TAG, "whisper transcribe failed", t)
-            lastMode = ""
+            Log.e(TAG, "whisper transcribe failed errorType=${t.javaClass.simpleName}")
+            synchronized(lock) { if (model === owner) lastMode = "" }
             null
         } finally {
             wav.delete()
         }
+    }
+
+    private fun publishMode(owner: NativeModel, mode: String) {
+        synchronized(lock) { if (model === owner) lastMode = mode }
     }
 
     private suspend fun runWhisper(
@@ -298,7 +372,7 @@ class WhisperCppInferenceEngine(
             TAG,
             "whisper native pcmMs=$pcmMs wavBytes=$wavBytes windowRms=${"%.1f".format(windowRms)} " +
                 "lang=$language translate=$translate processingTimeMs=${result.processingTimeMs} " +
-                "rawLen=$rawLen rawPreview=${raw.trim().take(64).replace('\n', ' ')}"
+                "rawLen=$rawLen"
         )
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) {
@@ -309,22 +383,32 @@ class WhisperCppInferenceEngine(
     }
 
     override fun discardPendingAudio() {
-        synchronized(lock) { pcmAccum.clear() }
+        synchronized(lock) { model?.pcmAccum?.clear() }
     }
 
     override fun release() {
         synchronized(lock) {
-            try {
-                model?.let { Whisper.releaseModel(it) }
-            } catch (_: Throwable) {
-            }
+            generation += 1
+            model?.let { retireLocked(it) }
             model = null
-            pcmAccum.clear()
+            lastMode = ""
+            keepUpBehind = false
+            sourceLanguage = ""
         }
-        lastMode = ""
-        keepUpBehind = false
-        enDirectBias = 1
-        sourceLanguage = ""
+    }
+
+    /** Called with lock held; no JNI or wait occurs under the monitor or on the UI caller. */
+    private fun retireLocked(owner: NativeModel) {
+        owner.retired = true
+        if (owner.users != 0 || owner.freeScheduled) return
+        owner.freeScheduled = true
+        nativeCleanup.launch {
+            try {
+                Whisper.releaseModel(owner.value)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to release whisper model", t)
+            }
+        }
     }
 
     private fun ensureMinDuration(pcm: ShortArray, sampleRateHz: Int, minSamples: Int): ShortArray {
@@ -413,6 +497,7 @@ class WhisperCppInferenceEngine(
 
     companion object {
         private const val TAG = "WhisperCppEngine"
+        private val nativeCleanup = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         /** Quality drain target ~1.5 s @ 16 kHz — shorter passes keep mid-devices updating. */
         const val QUALITY_WINDOW_SAMPLES = 24_000
         /** When behind (overruns/backlog): ~1.125 s — still ≥ native 1000 ms. */

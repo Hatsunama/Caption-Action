@@ -15,7 +15,11 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 /** Session .txt captions under app Documents/captions. Thread-safe. */
-class SubtitleFileRecorder(private val context: Context) {
+class SubtitleFileRecorder internal constructor(
+    private val context: Context,
+    private val now: () -> Date
+) {
+    constructor(context: Context) : this(context, { Date() })
 
     private val lock = ReentrantLock()
     private var writer: BufferedWriter? = null
@@ -37,14 +41,17 @@ class SubtitleFileRecorder(private val context: Context) {
                 Log.e(TAG, "Could not create captions dir: ${dir.absolutePath}")
                 return null
             }
-            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-            val out = File(dir, "caption-action-$stamp.txt")
+            val started = now()
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(started)
+            // Reserve a new file atomically: timestamps can repeat during quick restarts,
+            // clock changes, or sessions owned by another recorder instance.
+            val out = File.createTempFile("caption-action-$stamp-", ".txt", dir)
             val bw = BufferedWriter(
                 OutputStreamWriter(FileOutputStream(out, false), StandardCharsets.UTF_8)
             )
             bw.write("# Caption Action")
             bw.newLine()
-            bw.write("# Started: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
+            bw.write("# Started: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(started)}")
             bw.newLine()
             bw.write("# Target language: $targetLanguage")
             bw.newLine()
@@ -72,9 +79,18 @@ class SubtitleFileRecorder(private val context: Context) {
      * (final primary — e.g. EN after MT — not source then translated duplicate).
      */
     fun appendCaption(primary: String, secondary: String?) {
+        appendCaptionChecked(null, primary, secondary)
+    }
+
+    /** Append only to the exact session that produced this caption, never a replacement. */
+    fun appendCaptionForSession(expectedPath: String, primary: String, secondary: String?) {
+        appendCaptionChecked(expectedPath, primary, secondary)
+    }
+
+    private fun appendCaptionChecked(expectedPath: String?, primary: String, secondary: String?) {
         val line = formatLine(primary, secondary) ?: return
         lock.withLock {
-            if (!active) return
+            if (!active || (expectedPath != null && file?.absolutePath != expectedPath)) return
             val w = writer ?: return
             try {
                 w.write(line)
@@ -91,6 +107,13 @@ class SubtitleFileRecorder(private val context: Context) {
         val path = file?.absolutePath
         closeUnlocked()
         path
+    }
+
+    /** Close only the captured session; cancellation cleanup cannot close a newer writer. */
+    fun stopSessionForSession(expectedPath: String): String? = lock.withLock {
+        if (file?.absolutePath != expectedPath) return null
+        closeUnlocked()
+        expectedPath
     }
 
     fun discard() = lock.withLock { closeUnlocked() }

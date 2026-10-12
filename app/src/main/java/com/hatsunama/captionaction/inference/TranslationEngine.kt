@@ -2,6 +2,7 @@ package com.hatsunama.captionaction.inference
 
 import android.content.Context
 import android.util.Log
+import com.google.android.gms.tasks.Task
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.common.model.RemoteModelManager
@@ -10,14 +11,19 @@ import com.google.mlkit.nl.languageid.LanguageIdentificationOptions
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.hatsunama.captionaction.data.AppSettings
 import com.hatsunama.captionaction.util.Languages
-import java.util.concurrent.ConcurrentHashMap
+import java.io.Closeable
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -58,19 +64,16 @@ sealed class EnsureResult {
 }
 
 class MlKitTranslationEngine(context: Context) : TranslationEngine {
-    private val appContext = context.applicationContext
     private val modelManager = RemoteModelManager.getInstance()
-    private val translators = ConcurrentHashMap<String, Translator>()
     private val downloadMutex = Mutex()
     private val lastStatus = AtomicReference("idle")
-
-    private val languageId by lazy {
-        LanguageIdentification.getClient(
-            LanguageIdentificationOptions.Builder()
-                .setConfidenceThreshold(0.5f)
-                .build()
-        )
-    }
+    private val clientLock = Any()
+    // Factories may block. Retirement never waits for this lock; an unpublished client
+    // returning after retirement is closed instead of being inserted into the cache.
+    private val creationLock = Any()
+    private class Client<C : Closeable>(val value: C, var uses: Int = 1)
+    private val clients = mutableMapOf<String, Client<out Closeable>>()
+    private var retired = false
 
     override fun supportedTargets(): Set<String> =
         Languages.all.map { it.code }.filter { toMlKitTag(it) != null }.toSet()
@@ -98,7 +101,9 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
             val tags = wanted.mapNotNull { toMlKitTag(it) }.distinct()
 
             try {
+                currentCoroutineContext().ensureActive()
                 val already = downloadedTags()
+                currentCoroutineContext().ensureActive()
                 val missing = tags.filter { it !in already }
                 if (missing.isEmpty()) {
                     val msg = "MT packs ready (${tags.size})"
@@ -107,6 +112,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                     return@withContext EnsureResult.Ready
                 }
                 for ((i, tag) in missing.withIndex()) {
+                    currentCoroutineContext().ensureActive()
                     val label = Languages.label(tag)
                     val msg = "Downloading MT pack $label (${i + 1}/${missing.size})…"
                     lastStatus.set(msg)
@@ -114,12 +120,18 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                     val model = TranslateRemoteModel.Builder(tag).build()
                     val conditions = DownloadConditions.Builder().build()
                     Tasks.await(modelManager.download(model, conditions), 180, TimeUnit.SECONDS)
+                    currentCoroutineContext().ensureActive()
                 }
                 val msg = "MT packs ready"
                 lastStatus.set(msg)
                 onStatus?.invoke(msg)
                 EnsureResult.Ready
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
+                // A failed blocking SDK wait can return after its readiness owner was
+                // canceled. Do not turn that retired failure into new status/output.
+                currentCoroutineContext().ensureActive()
                 Log.e(TAG, "ensureModels failed", t)
                 val msg = t.message?.takeIf { it.isNotBlank() }
                     ?: "Translation pack download failed"
@@ -198,12 +210,12 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
                 clean.length < result.text.length
             ) {
                 // Tiny EN crumb from longer source is usually a failed MT — drop.
-                Log.i(TAG, "NMT skip $sourceCode→$target (crumb out=${clean.take(40)})")
+                Log.i(TAG, "NMT skip $sourceCode→$target (crumb outChars=${clean.length})")
                 result.copy(translatedText = null)
             } else {
                 Log.i(
                     TAG,
-                    "NMT ok $sourceCode→$target in=${result.text.take(40)} out=${clean.take(40)}"
+                    "NMT ok $sourceCode→$target inChars=${result.text.length} outChars=${clean.length}"
                 )
                 result.copy(translatedText = clean)
             }
@@ -239,7 +251,7 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
         } else {
             Log.i(
                 TAG,
-                "NMT explicit ok $source→$target in=${trimmed.take(40)} out=${clean.take(40)}"
+                "NMT explicit ok $source→$target inChars=${trimmed.length} outChars=${clean.length}"
             )
             clean
         }
@@ -248,11 +260,17 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
     private suspend fun identifyLanguage(text: String): String? {
         if (text.isBlank()) return null
         return try {
-            val tag = Tasks.await(languageId.identifyLanguage(text), 2, TimeUnit.SECONDS)
+            val tag = useClientTask("language-id", 2_000L, {
+                LanguageIdentification.getClient(
+                    LanguageIdentificationOptions.Builder().setConfidenceThreshold(0.5f).build()
+                )
+            }) { it.identifyLanguage(text) }
             val n = normalizeLang(tag ?: "")
             if (n.isEmpty() || n == "und") null else n
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
-            Log.w(TAG, "language-id failed: ${t.message}")
+            Log.w(TAG, "language-id failed errorType=${t.javaClass.simpleName}")
             null
         }
     }
@@ -292,23 +310,80 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
         val targetTag = toMlKitTag(target) ?: return null
         if (sourceTag == targetTag) return null
         return try {
-            val translator = translatorFor(sourceTag, targetTag)
-            Tasks.await(translator.translate(text), TRANSLATE_TIMEOUT_SEC, TimeUnit.SECONDS)?.trim()
+            useClientTask("$sourceTag>$targetTag", TRANSLATE_TIMEOUT_SEC * 1_000L, {
+                val options = TranslatorOptions.Builder()
+                    .setSourceLanguage(sourceTag)
+                    .setTargetLanguage(targetTag)
+                    .build()
+                Translation.getClient(options)
+            }) { it.translate(text) }?.trim()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
-            Log.w(TAG, "translate $source→$target failed/skipped: ${t.message}")
+            Log.w(TAG, "translate $source→$target failed/skipped errorType=${t.javaClass.simpleName}")
             null
         }
     }
 
-    private fun translatorFor(sourceTag: String, targetTag: String): Translator {
-        val key = "$sourceTag>$targetTag"
-        return translators.getOrPut(key) {
-            val options = TranslatorOptions.Builder()
-                .setSourceLanguage(sourceTag)
-                .setTargetLanguage(targetTag)
-                .build()
-            Translation.getClient(options)
+    /** Reserve before invoking SDK code; only actual Task completion releases that use. */
+    private suspend fun <C : Closeable> useClientTask(
+        key: String,
+        timeoutMs: Long,
+        factory: () -> C,
+        operation: (C) -> Task<String>
+    ): String? {
+        currentCoroutineContext().ensureActive()
+        val client = acquireClient(key, factory) ?: return null
+        val task = try {
+            currentCoroutineContext().ensureActive()
+            operation(client.value)
+        } catch (t: Throwable) {
+            finishUse(client)
+            throw t
         }
+        // Explicit executor: cleanup must not depend on Main/Activity delivery. An already
+        // complete Task may invoke this inline, so the use was reserved before invocation.
+        task.addOnCompleteListener(DIRECT_EXECUTOR) { finishUse(client) }
+        val result = withTimeoutOrNull(timeoutMs) { task.await() }
+        currentCoroutineContext().ensureActive()
+        return synchronized(clientLock) { if (retired) null else result }
+    }
+
+    private fun <C : Closeable> acquireClient(key: String, factory: () -> C): Client<C>? =
+        synchronized(creationLock) {
+            synchronized(clientLock) {
+                if (retired) return null
+                // Keys are private and each key has one SDK client type.
+                @Suppress("UNCHECKED_CAST")
+                val cached = clients[key] as Client<C>?
+                if (cached != null) {
+                    cached.uses++
+                    return cached
+                }
+            }
+            val created = Client(factory())
+            val accepted = synchronized(clientLock) {
+                if (retired) false else {
+                    clients[key] = created
+                    true
+                }
+            }
+            if (accepted) created else {
+                closeClient(created.value)
+                null
+            }
+        }
+
+    private fun finishUse(client: Client<out Closeable>) {
+        val close = synchronized(clientLock) {
+            client.uses--
+            retired && client.uses == 0
+        }
+        if (close) closeClient(client.value)
+    }
+
+    private fun closeClient(client: Closeable) {
+        try { client.close() } catch (_: Throwable) { }
     }
 
     private fun downloadedTags(): Set<String> {
@@ -326,22 +401,20 @@ class MlKitTranslationEngine(context: Context) : TranslationEngine {
     }
 
     override fun release() {
-        translators.values.forEach { t ->
-            try {
-                t.close()
-            } catch (_: Throwable) {
-            }
+        val idle = synchronized(clientLock) {
+            if (retired) return
+            retired = true
+            clients.values.filter { it.uses == 0 }.also { clients.clear() }
         }
-        translators.clear()
-        try {
-            languageId.close()
-        } catch (_: Throwable) {
-        }
+        idle.forEach { closeClient(it.value) }
+        // Busy clients remain owned by their SDK completion listeners, even after an
+        // await timeout or coroutine cancellation. No unused language-ID client is created.
     }
 
     companion object {
         private const val TAG = "MlKitTranslation"
         private const val TRANSLATE_TIMEOUT_SEC = 4L
+        private val DIRECT_EXECUTOR = Executor { it.run() }
 
         val COMMON_SOURCES: Set<String> = setOf(
             "en", "es", "fr", "de", "zh", "ja", "ko", "pt", "it", "ru"

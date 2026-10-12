@@ -24,6 +24,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.hatsunama.captionaction.CaptionActionApp
 import com.hatsunama.captionaction.R
+import com.hatsunama.captionaction.data.AppSettings
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
 import com.hatsunama.captionaction.inference.EnsureResult
@@ -53,7 +54,13 @@ class HomeActivity : AppCompatActivity() {
     private var startingDialog: AlertDialog? = null
     private var mtPrepareJob: Job? = null
     private var mtEngine: MlKitTranslationEngine? = null
-    @Volatile private var mtStatusLine: String = ""
+    private data class MtRequest(val target: String, val sources: Set<String>)
+    private var statusSettings: AppSettings? = null
+    private var mtRequest: MtRequest? = null
+    private var mtGeneration = 0L
+    private var mtAttemptedGeneration = -1L
+    private var mtStatusLine = ""
+    private var homeDestroyed = false
     private var refractBackground: RefractBackgroundView? = null
 
     private val permissionFlow = registerForActivityResult(
@@ -130,6 +137,8 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        homeDestroyed = true
+        mtGeneration++ // Invalidate progress already queued on the main looper.
         closeModelGate?.invoke()
         activeDownloader?.cancel()
         downloadJob?.cancel()
@@ -144,102 +153,106 @@ class HomeActivity : AppCompatActivity() {
     private fun app(): CaptionActionApp = application as CaptionActionApp
 
     private fun bindStatus() {
-        val status = findViewById<TextView>(R.id.statusText)
         lifecycleScope.launch {
             app().settings.settingsFlow.collectLatest { s ->
-                val tier = ModelTier.fromId(s.modelTierId)
-                val present = cache.isPresent(tier)
-                val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
-                val mtTargets = InferenceEngineFactory.offlineTranslationTargets(tier)
-                val target = s.targetLanguage.trim().lowercase()
-                val input = s.inputLanguage.trim().lowercase()
-                val needsMt = target.isNotEmpty() && input.isNotEmpty() && input != target
-                status.text = buildString {
-                    append("Model: ${tier.displayName}")
-                    append(
-                        when {
-                            present -> " ✓ on device. "
-                            cache.isPartial(tier) -> " · partial (can resume). "
-                            else -> " · not downloaded. "
-                        }
-                    )
-                    append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
-                    val dualEngineOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
-                    val dualOk = dualEngineOk && needsMt
-                    append(" Dual: ").append(
-                        when {
-                            !dualOk -> "unavailable"
-                            s.dualSubtitles -> "on"
-                            else -> "off"
-                        }
-                    )
-                    append(" · Input: ").append(s.inputLanguage)
-                    append(" · Target: ").append(s.targetLanguage)
-                    append(" · MT: ")
-                    when {
-                        !needsMt -> append("ASR-only (input=target)")
-                        target in mtTargets -> append(mtStatusLine.ifBlank { getString(R.string.translation_pack_ready) })
-                        else -> append(getString(R.string.translation_pack_unsupported, s.targetLanguage))
-                    }
-                }
-                if (needsMt && target in mtTargets) {
-                    ensureMtPacks(s.targetLanguage, setOf(s.inputLanguage))
-                }
+                updateStatus(s)
+                cache.verify(ModelTier.fromId(s.modelTierId))
+                if (!homeDestroyed) renderStatus()
             }
         }
     }
 
-    private fun ensureMtPacks(target: String, extraSources: Set<String>) {
-        if (mtPrepareJob?.isActive == true) return
+    private fun updateStatus(s: AppSettings, retryMt: Boolean = false) {
+        statusSettings = s
+        val target = s.targetLanguage.trim().lowercase(java.util.Locale.ROOT)
+        val input = s.inputLanguage.trim().lowercase(java.util.Locale.ROOT)
+        val supported = target in InferenceEngineFactory.offlineTranslationTargets(ModelTier.fromId(s.modelTierId))
+        val next = if (supported && input.isNotEmpty() && input != target) {
+            MtRequest(target, setOf(input))
+        } else null
+        if (next != mtRequest || (retryMt && mtPrepareJob?.isActive != true)) {
+            mtRequest = next
+            mtGeneration++
+            mtStatusLine = getString(R.string.translation_pack_preparing)
+        }
+        renderStatus()
+        ensureMtPacks()
+    }
+
+    /** All status paths use the same current-settings snapshot and model-cache checks. */
+    private fun renderStatus() {
+        if (homeDestroyed) return
+        val s = statusSettings ?: return
+        val tier = ModelTier.fromId(s.modelTierId)
+        val present = cache.isPresent(tier)
+        val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
+        val mtTargets = InferenceEngineFactory.offlineTranslationTargets(tier)
+        val target = s.targetLanguage.trim().lowercase(java.util.Locale.ROOT)
+        val input = s.inputLanguage.trim().lowercase(java.util.Locale.ROOT)
+        val needsMt = target.isNotEmpty() && input.isNotEmpty() && input != target
+        findViewById<TextView>(R.id.statusText).text = buildString {
+            append("Model: ${tier.displayName}")
+            append(
+                when {
+                    present -> " ✓ on device. "
+                    cache.isPartial(tier) -> " · partial (can resume). "
+                    else -> " · not downloaded. "
+                }
+            )
+            append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
+            val dualEngineOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
+            val dualOk = dualEngineOk && needsMt
+            append(" Dual: ").append(
+                when {
+                    !dualOk -> "unavailable"
+                    s.dualSubtitles -> "on"
+                    else -> "off"
+                }
+            )
+            append(" · Input: ").append(s.inputLanguage)
+            append(" · Target: ").append(s.targetLanguage)
+            append(" · MT: ")
+            when {
+                !needsMt -> append("ASR-only (input=target)")
+                target in mtTargets -> append(mtStatusLine.ifBlank { getString(R.string.translation_pack_preparing) })
+                else -> append(getString(R.string.translation_pack_unsupported, s.targetLanguage))
+            }
+        }
+    }
+
+    private fun ensureMtPacks() {
+        if (homeDestroyed || mtPrepareJob?.isActive == true) return
+        val request = mtRequest ?: return
+        val generation = mtGeneration
+        if (mtAttemptedGeneration == generation) return
+        mtAttemptedGeneration = generation
         val engine = mtEngine ?: MlKitTranslationEngine(this).also { mtEngine = it }
         mtPrepareJob = lifecycleScope.launch {
-            mtStatusLine = getString(R.string.translation_pack_downloading)
-            val result = withContext(Dispatchers.IO) {
-                engine.ensureModels(
-                    targetLanguage = target,
-                    extraSources = extraSources
-                ) { line ->
-                    mtStatusLine = line
-                    runOnUiThread {
-                        // Trigger status refresh via settings flow noop — update TextView directly.
-                        val status = findViewById<TextView>(R.id.statusText)
-                        val cur = status.text?.toString().orEmpty()
-                        val base = cur.substringBefore(" · MT: ").ifBlank { cur }
-                        status.text = if (base.contains(" · MT: ")) {
-                            base.substringBefore(" · MT: ") + " · MT: " + line
-                        } else if (cur.contains(" · MT: ")) {
-                            cur.substringBefore(" · MT: ") + " · MT: " + line
-                        } else {
-                            cur
+            try {
+                mtStatusLine = getString(R.string.translation_pack_downloading)
+                renderStatus()
+                val result = withContext(Dispatchers.IO) {
+                    engine.ensureModels(request.target, request.sources) { line ->
+                        runOnUiThread {
+                            if (!homeDestroyed && mtGeneration == generation && mtPrepareJob?.isActive == true) {
+                                mtStatusLine = line
+                                renderStatus()
+                            }
                         }
                     }
                 }
-            }
-            mtStatusLine = when (result) {
-                is EnsureResult.Ready -> getString(R.string.translation_pack_ready)
-                is EnsureResult.Failed -> getString(R.string.translation_pack_failed, result.message)
-            }
-            // Nudge status line once more from latest settings snapshot.
-            val s = app().settings.current()
-            val tier = ModelTier.fromId(s.modelTierId)
-            val present = cache.isPresent(tier)
-            val overlayOk = LiveCaptionStarter.canDrawOverlays(this@HomeActivity)
-            val dualOk = InferenceEngineFactory.canProvideDualSubtitles(tier, s.targetLanguage)
-            findViewById<TextView>(R.id.statusText).text = buildString {
-                append("Model: ${tier.displayName}")
-                append(if (present) " ✓ on device. " else " · not downloaded. ")
-                append(if (overlayOk) "Overlay ready." else "Overlay permission still needed.")
-                val inputEqTarget = s.inputLanguage.trim().equals(s.targetLanguage.trim(), ignoreCase = true)
-                append(" Dual: ").append(
-                    when {
-                        !dualOk || inputEqTarget -> "unavailable"
-                        s.dualSubtitles -> "on"
-                        else -> "off"
+                if (!homeDestroyed && mtGeneration == generation) {
+                    mtStatusLine = when (result) {
+                        is EnsureResult.Ready -> getString(R.string.translation_pack_ready)
+                        is EnsureResult.Failed -> getString(R.string.translation_pack_failed, result.message)
                     }
-                )
-                append(" · Input: ").append(s.inputLanguage)
-                append(" · Target: ").append(s.targetLanguage)
-                append(" · MT: ").append(mtStatusLine)
+                    renderStatus()
+                }
+            } finally {
+                mtPrepareJob = null
+                // A blocking SDK task may outlive a settings change. Drain only the
+                // latest request after it returns; never relabel its old result.
+                ensureMtPacks()
             }
         }
     }
@@ -272,6 +285,9 @@ class HomeActivity : AppCompatActivity() {
         previousDialog?.dismiss()
         val session = ModelGateSession()
         var gateJob: Job? = null
+        var gateVerification: Job? = null
+        var verifiedForGate = false
+        var verifying = true
         var gateDownloader: ModelDownloadManager? = null
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_model_gate, null)
         val group = view.findViewById<RadioGroup>(R.id.modelGroup)
@@ -297,7 +313,7 @@ class HomeActivity : AppCompatActivity() {
 
         fun refreshStatus() {
             val tier = selectedTier()
-            val ready = cache.isReadyForAsr(tier)
+            val ready = !verifying && verifiedForGate && cache.isReadyForAsr(tier)
             val partial = cache.isPartial(tier)
             status.text = buildString {
                 append(tier.displayName)
@@ -355,6 +371,7 @@ class HomeActivity : AppCompatActivity() {
 
         fun closeGate() {
             session.close()
+            gateVerification?.cancel()
             gateDownloader?.cancel()
             gateJob?.cancel()
             if (activeDownloader === gateDownloader) activeDownloader = null
@@ -377,13 +394,17 @@ class HomeActivity : AppCompatActivity() {
 
         btnUse.setOnClickListener {
             val tier = selectedTier()
-            if (!cache.isReadyForAsr(tier)) {
-                Toast.makeText(this, getString(R.string.error_model), Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (!gateIsCurrent()) return@setOnClickListener
+            if (!gateIsCurrent() || verifying || !verifiedForGate || gateJob?.isActive == true) return@setOnClickListener
             btnUse.isEnabled = false
             gateJob = lifecycleScope.launch {
+                val stillVerified = cache.verify(tier)
+                if (!gateIsCurrent()) return@launch
+                verifiedForGate = stillVerified
+                if (!stillVerified) {
+                    refreshStatus()
+                    Toast.makeText(this@HomeActivity, getString(R.string.error_model), Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
                 app().settings.update { it.copy(modelTierId = tier.id) }
                 if (!gateIsCurrent()) return@launch
                 session.complete {
@@ -395,20 +416,14 @@ class HomeActivity : AppCompatActivity() {
         }
 
         btnDownload.setOnClickListener {
-            if (!gateIsCurrent() || downloading || !btnDownload.isEnabled) return@setOnClickListener
+            if (!gateIsCurrent() || downloading || gateJob?.isActive == true || !btnDownload.isEnabled) return@setOnClickListener
             val tier = selectedTier()
-            if (cache.isReadyForAsr(tier)) {
-                Toast.makeText(this, getString(R.string.download_already_on_device), Toast.LENGTH_SHORT).show()
-                refreshStatus()
-                return@setOnClickListener
-            }
+            gateVerification?.cancel()
+            verifying = false
+            verifiedForGate = false
             val already = cache.partialBytes(tier)
             val resuming = already > 0L && cache.isPartial(tier)
-            val need = (tier.approxBytes - already).coerceAtLeast(0L)
-            if (cache.freeBytes() < need + 5L * 1024 * 1024) {
-                Toast.makeText(this, getString(R.string.error_storage), Toast.LENGTH_LONG).show()
-                return@setOnClickListener
-            }
+            // The downloader verifies existing complete files before exact-size storage checks.
             onceHint.visibility = View.VISIBLE
             progress.visibility = View.VISIBLE
             percent.visibility = View.VISIBLE
@@ -464,6 +479,7 @@ class HomeActivity : AppCompatActivity() {
                 }
                 if (!gateIsCurrent()) return@launch
                 downloading = false
+                verifiedForGate = result.isSuccess && cache.isReadyForAsr(tier)
                 group.isEnabled = true
                 for (i in 0 until group.childCount) group.getChildAt(i).isEnabled = true
                 if (activeDownloader === mgr) activeDownloader = null
@@ -492,7 +508,10 @@ class HomeActivity : AppCompatActivity() {
                         refreshStatus()
                     }
                     else -> {
-                        val msg = result.exceptionOrNull()?.message ?: getString(R.string.error_model)
+                        val error = result.exceptionOrNull()
+                        val msg = if (error is ModelDownloadManager.StorageException) {
+                            getString(R.string.error_storage)
+                        } else error?.message ?: getString(R.string.error_model)
                         Toast.makeText(this@HomeActivity, msg, Toast.LENGTH_LONG).show()
                         progress.visibility = View.GONE
                         percent.visibility = View.GONE
@@ -504,6 +523,14 @@ class HomeActivity : AppCompatActivity() {
         }
 
         dialog.show()
+        gateVerification = lifecycleScope.launch {
+            val verified = cache.verify(selectedTier())
+            if (!gateIsCurrent()) return@launch
+            verifiedForGate = verified
+            verifying = false
+            refreshStatus()
+            renderStatus()
+        }
     }
 
 
@@ -525,7 +552,7 @@ class HomeActivity : AppCompatActivity() {
         showStartingDialog(getString(R.string.starting_captions))
         val settings = app().settings.current()
         // Home optional MT status only — do not await.
-        ensureMtPacks(settings.targetLanguage, setOf(settings.inputLanguage))
+        updateStatus(settings, retryMt = true)
         if (LiveCaptionStarter.needsPermissionWalkthrough(settings, this)) {
             dismissStartingDialog()
             permissionFlow.launch(LiveCaptionStarter.permissionStepIntent(this))
