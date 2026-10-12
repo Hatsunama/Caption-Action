@@ -6,7 +6,6 @@ import com.hatsunama.captionaction.data.AppSettings
 import java.io.File
 import java.io.RandomAccessFile
 import java.lang.reflect.Proxy
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Before
@@ -20,7 +19,7 @@ import org.robolectric.shadows.ShadowLog
 /** Real engine/policy/filter bodies and Android log sink; only native inference and SDK
  * translation are synthetic. No model download or native inference is performed. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28], shadows = [ShadowWhisperJNI::class, TranscriptLoggingPrivacyTest.ModelManagerBoundary::class], instrumentedPackages = ["dev.ffmpegkit.whisper", "com.google.mlkit.common.model.RemoteModelManager"])
+@Config(sdk = [28], shadows = [ShadowWhisperJNI::class, TranscriptLoggingPrivacyTest.ModelManagerBoundary::class, MlKitTaskBoundary.TranslationFactory::class, MlKitTaskBoundary.IdentifierFactory::class], instrumentedPackages = ["dev.ffmpegkit.whisper", "com.google.mlkit.common.model.RemoteModelManager", "com.google.mlkit.nl.translate.Translation", "com.google.mlkit.nl.languageid.LanguageIdentification"])
 class TranscriptLoggingPrivacyTest {
     @org.robolectric.annotation.Implements(value = com.google.mlkit.common.model.RemoteModelManager::class, isInAndroidSdk = false)
     class ModelManagerBoundary {
@@ -31,7 +30,7 @@ class TranscriptLoggingPrivacyTest {
         }
     }
 
-    @Before fun reset() { ShadowLog.clear(); ShadowWhisperJNI.reset() }
+    @Before fun reset() { ShadowLog.clear(); ShadowWhisperJNI.reset(); MlKitTaskBoundary.reset() }
 
     private fun assertPrivate(vararg markers: String) {
         val logs = ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
@@ -80,8 +79,7 @@ class TranscriptLoggingPrivacyTest {
                 else -> error("Unexpected SDK call: ${method.name}")
             }
         } as com.google.mlkit.nl.languageid.LanguageIdentifier
-        engine.javaClass.getDeclaredField("languageId\$delegate").apply { isAccessible = true }
-            .set(engine, lazyOf(languageId))
+        MlKitTaskBoundary.identifierOverride = languageId
         val result = engine.applyPolicy(CaptionResult(source, "auto", 1f, 0, 1000),
             AppSettings(inputLanguage = "", targetLanguage = "en"))
         assertEquals(source, result.text)
@@ -106,9 +104,7 @@ class TranscriptLoggingPrivacyTest {
                 else -> error("Unexpected SDK call: ${method.name}")
             }
         } as Translator
-        @Suppress("UNCHECKED_CAST")
-        val cache = engine.javaClass.getDeclaredField("translators").apply { isAccessible = true }.get(engine) as ConcurrentHashMap<String, Translator>
-        cache["es>en"] = translator
+        MlKitTaskBoundary.translatorOverride = translator
         return engine
     }
 

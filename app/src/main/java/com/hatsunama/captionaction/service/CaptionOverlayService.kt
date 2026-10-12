@@ -45,6 +45,8 @@ import com.hatsunama.captionaction.inference.InferenceEngineFactory
 import com.hatsunama.captionaction.inference.MlKitTranslationEngine
 import com.hatsunama.captionaction.inference.SubtitleComposer
 import com.hatsunama.captionaction.ui.home.HomeActivity
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -68,6 +70,7 @@ class CaptionOverlayService : Service() {
     private var asrJob: Job? = null
     /** Concurrent MT jobs — never cancel prior on new caption (seq guards apply). */
     private val mtJobs = CopyOnWriteArrayList<Job>()
+    private val mtJobLock = Any()
     /** Subtitle file: append once per captionSeq (final primary, not ZH then EN dup). */
     private var subtitleAppendSeq = -1L
 
@@ -120,6 +123,8 @@ class CaptionOverlayService : Service() {
                 asrJob?.cancel()
                 asrJob = null
                 cancelMtJobs()
+                translation?.release()
+                translation = null
                 // Main owns session/output state; old IO work cannot commit into this lifetime.
                 composer.reset()
                 lastPublishedAtMs = 0L
@@ -222,12 +227,18 @@ class CaptionOverlayService : Service() {
                 )
                 return null
             }
+            val ownerGeneration = preparationGeneration
             val cb = object : MediaProjection.Callback() {
                 override fun onStop() {
                     Log.w(TAG, "MediaProjection stopped by system")
                     if (!tearingDown) {
                         scope.launch(Dispatchers.Main) {
-                            failSession(getString(R.string.error_projection_stopped))
+                            // This callback can be queued behind a replacement START or STOP.
+                            if (!tearingDown && ownerGeneration == preparationGeneration &&
+                                mediaProjection === projection
+                            ) {
+                                failSession(getString(R.string.error_projection_stopped))
+                            }
                         }
                     }
                 }
@@ -362,7 +373,12 @@ class CaptionOverlayService : Service() {
 
         // Existing product path: overlay on launcher Home, Listening… awaiting device audio.
         showOverlay(settings.overlayX, settings.overlayY, settings.overlayWidth, settings.overlayHeight)
-        audioCapture.startPump(scope)
+        audioCapture.startPump(scope) {
+            // A queued failure belongs to the START that opened this playback capture.
+            if (!tearingDown && requestGeneration == preparationGeneration) {
+                failSession(getString(R.string.error_capture))
+            }
+        }
         setSessionStatus(getString(R.string.listening), loading = true)
 
         val cache = ModelCache(this)
@@ -410,14 +426,19 @@ class CaptionOverlayService : Service() {
         }
 
         val mt = MlKitTranslationEngine(this)
+        val previousTranslation = translation
         translation = mt
-        scope.launch(Dispatchers.IO) {
+        previousTranslation?.release()
+        val readiness = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             val ensure = mt.ensureModels(
                 targetLanguage = settings.targetLanguage,
                 extraSources = setOf(settings.inputLanguage.trim().ifEmpty { "en" })
             )
             if (ensure is EnsureResult.Failed) {
                 withContext(Dispatchers.Main) {
+                    if (tearingDown || requestGeneration != preparationGeneration || translation !== mt) {
+                        return@withContext
+                    }
                     Toast.makeText(
                         this@CaptionOverlayService,
                         getString(R.string.translation_pack_failed, ensure.message),
@@ -426,6 +447,7 @@ class CaptionOverlayService : Service() {
                 }
             }
         }
+        trackMtJob(readiness, requestGeneration)
 
         val activeEngine = engine!!
         val recordingPath = prepareRecording(settings, requestGeneration, dualAllowed)
@@ -663,14 +685,17 @@ class CaptionOverlayService : Service() {
 
             // Prefer target-language primary: wait briefly for MT before painting source.
             // Do NOT cancel in-flight MT — launch concurrent; seq guard applies the latest.
-            val deferred = scope.async(Dispatchers.IO) {
+            val deferred = scope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 try {
                     mtEngine.applyPolicy(raw, settingsNow)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (t: Throwable) {
                     Log.w(TAG, "applyPolicy failed errorType=${t.javaClass.simpleName}")
                     raw
                 }
             }
+            trackMtJob(deferred, session.generation)
             // Slightly longer prefer-wait when holding wrong-script source off the overlay.
             val preferWait = if (holdWrongScript) MT_PREFER_WAIT_WRONG_SCRIPT_MS else MT_PREFER_WAIT_MS
             val quick = withTimeoutOrNull(preferWait) { deferred.await() }
@@ -687,19 +712,19 @@ class CaptionOverlayService : Service() {
             } else if (holdWrongScript) {
                 // Language-agnostic: NEVER flash wrong-script ASR while MT pending.
                 Log.i(DIAG_TAG, "holding wrong-script source pending MT seq=$seq")
-                val job = scope.launch(Dispatchers.IO) {
+                val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                     val policy = quick ?: deferred.await()
                     applyMtResult(policy, dualNow, seq, allowSourceAppend = false, targetLang = targetLang, session = session)
                 }
-                trackMtJob(job)
+                trackMtJob(job, session.generation)
             } else {
                 // Same-script timeout: paint source, then swap when MT arrives.
                 publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false, targetLang = targetLang, session = session)
-                val job = scope.launch(Dispatchers.IO) {
+                val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                     val policy = quick ?: deferred.await()
                     applyMtResult(policy, dualNow, seq, allowSourceAppend = true, targetLang = targetLang, session = session)
                 }
-                trackMtJob(job)
+                trackMtJob(job, session.generation)
             }
         }
     }
@@ -725,14 +750,24 @@ class CaptionOverlayService : Service() {
         return true
     }
 
-    private fun trackMtJob(job: Job) {
-        mtJobs.add(job)
+    private fun trackMtJob(job: Job, generation: Long) {
+        val accepted = synchronized(mtJobLock) {
+            if (tearingDown || generation != preparationGeneration) false else {
+                mtJobs.add(job)
+                true
+            }
+        }
         job.invokeOnCompletion { mtJobs.remove(job) }
+        // Register before starting actual work. A retired consumer cannot register after
+        // START/STOP's cancellation snapshot and leave an unowned sibling deferred.
+        if (accepted) job.start() else job.cancel()
     }
 
     private fun cancelMtJobs() {
-        mtJobs.toList().forEach { it.cancel() }
-        mtJobs.clear()
+        val previous = synchronized(mtJobLock) {
+            mtJobs.toList().also { mtJobs.clear() }
+        }
+        previous.forEach { it.cancel() }
     }
 
     /**

@@ -318,8 +318,11 @@ class AudioCapture(private val context: Context) {
     }
 
     /** Start the non-blocking capture pump. Call after [startPlaybackCapture] or [startMicrophoneCapture]. */
+    fun startPump(scope: CoroutineScope) = startPump(scope) {}
+
+    /** Terminal read failure retires its capture and reports once on Main, independently of drains. */
     @Synchronized
-    fun startPump(scope: CoroutineScope) {
+    fun startPump(scope: CoroutineScope, onFailure: () -> Unit) {
         val owner = session ?: return
         synchronized(owner) {
             // One reader per record, including repeated startPump calls.
@@ -328,11 +331,13 @@ class AudioCapture(private val context: Context) {
             val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 val buf = ShortArray(READ_SAMPLES)
                 var lastDiagAt = 0L
+                var readFailed = false
                 while (isActive && !owner.retired) {
                     val n = try {
                         owner.record.read(buf, 0, buf.size)
                     } catch (e: Exception) {
-                        Log.w(TAG, "AudioRecord.read failed", e)
+                        Log.w(TAG, "AudioRecord.read failed errorType=${e.javaClass.simpleName}")
+                        readFailed = true
                         break
                     }
                     if (n > 0) {
@@ -353,7 +358,21 @@ class AudioCapture(private val context: Context) {
                         }
                     } else if (n < 0) {
                         Log.w(TAG, "AudioRecord.read error=$n")
+                        readFailed = true
                         break
+                    }
+                }
+                if (readFailed && isActive && !owner.retired) {
+                    // A failed pump may precede ASR/model readiness. Do not depend on a drain
+                    // noticing EOF, and do not notify from under either capture monitor.
+                    scope.launch(Dispatchers.Main) {
+                        val report = synchronized(this@AudioCapture) {
+                            if (!isActive || session !== owner || owner.retired) false else {
+                                stopPumpAndRecord()
+                                true
+                            }
+                        }
+                        if (report) onFailure()
                     }
                 }
             }

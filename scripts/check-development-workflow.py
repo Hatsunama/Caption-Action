@@ -181,6 +181,26 @@ while True:time.sleep(1)
                     self.assertFalse((root / 'helper-called').exists())
                     if mode == 'missing-ini': self.assertFalse((root / 'launched').exists())
 
+    def test_unsigned_artifact_gate_precedes_upload_and_checkpoint_setup(self):
+        body = JOBS['development-checks']
+        self.assertIn(':app:testUnsignedBuildGuard', body)
+        self.assertIn('python3 scripts/test-unsigned-artifacts.py', body)
+        signature = body.index('python3 scripts/verify-unsigned-apks.py')
+        upload = body.index('name: Preserve development and instrumentation APKs')
+        self.assertLess(signature, upload)
+        command = body[signature:].splitlines()[0]
+        self.assertIn('app/build/outputs/apk/debug/*.apk', command)
+        self.assertIn('app/build/outputs/apk/androidTest/debug/*.apk', command)
+        release = JOBS['final-release-artifacts']
+        self.assertLess(release.index('scripts/verify-unsigned-apks.py'), release.index('name: Preserve unsigned artifacts'))
+        self.assertLess(release.index('scripts/verify-unsigned-aabs.py'), release.index('name: Preserve unsigned artifacts'))
+        emulator = JOBS['emulator-recorder']
+        block = emulator.index('run: bash scripts/require-c-signed-emulator-artifacts.sh')
+        self.assertLess(block, emulator.index('uses: actions/setup-java'))
+        result = subprocess.run(['bash', str(ROOT / 'scripts/require-c-signed-emulator-artifacts.sh')], capture_output=True, text=True)
+        self.assertEqual(4, result.returncode)
+        self.assertIn('C-signed', result.stderr)
+
     def test_default_job_builds_only_development_apk(self):
         body = JOBS.get('development-checks', JOBS.get('unsigned-build', ''))
         tasks = set(re.findall(r':app:[A-Za-z]+', body))

@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.util.TypedValue
 import android.widget.NumberPicker
@@ -28,6 +29,7 @@ import com.hatsunama.captionaction.inference.InferenceEngineFactory
 import com.hatsunama.captionaction.inference.MlKitTranslationEngine
 import com.hatsunama.captionaction.ui.home.RefractBackgroundView
 import com.hatsunama.captionaction.util.Languages
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -59,10 +61,16 @@ class MicTranslatorActivity : AppCompatActivity() {
     private var engine: InferenceEngine? = null
     private var translation: MlKitTranslationEngine? = null
     private var asrJob: Job? = null
-    private var micOn = false
+    @Volatile private var micOn = false
     private var engineReady = false
-    private var lastPublishedNorm = ""
-    private var lastEmitAtMs = 0L
+    /** Publication state belongs to one listening run; only Main commits it. */
+    private class MicRun {
+        var lastPublishedNorm = ""
+        var lastEmitAtMs = 0L
+        var source = ""
+        var target = ""
+    }
+    @Volatile private var micRun: MicRun? = null
     private val lines = ArrayList<String>()
 
     /** Volatile so ASR loop reads picker changes without locks. */
@@ -319,17 +327,25 @@ class MicTranslatorActivity : AppCompatActivity() {
             Toast.makeText(this, getString(R.string.error_mic_capture), Toast.LENGTH_LONG).show()
             return
         }
+        asrJob?.cancel()
+        val run = MicRun()
+        micRun = run
         micOn = true
         updateMicChrome()
         renderCaptionUi()
-        audioCapture.startPump(lifecycleScope)
-        asrJob?.cancel()
+        audioCapture.startPump(lifecycleScope) {
+            if (micRun === run && micOn && !isDestroyed) {
+                stopMicCapture()
+                Toast.makeText(this, getString(R.string.error_mic_capture), Toast.LENGTH_LONG).show()
+            }
+        }
         asrJob = lifecycleScope.launch(Dispatchers.IO) {
-            runAsrLoop()
+            runAsrLoop(run)
         }
     }
 
     private fun stopMicCapture() {
+        micRun = null
         micOn = false
         asrJob?.cancel()
         asrJob = null
@@ -354,15 +370,15 @@ class MicTranslatorActivity : AppCompatActivity() {
      * From/To read each window (volatile). Whisper: language=From, translate=false.
      * Skip MT when from==to (ASR only).
      */
-    private suspend fun runAsrLoop() {
+    private suspend fun runAsrLoop(run: MicRun) {
         val active = engine ?: return
         val mt = translation
-        while (coroutineContext.isActive && micOn) {
+        while (coroutineContext.isActive && micOn && micRun === run) {
             val drainStart = System.currentTimeMillis()
             // FIFO oldest-first ~1.75 s @ 16 kHz — do not use drainToNewestWindow (drops speech).
             val pcm = audioCapture.drainFifoWindow(WINDOW_SAMPLES) ?: break
             val drainMs = System.currentTimeMillis() - drainStart
-            if (!micOn) break
+            if (!micOn || micRun !== run) break
 
             // Product rule: Mic must tell Whisper which language — never auto while From is set.
             val source = fromCode.trim().ifEmpty { "en" }
@@ -418,60 +434,32 @@ class MicTranslatorActivity : AppCompatActivity() {
 
             val norm = AsrJunkFilter.normalize(cleaned)
             if (norm.isEmpty()) continue
-            if (norm == lastPublishedNorm) {
-                Log.i(TAG, "emit skip dup drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs")
-                continue
-            }
-            // Live-style near-dup suppress when not a same-utterance revision (phrase extension OK).
-            val now = System.currentTimeMillis()
-            val silenceGap = lastEmitAtMs > 0L && (now - lastEmitAtMs) >= UTTERANCE_GAP_MS
-            val reviseSameUtterance = !silenceGap &&
-                lastPublishedNorm.isNotEmpty() &&
-                lines.isNotEmpty() &&
-                isSameUtteranceRevision(lastPublishedNorm, norm)
-            if (!reviseSameUtterance &&
-                lastPublishedNorm.isNotEmpty() &&
-                !silenceGap &&
-                AsrJunkFilter.isNearDuplicate(norm, lastPublishedNorm)
-            ) {
-                Log.i(TAG, "emit skip near-dup mode=${active.lastAsrMode()} textChars=${cleaned.length}")
-                continue
-            }
-
-            Log.i(
-                TAG,
-                "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
-                    "from=$source to=$target mode=${active.lastAsrMode()} textChars=${cleaned.length}"
-            )
-
-            lastPublishedNorm = norm
-            lastEmitAtMs = now
-
             val cleanedResult = raw.copy(text = cleaned, language = source)
             val fromNorm = MlKitTranslationEngine.normalizeLangStatic(source)
             val toNorm = MlKitTranslationEngine.normalizeLangStatic(target)
             // Same language → ASR only (no MT).
             val skipMt = fromNorm == toNorm
 
-            if (skipMt) {
-                val line = formatDisplayLine(cleanedResult, dual, target)
-                if (line.isBlank()) continue
-                withContext(Dispatchers.Main) {
-                    publishCaptionLine(line, replaceLast = reviseSameUtterance)
-                }
-                continue
-            }
-
-            // Publish ASR immediately, then revise via explicit picker MT (Mic-only;
-            // Live keeps applyPolicy + hasEnoughContentForMt).
+            // Main makes the pair/gap decision and commits only a successfully published
+            // ASR line. Cancellation before Main cannot poison this or a later run.
             val asrLine = formatDisplayLine(cleanedResult, dual, target)
-            if (asrLine.isNotBlank()) {
-                withContext(Dispatchers.Main) {
-                    publishCaptionLine(asrLine, replaceLast = reviseSameUtterance)
-                }
+            if (asrLine.isBlank()) continue
+            val published = withContext(Dispatchers.Main) {
+                publishAsrLine(run, source, target, norm, asrLine)
             }
+            if (!published) continue
+            Log.i(
+                TAG,
+                "emit drainMs=$drainMs asrMs=$asrMs totalMs=$totalMs samples=${pcm.size} " +
+                    "from=$source to=$target mode=${active.lastAsrMode()} textChars=${cleaned.length}"
+            )
+            if (skipMt) continue
+
+            // Keep source visible while explicit picker MT is pending or fails.
             val translated = try {
                 mt?.translateExplicit(cleaned, source, target)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 Log.w(TAG, "translateExplicit failed errorType=${t.javaClass.simpleName}")
                 null
@@ -482,9 +470,37 @@ class MicTranslatorActivity : AppCompatActivity() {
             val line = formatDisplayLine(policy, dual, target)
             if (line.isBlank() || line == asrLine) continue
             withContext(Dispatchers.Main) {
-                publishCaptionLine(line, replaceLast = true)
+                if (micRun === run && micOn) publishCaptionLine(line, replaceLast = true)
             }
         }
+    }
+
+    /** Called only on Main. A language-pair change starts a new utterance next window. */
+    private fun publishAsrLine(
+        run: MicRun, source: String, target: String, norm: String, line: String
+    ): Boolean {
+        if (micRun !== run || !micOn) return false
+        val previous = if (run.source == source && run.target == target) run.lastPublishedNorm else ""
+        val now = SystemClock.elapsedRealtime()
+        val silenceGap = previous.isNotEmpty() && now - run.lastEmitAtMs >= UTTERANCE_GAP_MS
+        if (!silenceGap && norm == previous) {
+            Log.i(TAG, "emit skip dup")
+            return false
+        }
+        val reviseSameUtterance = !silenceGap && previous.isNotEmpty() &&
+            lines.isNotEmpty() && isSameUtteranceRevision(previous, norm)
+        if (!reviseSameUtterance && previous.isNotEmpty() && !silenceGap &&
+            AsrJunkFilter.isNearDuplicate(norm, previous)
+        ) {
+            Log.i(TAG, "emit skip near-dup textChars=${line.length}")
+            return false
+        }
+        publishCaptionLine(line, replaceLast = reviseSameUtterance)
+        run.lastPublishedNorm = norm
+        run.lastEmitAtMs = now
+        run.source = source
+        run.target = target
+        return true
     }
 
     private fun isSameUtteranceRevision(prevNorm: String, nextNorm: String): Boolean {

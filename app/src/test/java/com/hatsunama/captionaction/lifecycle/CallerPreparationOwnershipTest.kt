@@ -166,6 +166,7 @@ class CallerPreparationOwnershipTest {
             drainToNewestWindow(targetSamples, continuation)
         @Implementation fun getUsingPlaybackCapture(): Boolean = true
         @Implementation fun startPump(scope: CoroutineScope) {}
+        @Implementation fun startPump(scope: CoroutineScope, onFailure: () -> Unit) {}
         @Implementation fun stop() {}
         @Implementation fun overrunCount(): Long = 0L
         @Implementation fun chunkCount(): Long = 0L
@@ -734,13 +735,20 @@ class CallerPreparationOwnershipTest {
         for ((name, value) in listOf("fromCode" to source, "toCode" to target)) {
             owner.value.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(owner.value, value)
         }
-        previousNorm?.let {
-            owner.value.javaClass.getDeclaredField("lastPublishedNorm").apply { isAccessible = true }.set(owner.value, it)
-        }
         TranslationBoundary.failureMessage = failureMarker
-        CaptureBoundary.nextDrain.set(ControlledDrain(ShortArray(28_000) { 750 })
-            .also { drains += it; it.allow() })
+        val heldDrain = ControlledDrain(ShortArray(28_000) { 750 }).also { drains += it }
+        CaptureBoundary.nextDrain.set(heldDrain)
         owner.value.javaClass.getDeclaredMethod("startMicCapture").apply { isAccessible = true }.invoke(owner.value)
+        previousNorm?.let {
+            val run = field(owner.value, "micRun")!!
+            for ((name, value) in listOf(
+                "lastPublishedNorm" to it, "source" to source, "target" to target,
+                "lastEmitAtMs" to android.os.SystemClock.elapsedRealtime()
+            )) {
+                run.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(run, value)
+            }
+        }
+        heldDrain.allow()
         val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
         drainMainUntil("actual Mic consumer must finish") { asr.isCompleted }
         val lines = field(owner.value, "lines") as List<*>

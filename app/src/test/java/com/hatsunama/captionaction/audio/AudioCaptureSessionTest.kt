@@ -8,6 +8,7 @@ import android.media.MediaRecorder
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.os.Looper
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CompletableFuture
@@ -30,14 +31,16 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
+import org.robolectric.annotation.LooperMode
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.util.ReflectionHelpers
 
 /** Latches order real AudioCapture calls; no microphone, timing sleeps, or model capture implementation. */
 @RunWith(RobolectricTestRunner::class)
+@LooperMode(LooperMode.Mode.PAUSED)
 @Config(sdk = [28], application = Application::class, shadows = [AudioCaptureSessionTest.ControlledRecord::class])
 class AudioCaptureSessionTest {
-    class Read(val marker: Short, val size: Int = 8, val result: Int = size) {
+    class Read(val marker: Short, val size: Int = 8, val result: Int = size, val failure: Exception? = null) {
         val entered = CountDownLatch(1)
         val resume = CountDownLatch(1)
         fun allow() { resume.countDown() }
@@ -53,6 +56,7 @@ class AudioCaptureSessionTest {
         var failStart = false
         var stopGate: CountDownLatch? = null
         var onAllocate: (() -> Unit)? = null
+        val releaseBeforeStop = AtomicInteger()
         fun read(marker: Int, size: Int = 8, result: Int = size) = Read(marker.toShort(), size, result).also { reads.add(it) }
     }
     @Implements(AudioRecord::class)
@@ -80,6 +84,7 @@ class AudioCaptureSessionTest {
             val operation = driver!!.reads.poll(5, TimeUnit.SECONDS) ?: return AudioRecord.ERROR_INVALID_OPERATION
             operation.entered.countDown()
             check(operation.resume.await(5, TimeUnit.SECONDS)) { "Read was never released" }
+            operation.failure?.let { throw it }
             if (operation.result > 0) data.fill(operation.marker, offset, offset + operation.size.coerceAtMost(length))
             return operation.result
         }
@@ -89,7 +94,10 @@ class AudioCaptureSessionTest {
             driver?.stopGate?.let { check(it.await(5, TimeUnit.SECONDS)) }
             driver?.stopReturned?.countDown()
         }
-        @Implementation fun release() { driver?.releases?.incrementAndGet(); driver?.released?.countDown() }
+        @Implementation fun release() {
+            if (driver?.stopReturned?.count != 0L) driver?.releaseBeforeStop?.incrementAndGet()
+            driver?.releases?.incrementAndGet(); driver?.released?.countDown()
+        }
         companion object {
             val planned = LinkedBlockingQueue<Driver>()
             @JvmStatic @Implementation fun getMinBufferSize(rate: Int, channels: Int, encoding: Int): Int = 1024
@@ -126,6 +134,32 @@ class AudioCaptureSessionTest {
         capture.startPump(scope)
     }
     private fun Driver.operation(marker: Int, size: Int = 8, result: Int = size): Read = read(marker, size, result).also { this@AudioCaptureSessionTest.reads.add(it) }
+    /** Old fixture negatives meant EOF, not hardware failure. Cancel only the pump while
+     * its zero-result sentinel is held; unlike capture.stop(), this keeps buffered PCM. */
+    private suspend fun finishBufferedPump(job: Job, end: Read) {
+        await(end.entered)
+        job.cancel()
+        end.allow()
+        job.join()
+    }
+    private fun startWithFailure(driver: Driver, callback: () -> Unit): Job {
+        ControlledRecord.planned.add(driver)
+        assertTrue(capture.startMicrophoneCapture())
+        // Exercise the behavioral red against the old one-argument API as well.
+        val failureApi = AudioCapture::class.java.methods.firstOrNull {
+            it.name == "startPump" && it.parameterCount == 2
+        }
+        if (failureApi == null) capture.startPump(scope) else failureApi.invoke(capture, scope, callback)
+        return pumpJob()
+    }
+    private fun dispatchUntil(message: String, condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!condition() && System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.yield()
+        }
+        assertTrue(message, condition())
+    }
     private fun pumpJob(): Job {
         val owner = stateOwner()
         return owner.javaClass.getDeclaredField("pumpJob").apply { isAccessible = true }.get(owner) as Job
@@ -161,7 +195,7 @@ class AudioCaptureSessionTest {
         capture.stop()
         val fresh = Driver()
         val b = fresh.operation(222)
-        val end = fresh.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+        val end = fresh.operation(0, result = 0)
         start(fresh)
         val newJob = pumpJob()
         b.allow(); await(end.entered) // next read proves B has been published
@@ -169,7 +203,7 @@ class AudioCaptureSessionTest {
         assertEquals("retired A must not count as current PCM", 1L, capture.chunkCount())
         assertEquals(222f, capture.lastRms())
         assertEquals(0L, capture.overrunCount())
-        end.allow(); newJob.join()
+        finishBufferedPump(newJob, end)
         assertArrayEquals(ShortArray(8) { 222 }, capture.drainFifoWindow(8))
         assertNull(capture.takeChunk(1))
     }
@@ -188,14 +222,14 @@ class AudioCaptureSessionTest {
         capture.stop()
         val fresh = Driver()
         val b = fresh.operation(222)
-        val end = fresh.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+        val end = fresh.operation(0, result = 0)
         start(fresh)
         val newJob = pumpJob()
         b.allow(); await(end.entered)
         held.resume.countDown()
         assertNull("retired consumer must not publish a window/remainder", stale.await())
         assertTrue("retired poll must never steal fresh PCM", held.taken.isEmpty())
-        end.allow(); newJob.join()
+        finishBufferedPump(newJob, end)
         assertArrayEquals(ShortArray(3) { 222 }, capture.drainFifoWindow(3))
         assertArrayEquals(ShortArray(5) { 222 }, capture.drainFifoWindow(5))
         a.allow(); oldJob.join()
@@ -229,11 +263,11 @@ class AudioCaptureSessionTest {
         await(held.entered) // Old A removed; pause before the consumer can assemble its remainder.
         capture.stop()
         val fresh = Driver(); val b = fresh.operation(222)
-        val end = fresh.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+        val end = fresh.operation(0, result = 0)
         start(fresh); val newJob = pumpJob()
         b.allow(); await(end.entered)
         held.resume.countDown(); val staleResult = stale.await()
-        end.allow(); newJob.join()
+        finishBufferedPump(newJob, end)
         assertArrayEquals("Old A remainder must not replace fresh B", ShortArray(3) { 222 }, capture.drainFifoWindow(3))
         assertArrayEquals(ShortArray(5) { 222 }, capture.drainFifoWindow(5))
         assertNull(staleResult)
@@ -290,9 +324,9 @@ class AudioCaptureSessionTest {
         suspend fun queued(): Driver {
             val driver = Driver()
             val a = driver.operation(111); val b = driver.operation(222)
-            val end = driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+            val end = driver.operation(0, result = 0)
             start(driver); val job = pumpJob()
-            a.allow(); b.allow(); end.allow(); job.join()
+            a.allow(); b.allow(); finishBufferedPump(job, end)
             return driver
         }
         queued()
@@ -309,9 +343,9 @@ class AudioCaptureSessionTest {
         repeat(16) {
             val marker = 1 + random.nextInt(20000)
             val driver = Driver(); val read = driver.operation(marker)
-            val end = driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+            val end = driver.operation(0, result = 0)
             start(driver); val job = pumpJob()
-            read.allow(); end.allow(); job.join()
+            read.allow(); finishBufferedPump(job, end)
             assertArrayEquals(ShortArray(3) { marker.toShort() }, capture.drainFifoWindow(3))
             assertEquals(1L, capture.chunkCount())
             assertEquals(0L, capture.overrunCount())
@@ -337,12 +371,12 @@ class AudioCaptureSessionTest {
             val playback = index % 2 == 0
             val marker = (index + 1) * 101
             val driver = Driver(); val read = driver.operation(marker)
-            val end = driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+            val end = driver.operation(0, result = 0)
             ControlledRecord.planned.add(driver)
             assertTrue(if (playback) capture.startPlaybackCapture(projection) else capture.startMicrophoneCapture())
             assertEquals(playback, capture.usingPlaybackCapture)
             capture.startPump(scope); val job = pumpJob()
-            read.allow(); end.allow(); job.join()
+            read.allow(); finishBufferedPump(job, end)
             assertArrayEquals(ShortArray(3) { marker.toShort() }, capture.drainFifoWindow(3))
             assertEquals(1L, capture.chunkCount())
             capture.stop(); await(driver.released)
@@ -379,9 +413,9 @@ class AudioCaptureSessionTest {
 
     @Test fun alreadyCancelledConsumerCannotClearFreshFifoRemainder() = runBlocking {
         val driver = Driver(); val b = driver.operation(222)
-        val end = driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+        val end = driver.operation(0, result = 0)
         start(driver); val job = pumpJob()
-        b.allow(); end.allow(); job.join()
+        b.allow(); finishBufferedPump(job, end)
         assertArrayEquals(ShortArray(3) { 222 }, capture.drainFifoWindow(3))
         val cancelledResult = cancelledFifoDrain(3)
         assertArrayEquals("cancelled entry must leave all five fresh remainder samples", ShortArray(5) { 222 }, capture.drainFifoWindow(5))
@@ -391,8 +425,8 @@ class AudioCaptureSessionTest {
     @Test fun alreadyCancelledConsumerCannotTrimFreshBacklog() = runBlocking {
         val driver = Driver()
         repeat(25) { driver.operation(222).allow() }
-        driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION).allow()
-        start(driver); pumpJob().join()
+        val end = driver.operation(0, result = 0)
+        start(driver); finishBufferedPump(pumpJob(), end)
         assertEquals(24, capture.queueDepth())
         assertEquals(1L, capture.overrunCount())
         assertNull(cancelledFifoDrain(3))
@@ -401,9 +435,9 @@ class AudioCaptureSessionTest {
 
     @Test fun cancellationAfterFifoSnapshotDoesNotDiscardUncommittedRemainder() = runBlocking {
         val driver = Driver(); val b = driver.operation(222)
-        val end = driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+        val end = driver.operation(0, result = 0)
         start(driver); val job = pumpJob()
-        b.allow(); end.allow(); job.join()
+        b.allow(); finishBufferedPump(job, end)
         assertArrayEquals(ShortArray(3) { 222 }, capture.drainFifoWindow(3))
         val held = HeldPoll(takeBeforeHold = true)
         held.offer(ShortArray(8) { 333 })
@@ -413,6 +447,100 @@ class AudioCaptureSessionTest {
         cancelled.cancel()
         held.resume.countDown(); cancelled.join()
         assertArrayEquals("cancelled assembly must not discard uncommitted B remainder", ShortArray(5) { 222 }, capture.drainFifoWindow(5))
+    }
+
+
+    @Test fun negativeReadReportsOnceAndStopsBeforeReleaseWithoutADrain() = assertReadFailure(false)
+    @Test fun thrownReadReportsOnceAndStopsBeforeReleaseWithoutADrain() = assertReadFailure(true)
+    private fun assertReadFailure(throwing: Boolean) = runBlocking {
+        val driver = Driver()
+        val read = Read(0, result = AudioRecord.ERROR_DEAD_OBJECT,
+            failure = if (throwing) IllegalStateException("controlled read failure") else null)
+            .also { driver.reads.add(it); reads.add(it) }
+        val calls = AtomicInteger()
+        var callbackHeldCaptureLock = false
+        lateinit var owner: Any
+        var callbackHeldSessionLock = false
+        val job = startWithFailure(driver) {
+            callbackHeldCaptureLock = Thread.holdsLock(capture)
+            callbackHeldSessionLock = Thread.holdsLock(owner)
+            calls.incrementAndGet()
+        }
+        owner = stateOwner()
+        await(read.entered); read.allow(); job.join()
+        dispatchUntil("terminal hardware failure is delivered independently of ASR draining") { calls.get() == 1 }
+        assertEquals(1, driver.stops.get()); assertEquals(1, driver.releases.get())
+        assertEquals(0, driver.releaseBeforeStop.get())
+        assertFalse(callbackHeldCaptureLock); assertFalse(callbackHeldSessionLock)
+        assertNull(capture.drainFifoWindow(3))
+        capture.stop(); shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, calls.get()); assertEquals(1, driver.releases.get())
+    }
+
+    @Test fun queuedOldFailureCannotStopOrNotifyReplacement() = runBlocking {
+        val old = Driver(); val bad = old.operation(0, result = AudioRecord.ERROR_DEAD_OBJECT)
+        val oldCalls = AtomicInteger()
+        val oldJob = startWithFailure(old) { oldCalls.incrementAndGet() }
+        await(bad.entered); bad.allow(); oldJob.join() // Keep Main paused with the failure queued.
+        val fresh = Driver(); val held = fresh.operation(321)
+        val freshCalls = AtomicInteger()
+        val newJob = startWithFailure(fresh) { freshCalls.incrementAndGet() }
+        await(held.entered)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, oldCalls.get()); assertEquals(0, freshCalls.get())
+        assertEquals(0, fresh.stops.get()); assertEquals(0, fresh.releases.get())
+        assertTrue(newJob.isActive)
+        capture.stop(); held.allow(); newJob.join()
+        assertEquals(1, old.stops.get()); assertEquals(1, old.releases.get())
+    }
+
+    @Test fun retiredNegativeReadAfterRestartDoesNotReportFailure() = runBlocking {
+        val old = Driver(); val bad = old.operation(0, result = AudioRecord.ERROR_DEAD_OBJECT)
+        val oldCalls = AtomicInteger()
+        val oldJob = startWithFailure(old) { oldCalls.incrementAndGet() }
+        await(bad.entered); capture.stop()
+        val fresh = Driver(); val held = fresh.operation(321)
+        val freshJob = startWithFailure(fresh) { fail("fresh capture must not fail") }
+        await(held.entered); bad.allow(); oldJob.join()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, oldCalls.get()); assertTrue(freshJob.isActive)
+        assertEquals(0, fresh.stops.get())
+        capture.stop(); held.allow(); freshJob.join()
+    }
+
+    @Test fun zeroReadZeroEnergyAndNormalStopAreNotFailures() = runBlocking {
+        val driver = Driver()
+        val zeroRead = driver.operation(0, result = 0)
+        val silentPcm = driver.operation(0)
+        val held = driver.operation(0, result = AudioRecord.ERROR_INVALID_OPERATION)
+        val calls = AtomicInteger()
+        val job = startWithFailure(driver) { calls.incrementAndGet() }
+        zeroRead.allow(); silentPcm.allow(); await(held.entered)
+        assertEquals(1L, capture.chunkCount()); assertEquals(0f, capture.lastRms())
+        assertArrayEquals(ShortArray(8), capture.drainFifoWindow(8))
+        capture.stop(); held.allow(); job.join()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, calls.get()); assertEquals(1, driver.stops.get()); assertEquals(1, driver.releases.get())
+    }
+
+    @Test fun cancelledPumpNegativeReadIsNotAReportedFailure() = runBlocking {
+        val driver = Driver(); val bad = driver.operation(0, result = AudioRecord.ERROR_DEAD_OBJECT)
+        val calls = AtomicInteger()
+        val job = startWithFailure(driver) { calls.incrementAndGet() }
+        await(bad.entered); job.cancel(); bad.allow(); job.join()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, calls.get()); capture.stop()
+        assertEquals(1, driver.releases.get())
+    }
+    @Test fun cancelledScopeSuppressesAlreadyQueuedFailureNotification() = runBlocking {
+        val driver = Driver(); val bad = driver.operation(0, result = AudioRecord.ERROR_DEAD_OBJECT)
+        val calls = AtomicInteger()
+        val job = startWithFailure(driver) { calls.incrementAndGet() }
+        await(bad.entered); bad.allow(); job.join()
+        scope.cancel()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, calls.get())
+        capture.stop(); assertEquals(1, driver.releases.get())
     }
 
 }

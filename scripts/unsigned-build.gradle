@@ -1,0 +1,87 @@
+// Applied by the app build for every task, not only by CI. No signing credentials
+// are read or created here. Reviewed against AGP 8.10.1; upgrades must reverify.
+import groovy.json.JsonOutput
+import org.gradle.api.GradleException
+import org.gradle.api.tasks.JavaExec
+
+// The task-graph check must run on every invocation, including dry-runs.
+if (gradle.startParameter.configurationCacheRequested) {
+    throw new GradleException('Unsigned task-graph verification requires configuration cache disabled')
+}
+def checked = [:]
+gradle.projectsEvaluated {
+    def android = project.extensions.getByName('android')
+    def components = project.extensions.getByName('androidComponents')
+    if (components.pluginVersion.version != '8.10.1') {
+        throw new GradleException('Unsigned build guard requires review for this AGP version')
+    }
+    if (project.findProperty('android.experimental.useDefaultDebugSigningConfigForProfileableBuildtypes')?.toString() != 'false') {
+        throw new GradleException('Default/profileable signing fallback must be disabled')
+    }
+    if (project.properties.keySet().any { it.toString().startsWith('android.injected.signing.') }) {
+        throw new GradleException('Injected signing configuration is forbidden; signing stays on C')
+    }
+    android.buildTypes.all { type ->
+        if (type.signingConfig != null) throw new GradleException('Build types must be unsigned: ' + type.name)
+    }
+    def record = { variant ->
+        if (variant.signingConfig != null || variant.isSigningReady()) {
+            throw new GradleException('Resolved variant must be unsigned: ' + variant.name)
+        }
+        checked[variant.name] = [applicationId: variant.applicationId, signingConfig: null, signingReady: false]
+    }
+    android.applicationVariants.all(record)
+    android.testVariants.all(record)
+    if (!checked.keySet().containsAll(['debug', 'release', 'debugAndroidTest'])) {
+        throw new GradleException('Expected application and instrumentation variants were not verified')
+    }
+}
+gradle.taskGraph.whenReady { graph ->
+    if (!checked.keySet().containsAll(['debug', 'release', 'debugAndroidTest'])) {
+        throw new GradleException('Unsigned variant verification did not complete')
+    }
+    def unsignedBundleFinalizers = []
+    def forbidden = graph.allTasks.findAll { task ->
+        // AGP 8.10.1 names unsigned AAB compression signReleaseBundle. Permit
+        // only the exact task/type with all signing inputs absent. The AGP wrapper
+        // may exist while its DSL-data provider is empty. Never call resolve(),
+        // enumerate a signing-file collection, or inspect credentials.
+        def type = task.getClass()
+        while (type != null && type.name != 'com.android.build.gradle.internal.tasks.FinalizeBundleTask') {
+            type = type.superclass
+        }
+        if (task.path == ':app:signReleaseBundle' && type != null) {
+            def provider = task.signingConfigData
+            def noSigningData = provider == null || (
+                provider.getClass().name == 'com.android.build.gradle.internal.signing.SigningConfigDataProvider' &&
+                provider.signingConfigFileCollection == null && provider.signingConfigData.orNull == null)
+            if (noSigningData && task.codeTransparencySigningConfigData == null) {
+                unsignedBundleFinalizers << [path: task.path, type: type.name, signingInputsPresent: false,
+                    signingDataWrapperPresent: provider != null]
+                return false
+            }
+        }
+        def n = task.name.toLowerCase()
+        // write*SigningConfigVersions is harmless packaging metadata. Do not
+        // mistake that for ValidateSigning, which can generate a debug keystore.
+        n.contains('validatesigning') || n.contains('keystore') || n.contains('keytool') ||
+            n ==~ /.*(create|generate).*key.*/ || n.startsWith('sign') ||
+            n.startsWith('install') || n.startsWith('uninstall') || n.startsWith('connected') ||
+            task.class.name.contains('ValidateSigningTask')
+    }.collect { it.path }
+    if (forbidden) throw new GradleException('Forbidden signing/key/device tasks: ' + forbidden)
+    println('UNSIGNED_BUILD_GUARD=' + JsonOutput.toJson([
+        agp: '8.10.1', variants: checked, forbiddenTasks: forbidden, unsignedBundleFinalizers: unsignedBundleFinalizers,
+        taskPaths: graph.allTasks.collect { it.path }, dryRun: gradle.startParameter.dryRun
+    ]))
+}
+
+tasks.register('testUnsignedBuildGuard', JavaExec) {
+    group = 'verification'
+    description = 'Exercise unsigned build policy against controlled AGP/task-graph fixtures.'
+    classpath = files(fileTree(new File(gradle.gradleHomeDir, 'lib')) { include '**/*.jar' })
+    mainClass = 'groovy.ui.GroovyMain'
+    maxHeapSize = '64m'
+    args rootProject.file('scripts/test-unsigned-build-guard.groovy').absolutePath,
+         rootProject.file('scripts/unsigned-build.gradle').absolutePath
+}

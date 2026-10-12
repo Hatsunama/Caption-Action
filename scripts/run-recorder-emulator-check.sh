@@ -3,6 +3,8 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
+# Fail before contacting any runtime or invoking Gradle.
+bash scripts/require-c-signed-emulator-artifacts.sh
 SERIAL=${ANDROID_SERIAL:-}
 assert_emulator_only() {
   [[ "$SERIAL" =~ ^emulator-[0-9]+$ ]] || { echo 'Refusing a missing or physical-device serial.' >&2; exit 2; }

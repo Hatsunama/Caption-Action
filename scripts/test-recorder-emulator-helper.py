@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise the unchanged helper against controlled command boundaries; no Android or Gradle run."""
+"""Exercise legacy evidence handling with a controlled checkpoint gate; no device or Gradle run.
+The real entry point stays blocked until the C-signed artifact flow is reviewed.
+"""
 from contextlib import contextmanager
 from pathlib import Path
 import os
@@ -63,6 +65,8 @@ class EmulatorHelperEvidenceTest(unittest.TestCase):
             root = Path(directory)
             (root / 'scripts').mkdir()
             shutil.copyfile(HELPER, root / 'scripts/run-recorder-emulator-check.sh')
+            # Fixture-only gate: the real gate is covered by test-unsigned-artifacts.py.
+            (root / 'scripts/require-c-signed-emulator-artifacts.sh').write_text('exit 0\n')
             binaries = root / 'bin'
             binaries.mkdir()
             for name, source in [('adb', ADB), ('apksigner', '#!/bin/sh\nprintf \"Signer #1 certificate SHA-256 digest: fixture\\n\"\n'), ('gradle', GRADLE), ('git', '#!/bin/sh\nprintf "%s\\n" 0000000000000000000000000000000000000000\n')]:

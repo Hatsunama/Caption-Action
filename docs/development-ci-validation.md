@@ -133,3 +133,41 @@ immediate emulator failure; all three failed before the change and pass after.
 The bounded CPU-only attempt in [run 38260671869](https://github.com/Hatsunama/Caption-Action/actions/runs/38260671869), at head `8fcdee2977c0e58cd6b2251ae4320448a86a4179`, took 532,803 ms to boot and hit a startup ANR before any native-preflight or recorder case ran. This is not a product pass; sole environmental causation is not proven. Further branch updates no longer repeat this experiment automatically. Any deliberate retry keeps the existing deadlines, native/ABI checks, failure propagation and evidence capture.
 
 The normal full debug/release unit and lint checks, debug compile, development/instrumentation APK builds and exact-commit reports remain mandatory. Physical validation remains a separate requirement using the exact reviewed app/test APK pair with recorded hashes and signing certificates. Earlier phone results apply only to those tested bytes and cases; they do not validate subsequent lifecycle repairs. A skipped experimental emulator job does not establish device correctness or release readiness. No new emulator or physical run is claimed by this configuration change.
+
+## Public build signing boundary correction (2026-10-12)
+
+The earlier discussion of disposable debug-key emulator builds is historical,
+not the current policy. Exact public run CI38292689933 at candidate
+`c5acf95199be1b263b9af70251c89bcd6fae1163` produced Android-debug-signed app and
+instrumentation APKs. Those historical artifacts are not relabeled as unsigned.
+The separately built isolated `.qa` pair was unsigned.
+
+The corrected normal build sets debug and release signing to null, disables AGP's
+default/profileable debug-signing fallback, and checks resolved app/test variants
+and the task graph before execution. Normal `.debug` and `.debug.test` identities
+are retained. Development CI verifies both resulting APKs structurally and with
+`apksigner` before upload. Expected output is `app-debug-unsigned.apk`; it is not
+installable until the reviewed pair has been signed on C. No signing credentials
+are supplied, inspected, or generated in public builds.
+
+The optional emulator checkpoint now fails explicitly before SDK/runtime setup.
+The helper also blocks before contacting a device or invoking Gradle. A separately
+reviewed C-signed artifact/install flow is required before real instrumentation
+can resume. Existing helper evidence-retention fixtures use a fixture-only gate;
+they are not emulator execution or proof that unsigned APKs can be installed.
+
+Actual repaired debug/app-test dry-run and assembly passed locally, and both APKs
+were verified unsigned with unchanged package identities. This does not establish
+remote CI, phone correctness, or release readiness. Release bundle finalization
+and its output gates are reviewed separately without producing an AAB during
+ordinary APK-first iteration.
+
+The final actual debug/app-test/release task graph was also dry-run verified.
+AGP8.10.1 names unsigned AAB compression `signReleaseBundle`; the guard permits
+only that exact task and `FinalizeBundleTask` type with no DSL signing data,
+no signing-file collection, and no transparency signing data. It does not call
+signing-provider `resolve()` or inspect signing files. Actual projection confirmed
+those inputs absent. Adversarial fixtures reject nonempty/unknown providers and
+wrong task paths/types. Both final APK and AAB output-verification gates precede
+optional release artifact upload. AAB verifier real-tool validation used a
+controlled unsigned ZIP only; no release AAB was produced during this repair.

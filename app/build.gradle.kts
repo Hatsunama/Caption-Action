@@ -32,6 +32,8 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // Public development and instrumentation artifacts are signed only later on C.
+            signingConfig = null
             applicationIdSuffix = ".debug"
         }
     }
@@ -111,3 +113,6 @@ tasks.register<Copy>("prepareSolanaApk") {
     rename { "caption-action-solana-unsigned.apk" }
     doFirst { check(android.buildTypes.getByName("release").signingConfig == null) }
 }
+
+// Verify resolved app/test signing and the execution graph before any tasks run.
+apply(from = rootProject.file("scripts/unsigned-build.gradle"))
