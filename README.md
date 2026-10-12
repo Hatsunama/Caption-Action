@@ -5,8 +5,19 @@
 Free, fully local live subtitle overlay for Android. No accounts, no ads, no telemetry, no cloud, no paywall. Offline after the one-time model download.
 
 Package: `com.hatsunama.captionaction`  
-minSdk: **26** (Android 8.0) · targetSdk: **34** · Device-agnostic (any modern Android phone)  
+minSdk: **26** (Android 8.0) · targetSdk: **36** · Device-agnostic (any modern Android phone)
 Current source version: **0.3.28** (versionCode 51)
+
+
+## Draft reliability and release preparation
+
+This branch repairs Live backlog catch-up/sample retention, bounded same-phrase
+suppression, and cancel/reopen races in model downloads. It prepares separate
+unsigned Play AAB and Solana APK outputs with API 36. Whisper Tiny, retained
+SenseVoice compatibility, the English fast path, ML Kit and Mic are preserved.
+Size reduction is [audit/plan only](docs/compression-audit.md); no reduction is
+applied. See [release preparation](docs/release-preparation.md) for validation
+status and release gates. Historical release notes follow.
 
 ## 0.3.28
 
@@ -174,8 +185,9 @@ First Start walks: overlay → device audio access → notifications (API 33+) �
 | **Accurate** (Quality) | ~182 MB | `ggml-small-q5_1.bin` | **whisper.cpp** ASR (+ EN fast-path) + **ML Kit** MT |
 | **SenseVoice** (optional) | ~228 MB | `model.int8.onnx` | **Sherpa-ONNX** ASR (zh/en/ja/ko/yue) + **ML Kit** MT |
 
-SenseVoice URL: https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx  
-Tokens (`tokens.txt`) ship in the APK under `assets/sherpa/` and are copied beside the model on first load.
+SenseVoice remains retained for legacy engine/on-disk compatibility, but is not
+selectable in the current model gate. No model setting migration or file deletion
+is applied by this branch.
 
 Downloads show progress % with cancel/resume via HTTP Range. Models land in `files/models/`.
 
@@ -206,7 +218,11 @@ export ANDROID_HOME=/path/to/android-sdk
 `gradle.properties` already sets low-RAM JVM/worker limits.
 
 Debug APK: `app/build/outputs/apk/debug/app-debug.apk`  
-Release APK: `app/build/outputs/apk/release/app-release.apk`
+Unsigned release APK: `app/build/outputs/apk/release/app-release-unsigned.apk`
+
+For separate unsigned Play AAB / Solana APK tasks, validation and signing handoff,
+see [release preparation](docs/release-preparation.md). The release variant no longer
+uses the debug signing key. Store readiness is not yet established.
 
 ## Modules
 

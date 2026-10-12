@@ -19,3 +19,10 @@ out/
 captures/
 *.hprof
 reports/
+
+# Local audit caches and signing material never belong in the repository.
+__pycache__/
+*.pyc
+*.jks
+*.keystore
+keystore.properties

@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -85,8 +86,7 @@ class CaptionOverlayService : Service() {
     @Volatile private var tearingDown = false
     private var fontIndex = 0
     @Volatile private var captionSeq = 0L
-    /** Last published ASR primary (normalized) — suppress identical / near-dup loops. */
-    private var lastPublishedNorm = ""
+    /** Monotonic timestamp of the last accepted ASR caption for stale status. */
     private var lastPublishedAtMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -419,6 +419,9 @@ class CaptionOverlayService : Service() {
     }
 
     private suspend fun runAsrConsumer(app: CaptionActionApp, activeEngine: InferenceEngine) {
+        // A restarted consumer must never inherit duplicate suppression from a prior session.
+        val duplicateGate = CaptionDuplicateGate()
+        lastPublishedAtMs = 0L
         var shownTranscribing = false
         var lastOverruns = audioCapture.overrunCount()
         var lastChunkCount = audioCapture.chunkCount()
@@ -440,7 +443,7 @@ class CaptionOverlayService : Service() {
             val chunksNow = audioCapture.chunkCount()
             val chunksAdvancing = chunksNow > lastChunkCount
             lastChunkCount = chunksNow
-            val now = System.currentTimeMillis()
+            val now = SystemClock.elapsedRealtime()
 
             // Sustained near-zero RMS with no pump/queue activity → honest "no signal".
             // Healthy playback RMS or advancing chunks must never look like "no device audio".
@@ -519,10 +522,10 @@ class CaptionOverlayService : Service() {
                 activeEngine.discardPendingAudio()
             }
 
-            val t0 = System.currentTimeMillis()
+            val t0 = SystemClock.elapsedRealtime()
             // Force-flush: each drained window is a complete utterance — no re-accum across calls.
             val raw = activeEngine.transcribeWindow(pcm, AudioCapture.SAMPLE_RATE, forceFlush = true)
-            val inferMs = System.currentTimeMillis() - t0
+            val inferMs = SystemClock.elapsedRealtime() - t0
             val asrMode = activeEngine.lastAsrMode().ifBlank { "-" }
             val textPreview = raw?.text?.take(48)?.replace('\n', ' ') ?: ""
             // Junk filter logs CaptionAction filtered=true separately; null here also means "too short / quiet".
@@ -538,7 +541,7 @@ class CaptionOverlayService : Service() {
                 // Long whisper infer or overruns ⇒ behind, not "no audio".
                 if (qualityBehind || inferMs >= LONG_INFER_STATUS_MS) {
                     if (now - lastCatchupStatusAt >= STATUS_THROTTLE_MS) {
-                        lastCatchupStatusAt = System.currentTimeMillis()
+                        lastCatchupStatusAt = SystemClock.elapsedRealtime()
                         withContext(Dispatchers.Main) {
                             setSessionStatus(getString(R.string.status_catching_up), loading = true)
                         }
@@ -554,20 +557,10 @@ class CaptionOverlayService : Service() {
             // Use ASR source for dedup / hold decisions (not gated display primary).
             val primaryRaw = raw.text
             val norm = AsrJunkFilter.normalize(primaryRaw)
-            val publishNow = System.currentTimeMillis()
-            // Consecutive identical: don't re-show / re-append the same line every ~1s window.
-            if (norm.isNotEmpty() && norm == lastPublishedNorm) {
-                Log.i(DIAG_TAG, "suppressed identical caption norm=${norm.take(48)}")
-                continue
-            }
-            // Near-duplicate within a short window (SenseVoice filler drift / echo).
-            // Phrase extensions are NOT near-dup (AsrJunkFilter) — keep fuller text.
-            if (norm.isNotEmpty() &&
-                lastPublishedNorm.isNotEmpty() &&
-                publishNow - lastPublishedAtMs <= NEAR_DUP_WINDOW_MS &&
-                AsrJunkFilter.isNearDuplicate(norm, lastPublishedNorm)
-            ) {
-                Log.i(DIAG_TAG, "suppressed near-dup caption norm=${norm.take(48)}")
+            val publishNow = SystemClock.elapsedRealtime()
+            // Exact and near duplicates both expire. Phrase extensions remain valid.
+            if (duplicateGate.shouldSuppress(norm, publishNow)) {
+                Log.i(DIAG_TAG, "suppressed recent duplicate caption norm=${norm.take(48)}")
                 continue
             }
             val targetLang = settingsNow.targetLanguage
@@ -580,7 +573,7 @@ class CaptionOverlayService : Service() {
                     continue
                 }
                 Log.i(DIAG_TAG, "publish short same-script without MT norm=${norm.take(48)}")
-                lastPublishedNorm = norm
+                duplicateGate.onPublished(norm, publishNow)
                 lastPublishedAtMs = publishNow
                 val seqShort = ++captionSeq
                 hasRealCaption = true
@@ -588,7 +581,7 @@ class CaptionOverlayService : Service() {
                 publishCaption(raw, dualNow, seqShort, appendSubtitle = true, targetLang = targetLang)
                 continue
             }
-            lastPublishedNorm = norm
+            duplicateGate.onPublished(norm, publishNow)
             lastPublishedAtMs = publishNow
             val seq = ++captionSeq
             hasRealCaption = true
@@ -1176,7 +1169,6 @@ class CaptionOverlayService : Service() {
         translation = null
         releaseProjection()
         composer.reset()
-        lastPublishedNorm = ""
         lastPublishedAtMs = 0L
         subtitleAppendSeq = -1L
         captionSeq = 0L
@@ -1227,8 +1219,6 @@ class CaptionOverlayService : Service() {
         private const val OVERLAY_MAX_HEIGHT_FRACTION = 0.48f
         /** Whisper/Quality long infer → show catching-up, not no-audio. */
         private const val LONG_INFER_STATUS_MS = 3_000L
-        /** Suppress near-duplicate captions inside this window (ms). */
-        private const val NEAR_DUP_WINDOW_MS = 2_500L
         /** No new caption while capture advancing → catching-up status (keep last line). */
         private const val STALE_CAPTION_MS = 4_500L
         const val ACTION_START = "com.hatsunama.captionaction.START"

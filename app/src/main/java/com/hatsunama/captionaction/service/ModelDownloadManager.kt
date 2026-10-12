@@ -2,13 +2,15 @@ package com.hatsunama.captionaction.service
 
 import com.hatsunama.captionaction.data.ModelCache
 import com.hatsunama.captionaction.data.ModelTier
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Resumable model download into app-private storage.
@@ -23,34 +25,44 @@ class ModelDownloadManager(private val cache: ModelCache) {
 
     class CancelledException : Exception("Download cancelled")
 
-    private val cancelled = AtomicBoolean(false)
+    private val control = ModelDownloadControl()
 
-    fun cancel() {
-        cancelled.set(true)
-    }
+    // Managers are single-attempt objects. Resume/retry creates a new manager.
+    fun cancel() { control.cancel() }
 
-    fun resetCancel() {
-        cancelled.set(false)
+    private suspend fun checkActive() {
+        currentCoroutineContext().ensureActive()
+        if (control.isCancelled) throw CancelledException()
     }
 
     suspend fun download(
         tier: ModelTier,
         onProgress: (Progress) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        cancelled.set(false)
+        ModelDownloadLocks.withFile(cache.fileFor(tier)) {
+            downloadLocked(tier, onProgress)
+        }
+    }
+
+    private suspend fun downloadLocked(
+        tier: ModelTier,
+        onProgress: (Progress) -> Unit
+    ): Result<Unit> {
+        var connection: HttpURLConnection? = null
         try {
+            checkActive()
             val dest = cache.fileFor(tier)
             val tmp = cache.partFileFor(tier)
             var existing = if (tmp.exists()) tmp.length().coerceAtLeast(0L) else 0L
 
             if (cache.isPresent(tier)) {
                 onProgress(Progress(tier.approxBytes, tier.approxBytes))
-                return@withContext Result.success(Unit)
+                return Result.success(Unit)
             }
 
             val needBytes = (tier.approxBytes - existing).coerceAtLeast(0L)
             if (cache.freeBytes() < needBytes + 5L * 1024 * 1024) {
-                return@withContext Result.failure(StorageException("Not enough storage"))
+                return Result.failure(StorageException("Not enough storage"))
             }
 
             onProgress(Progress(existing, tier.approxBytes.coerceAtLeast(1L)))
@@ -64,8 +76,12 @@ class ModelDownloadManager(private val cache: ModelCache) {
                     setRequestProperty("Range", "bytes=$existing-")
                 }
             }
+            connection = conn
+            if (!control.attach { runCatching { conn.disconnect() } }) throw CancelledException()
+            checkActive()
             conn.connect()
             val code = conn.responseCode
+            checkActive()
 
             val append: Boolean
             val total: Long
@@ -86,23 +102,23 @@ class ModelDownloadManager(private val cache: ModelCache) {
                 }
                 else -> {
                     conn.disconnect()
-                    return@withContext Result.failure(IllegalStateException("HTTP $code"))
+                    return Result.failure(IllegalStateException("HTTP $code"))
                 }
             }
 
             onProgress(Progress(existing, total))
 
             try {
+                checkActive()
                 BufferedInputStream(conn.inputStream).use { input ->
+                    checkActive()
                     FileOutputStream(tmp, append).use { out ->
                         val buf = ByteArray(64 * 1024)
                         var read = existing
                         while (true) {
-                            if (cancelled.get()) {
-                                out.fd.sync()
-                                throw CancelledException()
-                            }
+                            checkActive()
                             val n = input.read(buf)
+                            checkActive()
                             if (n < 0) break
                             out.write(buf, 0, n)
                             read += n
@@ -115,14 +131,12 @@ class ModelDownloadManager(private val cache: ModelCache) {
                 conn.disconnect()
             }
 
-            if (cancelled.get()) {
-                return@withContext Result.failure(CancelledException())
-            }
+            checkActive()
 
             val finalLen = tmp.length()
             val minReady = ModelCache.minReadyBytes(tier)
             if (finalLen < minReady) {
-                return@withContext Result.failure(
+                return Result.failure(
                     IllegalStateException("Download incomplete (${finalLen} bytes)")
                 )
             }
@@ -134,15 +148,21 @@ class ModelDownloadManager(private val cache: ModelCache) {
             }
             if (!cache.isPresent(tier)) {
                 dest.delete()
-                return@withContext Result.failure(
+                return Result.failure(
                     IllegalStateException("Downloaded file failed size validation")
                 )
             }
-            Result.success(Unit)
+            return Result.success(Unit)
+        } catch (c: CancellationException) {
+            throw c
         } catch (c: CancelledException) {
-            Result.failure(c)
-        } catch (t: Throwable) {
-            Result.failure(t)
+            return Result.failure(c)
+        } catch (t: Exception) {
+            // disconnect() may surface as an IOException instead of our cancellation marker.
+            return Result.failure(if (control.isCancelled) CancelledException() else t)
+        } finally {
+            control.detach()
+            connection?.let { runCatching { it.disconnect() } }
         }
     }
 
