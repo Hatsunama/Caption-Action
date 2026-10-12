@@ -30,6 +30,15 @@ replaced with a separately invented algorithm.
 - Mic `drainFifoWindow`, `concatFifo` and `trimFifoBacklogIfNeeded` bodies were
   compared with baseline and are byte-identical.
 
+Independent review then identified an introduced state race: an in-flight drain
+could overwrite cleared/new-session remainder after reset. Five deterministic
+barrier/cancellation tests failed against the unchanged first repair, including
+stale sample 3 replacing restarted-session sample 103. The corrected helper versions
+its state, synchronizes reset/final state publication, and rejects canceled or
+invalidated work without holding a lock across blocking queue callbacks. All 15
+helper tests pass. This specifically repairs new helper state; it does not claim
+to solve the pre-existing AudioRecord generation race in N3.
+
 Unit coverage also tests bounded catch-up while new chunks arrive, variable target
 sizes, reset, short final flush and invalid target. These fixtures do not validate
 real AudioRecord thread interleavings or end-to-end latency/recognition quality.
@@ -93,7 +102,7 @@ No compression/dependency/model migration is applied; see [audit plan](compressi
 |---|---|---|---|
 | N1 medium | `MicTranslatorActivity.kt:416`: exact equality precedes silence-gap calculation at 422. State at 64–65 is not reset by start/stop at 304–335. | Source-confirmed sibling of B, left unchanged. Bound equality by utterance gap and reset session-only dedup state while preserving displayed history and FIFO. | Repeated phrase after silence and off/on fails before/pass after; growing revision, near match, saved history and From/To unaffected; actual Mic on both phones. |
 | N2 high | `CaptionOverlayService.stopSelfSafe` cancels ASR then calls engine.release. `WhisperCppInferenceEngine.kt:109` locks model lookup only; native transcribe at 294 runs outside the release lock at 316. Official v1.0.0 wrapper/JNI has no inference/release mutex and release calls `whisper_free`. | Code-evident concurrent lifetime risk, no crash reproduced. Do not infer coroutine cancellation stops synchronous native inference. Proposed single-owner/serialized engine lifetime: delay release until in-flight native work completes, without blocking main UI; guard generation/result publication. | Controlled in-flight inference/stop/restart race test before/after, no release-before-completion, double release, failed native call, cancellation/recovery; both-phone stop during long ASR and repeated model use. |
-| N3 medium | `AudioCapture.kt:305,481` cancels pump without join; blocking read at 318 may return and enqueue at 322 after a new queue/session is created. | Potential capture-generation race; not runtime-proven. Proposed generation/record ownership guard and orderly old-pump termination. | Barrier-based old-read/new-start test, no stale samples after restart, microphone and projection modes, timeout/error recovery. |
+| N3 medium | `AudioCapture.kt:305,481` cancels pump without join; blocking read at 318 may return and enqueue at 322 after a new queue/session is created. | Potential capture-generation race; not runtime-proven. Proposed generation/record ownership guard and orderly old-pump/consumer termination. | Barrier-based old-read/new-start tests, no stale samples after restart, microphone and projection modes, timeout/error recovery. |
 | N4 medium | Pump read error at `AudioCapture.kt:334-336` exits; takeChunk at 351 eventually returns null; Live consumer at 438 exits without explicit stop/error UI. Mic shares the stop condition. | Source-visible recovery gap, actual device effect untested. Proposed explicit terminal capture reason propagated to owning UI/service. | Inject negative read result, verify meaningful error and clean teardown/retry, never a silently dead listening state. |
 | N5 medium | Downloader accepts HTTP206 without validating Content-Range offset; ModelCache readiness uses only >=90% approximate bytes. | Pre-existing integrity/resume risk, separate from C; left unchanged. Proposed strict resume range/length validation and verified model integrity, retain resumable recovery. | Incorrect/missing range, truncated body above threshold, interrupted resume, changed upstream entity, insufficient storage and retry. No corruption event is claimed. |
 
@@ -118,14 +127,24 @@ settings continuation, service teardown, Whisper wrapper/native lifetime and bui
 configuration. This is selective follow-up around the changed paths, not an exhaustive
 application security or correctness audit.
 
-Verified: focused helper tests, extracted production fail-before/pass-after checks,
-Gradle configuration/task discovery, diff check, static package/ELF inspection.
-Not completed: declared Android test environment, full lint/debug/release builds,
-actual APK/AAB baseline measurements, Android UI/network instrumentation, device ASR/MT,
-16 KiB runtime and signing. Earlier tool cancellations interrupted validation; authorized SDK setup resumes
-after confirmation they were not intentional.
+Verified locally after the final reset-generation repair: 90 Debug unit tests and 90 Release unit
+tests, all passed with no skipped tests. Full Debug and Release lint passed with
+zero errors (99 and 97 warnings respectively; dependency-version notices vary with
+repository metadata). Existing private playback-builder API requirements are now
+expressed with `@RequiresApi(Q)`; both callers already guard API 29. The original
+strict lint reported four `NewApi` errors before that contract annotation. No broad
+suppression, lint baseline or error disabling was added.
+
+The reproducible [production regression harnesses](../scripts/regression-evidence/README.md)
+retain the actual before/after source bodies and controlled hardware/HTTP boundaries.
+Focused helper tests, Gradle task discovery, diff checks and static ELF inspection
+also passed. The first complete CI lint attempt exhausted the original 256 MiB
+Metaspace; build-only JVM limits were raised rather than skipping lint.
+
+Still unverified: Android UI/real-network instrumentation, device ASR/MT,
+16 KiB runtime and signing. These tests establish bounded behavior only.
 
 **Release remains blocked.** Exact final artifacts must cold-start and pass affected
 feature checks on **both connected phones**, after the final source/build change.
-No physical access is available to this task. Do not infer cold-start/feature success
+Physical verification has not been completed. Do not infer cold-start/feature success
 from unit tests; do not recommend install, publish or release until the gate is met.

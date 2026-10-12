@@ -18,9 +18,14 @@ Static repository measurements, from ZIP entry inspection:
 The Sherpa AAR contains four ABIs, but `app/build.gradle.kts:18-20` already filters
 shipping to arm64-v8a. Removing other AAR ABIs would mostly reduce repository/input
 size, not the current delivered native payload. AAR compression ratios are not
-APK or Play-download savings. APK, AAB, installed size, dex/resources, store split
-size, and measured before/after savings remain **unmeasured** because full Android
-packaging has not completed. No fabricated estimated MB or percentage is used.
+APK or Play-download savings. The first completed repaired/API36 unsigned build (before the additional reset-race
+repair) measured AAB **26,637,091 bytes**, APK **59,303,463 bytes**, native payload
+**52,132,320 uncompressed bytes**, and dex **12,710,768 raw / 4,721,745 compressed
+bytes**. These are real preparation baselines, not original-main package sizes or
+compression savings. Final source hashes and replacement package sizes belong in
+the release validation record. Installed size, Play-delivered split size and any
+before/after compression saving remain **unmeasured**. No fabricated estimated MB
+or percentage is used.
 
 Reproduce static inspection: `python3 scripts/audit-package.py app/libs/*.aar`.
 Keep final baseline artifacts, hashes, toolchain and dependency report before any
@@ -84,14 +89,38 @@ configuration; only the candidate under test may differ.
   callers. A direct dependency may be transitive elsewhere; removing its declaration
   need not reduce the resolved graph. Resource lookup includes XML/style/theme and
   Android-generated paths, not just text-search hits.
-- Next read-only evidence: resolved release dependency tree and R8/resource usage
-  reports; trace candidate symbol/asset callers and dynamic references individually.
+- The [resolved release runtime tree](release-dependency-baseline.txt) was captured
+  successfully with Gradle. R8/resource usage reports remain unavailable because
+  shrinking is intentionally disabled. Trace candidate symbol/asset callers and
+  dynamic references individually before proposing removal.
   No specific image, locale, drawable or dependency is yet proven removable.
 - Risks: visual/font/layout regression, lost language support, missing runtime API.
 - Verification: one candidate per batch, full checks, screenshot comparison and
   impacted flow on both phones; quantify actual artifact deltas.
 - Savings: unmeasured. Do not resample artwork, prune languages, change models,
   remove features or alter native runtime as a compression shortcut.
+
+### Additional lint candidates, still suspected
+
+The strict Debug lint pass reports 23 `UnusedResources` and five density-specific
+launcher/round-launcher duplicate-image groups. These are audit candidates only:
+- `res/drawable/bg_card_cyan.xml:2`, `bg_progress_track.xml:2`, and
+  `ic_launcher_background.xml:2`: trace XML/theme references and all UI states.
+- `res/values/colors.xml:6-31`: gradient end, lavender/peach/mint/yellow,
+  overlay colors, warning/error/close/recommended symbols flagged by lint.
+- `res/values/strings.xml:6,13,68,93,95,99`: `start_live`, `overlay_preview`,
+  `transcribing`, translation-pack preparation/missing, and `mic_translator`.
+- `res/values/themes.xml:42,65`: danger-button and pill-text styles.
+- Launcher PNG duplicates under each `mipmap-*` density: Android launcher shape,
+  manifest/adaptive-icon references and OEM selection must be checked before any
+  consolidation. Packaging may already deduplicate bytes; no savings are assumed.
+
+A source search found no `getIdentifier`, `Class.forName` or `loadClass` calls in
+`app/src/main`; this does not exclude library/framework dynamic uses, generated
+bindings or native lookups. No resource is proven removable by that search. Start
+with one unused drawable after XML/theme/reference tracing and screenshot baselines;
+then individual values/styles. Preserve language support and exact rendered output.
+All candidate savings remain unmeasured; no cleanup is applied by this audit.
 
 ## Acceptance gate
 

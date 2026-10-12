@@ -54,8 +54,9 @@ compression patch is preserved separately and is not part of this draft.
 
 `audit-package.py` reports ZIP entry sizes and native ELF LOAD/RELRO checks using
 only Python's standard library. It does not prove on-device compatibility or
-APK ZIP alignment. Actual baseline APK/AAB sizes remain unavailable until a full
-Android build completes; no final package savings are claimed.
+APK ZIP alignment. A completed preparation build measured AAB 26,637,091 bytes and APK 59,303,463 bytes
+before the additional reset-race repair; these are not compression savings. Final
+checks and artifact hashes must be refreshed after that repair.
 
 ## Platform gates
 
@@ -78,6 +79,13 @@ data is in a separate LOAD outside the rounded protection range, as is the
 original runtime. Therefore this is a documentation-check discrepancy and a
 required runtime-verification gap, not proof that Whisper crashes on 16 KB.
 Changing the NDK version alone is not evidence of a fix.
+
+The completed package additionally includes DataStore, ML Kit language-ID and
+translation native libraries, giving nine arm64 libraries in total. All nine pass
+PT_LOAD alignment; eight (all except Whisper) fail the literal RELRO-end modulus.
+The prepared APK passes `zipalign -c -P 16 -v 4`; bundletool 1.18.3 validates the AAB
+and its config requests `PAGE_ALIGNMENT_16K`. These static successes do not close
+the native-runtime gate; final rebuilt artifacts must be checked again.
 
 API 36 enforces edge-to-edge; activity roots now request system-window insets.
 The app does not intercept legacy `onBackPressed` or launch from BOOT_COMPLETED.
@@ -105,26 +113,27 @@ Device-only checks still required after all build checks pass:
 See also [physical-test.md](physical-test.md). No store submission, publishing,
 merge, signing, or paid model job is authorized by this preparation document.
 
-## Validation status at initial draft
+## Validation status after the reset-generation repair
 
-- PASS: 79 focused JVM tests with standalone Kotlin 2.0.20 / JUnit 4.13.2 and
-  coroutines 1.6.4 from official Gradle 8.11.1; Android Log.i was a no-op stub.
-  This includes 25 new regressions. Three additional migration tests passed
-  only for the separately preserved compression proposal; they are not in this draft. It is a fallback compiler/dependency setup,
-  not the declared Android Gradle test environment.
-- PASS: `git diff --check`, Python audit script execution, native archive size
-  and ELF inspection. Mic FIFO methods match the original source.
-- NOT RUN: full Android Gradle unit tests, lint, debug/release compilation,
-  APK/AAB packaging, baseline artifact size measurement. Android SDK license approval was obtained, but SDK installation/polling was
-  subsequently interrupted by cancelled tool calls. Installation resumes after
-  confirmation that these cancellations were not intentional.
-- NOT RUN: physical device and 16 KB runtime checks; signing and store upload.
+- PASS: declared Android Gradle Debug and Release unit suites, **90 tests each**,
+  zero failures/errors/skips. The helper-only fallback is no longer the sole evidence.
+- PASS: full strict Debug and Release lint, zero errors, 99/97 warnings retained.
+  Four baseline API errors were resolved with a precise API29 private-method
+  contract annotation; callers already guarded API29. No broad suppression added.
+- PASS: actual production fail-before/pass-after harnesses: audio/dedup 3 failures
+  before and 0 after (5 tests); downloads/gates 4 before and 0 after (4 tests).
+  Introduced reset/cancel/restart race: 5 failures before and 0 after (15 tests).
+  Portable original-bug harnesses are under `scripts/regression-evidence`.
+- PASS: final local unsigned AAB/APK packaging, source diff checks and workflow
+  actionlint. GitHub clean-build CI passed before the reset repair and reruns on
+  the final commit. Use its exact commit status, never an older green run.
+- PASS: original Mic FIFO bodies unchanged; resolved release dependencies captured.
+- NOT RUN: physical-device, real Android dialog/network, offline ASR/MT and 16 KiB
+  runtime checks; signing/store validation. No signing keys generated or accessed.
+- RELEASE BLOCKED: final signed artifacts must cold-start on both phones and pass
+  affected-feature tests. Any source/build change requires refreshed verification.
+  Documented pre-existing native inference/release lifetime risk also remains open.
+  Do not recommend installation, publishing or release while these gates remain open.
 
-- PASS: Gradle 8.11.1 / AGP 8.10.1 project configuration and task discovery.
-- RELEASE BLOCKED: the exact final artifacts must cold-start on both connected
-  phones and pass affected-feature tests. No phone is accessible for this task.
-  Rebuilds or source changes invalidate that physical verification. Do not
-  recommend installation, publishing, or release while this gate remains open.
-
-This status is deliberately incomplete; subsequent commits will record results
-rather than treating a helper-test pass as a release verification pass.
+Package hashes are emitted with each CI artifact in `SHA256SUMS`, avoiding a claim
+that a later rebuilt or signed package is identical to an earlier local archive.

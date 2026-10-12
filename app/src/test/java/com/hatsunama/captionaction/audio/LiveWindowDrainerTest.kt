@@ -1,11 +1,18 @@
 package com.hatsunama.captionaction.audio
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class LiveWindowDrainerTest {
     private fun pcm(start: Int, size: Int) = ShortArray(size) { (start + it).toShort() }
@@ -96,6 +103,125 @@ class LiveWindowDrainerTest {
         val drainer = LiveWindowDrainer()
         drainer.drain(3, { pcm(0, 8) }, { 0 }, { null })
         drainer.reset()
+        assertNull(drainer.drain(3, { null }, { 0 }, { null }))
+    }
+
+    @Test
+    fun resetDuringDrain_discardsOldResultAndRemainder() = runBlocking {
+        val drainer = LiveWindowDrainer()
+        val paused = CompletableDeferred<Unit>()
+        val resume = CountDownLatch(1)
+        var oldResult: ShortArray? = pcm(-1, 1)
+        val oldDrain = launch(Dispatchers.Default) {
+            oldResult = drainer.drain(3, { pcm(0, 8) }, {
+                paused.complete(Unit)
+                check(resume.await(5, TimeUnit.SECONDS))
+                0
+            }, { null })
+        }
+        try {
+            withTimeout(5_000) { paused.await() }
+            drainer.reset()
+            resume.countDown()
+            oldDrain.join()
+            assertNull(oldResult)
+            assertNull(drainer.drain(3, { null }, { 0 }, { null }))
+        } finally {
+            resume.countDown()
+            oldDrain.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun resetAndRestart_oldDrainCannotOverwriteNewSessionRemainder() = runBlocking {
+        val drainer = LiveWindowDrainer()
+        val paused = CompletableDeferred<Unit>()
+        val resume = CountDownLatch(1)
+        var oldResult: ShortArray? = pcm(-1, 1)
+        val oldDrain = launch(Dispatchers.Default) {
+            oldResult = drainer.drain(3, { pcm(0, 8) }, {
+                paused.complete(Unit)
+                check(resume.await(5, TimeUnit.SECONDS))
+                0
+            }, { null })
+        }
+        try {
+            withTimeout(5_000) { paused.await() }
+            drainer.reset()
+            assertArrayEquals(pcm(100, 3), drainer.drain(3, { pcm(100, 8) }, { 0 }, { null }))
+            resume.countDown()
+            oldDrain.join()
+            assertArrayEquals(pcm(103, 5), drainer.drain(5, { null }, { 0 }, { null }))
+            assertNull(oldResult)
+            assertNull(drainer.drain(3, { null }, { 0 }, { null }))
+        } finally {
+            resume.countDown()
+            oldDrain.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun cancelledDrain_discardsResultAndDoesNotSaveRemainder() = runBlocking {
+        val drainer = LiveWindowDrainer()
+        val paused = CompletableDeferred<Unit>()
+        val resume = CountDownLatch(1)
+        var oldResult: ShortArray? = pcm(-1, 1)
+        val oldDrain = launch(Dispatchers.Default) {
+            oldResult = drainer.drain(3, { pcm(0, 8) }, {
+                paused.complete(Unit)
+                check(resume.await(5, TimeUnit.SECONDS))
+                0
+            }, { null })
+        }
+        try {
+            withTimeout(5_000) { paused.await() }
+            oldDrain.cancel()
+            resume.countDown()
+            oldDrain.join()
+            assertNull(oldResult)
+            assertNull(drainer.drain(3, { null }, { 0 }, { null }))
+        } finally {
+            resume.countDown()
+            oldDrain.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun resetDuringBlockedTake_doesNotDrainRestartedQueue() = runBlocking {
+        val drainer = LiveWindowDrainer()
+        val paused = CompletableDeferred<Unit>()
+        val resume = CountDownLatch(1)
+        var oldResult: ShortArray? = pcm(-1, 1)
+        var queuedChecks = 0
+        val oldDrain = launch(Dispatchers.Default) {
+            oldResult = drainer.drain(3, {
+                paused.complete(Unit)
+                check(resume.await(5, TimeUnit.SECONDS))
+                pcm(0, 8)
+            }, { queuedChecks++; 1 }, { pcm(100, 8) })
+        }
+        try {
+            withTimeout(5_000) { paused.await() }
+            drainer.reset()
+            resume.countDown()
+            oldDrain.join()
+            assertEquals(0, queuedChecks)
+            assertNull(oldResult)
+            assertNull(drainer.drain(3, { null }, { 0 }, { null }))
+        } finally {
+            resume.countDown()
+            oldDrain.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun resetDuringCatchup_discardsResultBeforePublication() = runBlocking {
+        val drainer = LiveWindowDrainer()
+        val queue = ArrayDeque(listOf(pcm(0, 8), pcm(8, 8)))
+        val result = drainer.drain(3, { queue.poll() }, { queue.size }, { queue.poll() }, {
+            drainer.reset()
+        })
+        assertNull(result)
         assertNull(drainer.drain(3, { null }, { 0 }, { null }))
     }
 
