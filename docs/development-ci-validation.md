@@ -37,3 +37,17 @@ Sources:
 - PR head versus merge commit: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
 - ARM translation background: https://android-developers.googleblog.com/2020/03/run-arm-apps-on-android-emulator.html
 - Emulator action's blanket-license behavior (not adopted): https://github.com/ReactiveCircus/android-emulator-runner/blob/main/src/sdk-installer.ts
+
+## First hosted-run setup regression
+
+PR #40 head `8589687565de09ea3290ecfd5ae7d00c1e911234`, run
+`38252602276`, stopped before Gradle: Ubuntu 24.04 already had the required
+platform/build tools but `sdkmanager` was absent from PATH (exit 127). No app
+assertion or emulator test ran. SDK setup now resolves the existing
+`cmdline-tools/latest/bin` under the selected SDK root and exports it plus
+`platform-tools` for both the current step and later GitHub steps. It accepts no
+licenses and downloads no replacement command-line tools. A controlled execution
+of all three actual workflow setup blocks, with packages present and missing,
+failed six subcases before this change and passes afterward. The fake SDK tool
+also checks missing-package installation receives empty stdin. Hosted Android
+verification remains pending on the updated exact commit.

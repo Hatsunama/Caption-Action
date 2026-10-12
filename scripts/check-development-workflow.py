@@ -13,6 +13,42 @@ JOB_TEXT = WORKFLOW.split('\njobs:\n', 1)[1]
 JOBS = {m.group(1): m.group(2) for m in re.finditer(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', JOB_TEXT, re.M | re.S)}
 
 class DevelopmentWorkflowTest(unittest.TestCase):
+    def test_hosted_sdk_tools_work_without_preexisting_path(self):
+        for name, body in JOBS.items():
+            match = re.search(r'      - name: Reuse hosted SDK.*?        run: \|\n(.*?)(?=      - |\Z)', body, re.S)
+            self.assertIsNotNone(match, name)
+            script = ''.join(line[10:] + '\n' for line in match[1].splitlines())
+            for installed in (True, False):
+                with self.subTest(job=name, installed=installed), tempfile.TemporaryDirectory() as directory:
+                    folder = Path(directory)
+                    sdk = folder / 'sdk'
+                    tool_dir = sdk / 'cmdline-tools/latest/bin'
+                    tool_dir.mkdir(parents=True)
+                    tool = tool_dir / 'sdkmanager'
+                    tool.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$SDK_CALLS"\nif [[ "$*" != *--list_installed* ]]; then test -z "$(cat)"; fi\n')
+                    tool.chmod(0o755)
+                    if installed:
+                        jar = sdk / 'platforms/android-36/android.jar'
+                        jar.parent.mkdir(parents=True)
+                        jar.touch()
+                        aapt = sdk / 'build-tools/35.0.0/aapt2'
+                        aapt.parent.mkdir(parents=True)
+                        aapt.touch()
+                        aapt.chmod(0o755)
+                    env = dict(os.environ, PATH='/usr/bin:/bin', ANDROID_HOME=str(sdk),
+                               GITHUB_ENV=str(folder / 'env'), GITHUB_PATH=str(folder / 'path'),
+                               SDK_CALLS=str(folder / 'calls'))
+                    result = subprocess.run(['bash', '-c', script], cwd=folder, env=env,
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    calls = (folder / 'calls').read_text().splitlines()
+                    self.assertEqual(1 if installed else 2, len(calls))
+                    self.assertIn('--list_installed', calls[-1])
+                    if not installed:
+                        self.assertIn('platforms;android-36 build-tools;35.0.0', calls[0])
+                    self.assertIn(str(tool_dir), (folder / 'path').read_text())
+                    self.assertIn(str(sdk / 'platform-tools'), (folder / 'path').read_text())
+
     def test_default_job_builds_only_development_apk(self):
         body = JOBS.get('development-checks', JOBS.get('unsigned-build', ''))
         tasks = set(re.findall(r':app:[A-Za-z]+', body))
