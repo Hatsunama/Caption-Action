@@ -17,12 +17,28 @@ jobs:
   unsigned-build:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      ANDROID_HOME: ${{ runner.temp }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+      - name: Reuse only the owner-approved standard SDK agreement
+        shell: bash
+        run: |
+          # https://developer.android.com/studio/terms was approved for these builds.
+          # This is the recorded standard license hash, not an optional-license sweep.
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf '%s\n' '24333f8a63b6825ea9c5514f83c2829b004d1fee' > "$ANDROID_HOME/licenses/android-sdk-license"
+      - uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: false
+          packages: ''
       - name: Install required SDK packages without accepting new licenses
         shell: bash
         run: |
