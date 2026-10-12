@@ -1,0 +1,56 @@
+name: Android source checks and unsigned artifacts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: caption-android-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unsigned-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install required SDK packages without accepting new licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' < /dev/null
+      - name: Unit tests, full lint, debug compilation and unsigned release packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:lintRelease :app:preparePlayAab :app:prepareSolanaApk --no-daemon --max-workers=1 --stacktrace
+      - name: Audit archive sizes and native alignment
+        run: |
+          python3 scripts/audit-package.py app/build/distribution/play/*.aab app/build/distribution/solana/*.apk > app/build/distribution/package-audit.json
+          sha256sum app/build/distribution/play/*.aab app/build/distribution/solana/*.apk > app/build/distribution/SHA256SUMS
+      - name: Preserve check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: caption-check-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve unsigned artifacts (never publish or sign)
+        uses: actions/upload-artifact@v4
+        with:
+          name: caption-unsigned-review-artifacts
+          path: app/build/distribution/
+          if-no-files-found: error
+          retention-days: 7
