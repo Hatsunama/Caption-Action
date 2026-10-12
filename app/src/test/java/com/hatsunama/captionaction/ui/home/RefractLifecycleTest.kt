@@ -6,6 +6,7 @@ import android.app.Application
 import android.view.View
 import android.os.Looper
 import org.robolectric.Shadows
+import org.robolectric.util.ReflectionHelpers
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
@@ -21,6 +22,13 @@ class RefractLifecycleTest {
         ValueAnimator::class.java.getDeclaredMethod("setDurationScale", Float::class.javaPrimitiveType)
             .invoke(null, value)
     }
+    // API28's headless window remains GONE even after ActivityController.visible().
+    // Set only the framework window boundary, not the renderer/host policy state.
+    private fun visibleWindow(view: View) {
+        val attachInfo = ReflectionHelpers.getField<Any>(view, "mAttachInfo")
+        ReflectionHelpers.setField(attachInfo, "mWindowVisibility", View.VISIBLE)
+        view.dispatchWindowVisibilityChanged(View.VISIBLE)
+    }
     @After fun restoreAnimations() { scale(1f) }
 
     @Test fun ownerPause_cannotBeOverriddenByWindowVisibility() {
@@ -30,6 +38,7 @@ class RefractLifecycleTest {
             controller.get().setContentView(view)
             controller.visible()
             assertTrue("test must attach the real view", view.isAttachedToWindow)
+            visibleWindow(view)
             view.setAnimating(true)
             view.setAnimating(false)
             view.visibility = View.GONE
@@ -47,6 +56,7 @@ class RefractLifecycleTest {
             controller.get().setContentView(view)
             controller.visible()
             assertTrue("test must attach the real view", view.isAttachedToWindow)
+            visibleWindow(view)
             view.setAnimating(true)
             view.viewTreeObserver.dispatchOnPreDraw()
             assertFalse("disabled animations must not queue motion", view.isAnimating())
@@ -60,6 +70,7 @@ class RefractLifecycleTest {
             controller.get().setContentView(view)
             controller.visible().windowFocusChanged(true)
             Shadows.shadowOf(Looper.getMainLooper()).idle()
+            visibleWindow(view)
             view.setAnimating(true)
             view.viewTreeObserver.dispatchOnPreDraw()
             assertTrue("active visible view must animate; attached=${view.isAttachedToWindow}, shown=${view.isShown}, window=${view.windowVisibility}", view.isAnimating())
@@ -95,8 +106,9 @@ class RefractLifecycleTest {
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             val view = RefractBackgroundView(controller.get())
             if (disabledMotion) scale(0f)
-            view.setAnimating(disabledMotion)
             controller.get().setContentView(view)
+            visibleWindow(view)
+            view.setAnimating(disabledMotion)
             assertTrue("fixture must attach before first layout", view.isAttachedToWindow)
             view.measure(View.MeasureSpec.makeMeasureSpec(640, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY))
