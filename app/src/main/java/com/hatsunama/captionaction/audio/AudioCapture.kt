@@ -11,6 +11,7 @@ import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -184,6 +185,7 @@ class AudioCapture(private val context: Context) {
      * Build AudioPlaybackCaptureConfiguration + AudioRecord and startRecording.
      * Returns false on hard init failure (never on silence). Always Log.e on fail.
      */
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun buildAndStartPlayback(
         projection: MediaProjection,
         usages: IntArray,
