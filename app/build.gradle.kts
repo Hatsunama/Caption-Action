@@ -47,6 +47,9 @@ android {
         viewBinding = true
         buildConfig = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     lint {
         checkReleaseBuilds = true
         abortOnError = true
@@ -81,6 +84,7 @@ dependencies {
     implementation("com.google.mlkit:language-id:17.0.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.24")
 }
 

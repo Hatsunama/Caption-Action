@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:fitsSystemWindows="true"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ca_refract_charcoal">
+
+    <com.hatsunama.captionaction.ui.home.RefractBackgroundView
+        android:id="@+id/refractBackground"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="false"
+        android:focusable="false"
+        android:importantForAccessibility="no" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnBack"
+        style="@style/Widget.CaptionAction.Button.Soft"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="12dp"
+        android:minHeight="48dp"
+        android:text="@string/back"
+        android:textColor="@color/ca_on_refract" />
+
+    <!-- Side-by-side panes keep the transcript usable on short landscape screens. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="64dp"
+        android:layout_marginBottom="8dp"
+        android:orientation="horizontal">
+
+        <ScrollView
+            android:id="@+id/captionScroll"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:paddingHorizontal="16dp">
+
+            <TextView
+                android:id="@+id/captionText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal|bottom"
+                android:lineSpacingExtra="6dp"
+                android:paddingVertical="16dp"
+                android:text="@string/mic_translator_empty"
+                android:textColor="@color/ca_on_refract"
+                android:textSize="22sp" />
+        </ScrollView>
+
+        <!-- Controls can scroll independently on very short windows. -->
+        <ScrollView
+            android:layout_width="240dp"
+            android:layout_height="match_parent"
+            android:fillViewport="true"
+            android:clipToPadding="false"
+            android:paddingEnd="12dp">
+
+            <LinearLayout
+                android:id="@+id/bottomControls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:paddingBottom="12dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnMic"
+                    android:layout_width="72dp"
+                    android:layout_height="72dp"
+                    android:layout_marginBottom="4dp"
+                    android:contentDescription="@string/mic_translator_mic_off"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="🎙"
+                    android:textSize="28sp" />
+
+                <LinearLayout
+                    android:id="@+id/languageRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="118dp"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:gravity="center_horizontal"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/mic_translator_from"
+                            android:textAllCaps="false"
+                            android:textColor="@color/ca_on_refract"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:alpha="0.7" />
+
+                        <NumberPicker
+                            android:id="@+id/pickerFrom"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:descendantFocusability="blocksDescendants" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:gravity="center_horizontal"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/mic_translator_to"
+                            android:textAllCaps="false"
+                            android:textColor="@color/ca_on_refract"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:alpha="0.7" />
+
+                        <NumberPicker
+                            android:id="@+id/pickerTo"
+                            android:layout_width="match_parent"
+                            android:layout_height="0dp"
+                            android:layout_weight="1"
+                            android:descendantFocusability="blocksDescendants" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+</FrameLayout>
