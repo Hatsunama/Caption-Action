@@ -9,6 +9,9 @@ import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -17,7 +20,13 @@ class SherpaInferenceEngine(
 ) : InferenceEngine {
     override val name: String = "Sherpa-ONNX SenseVoice"
 
-    private var recognizer: OfflineRecognizer? = null
+    private class RecognizerOwner(val recognizer: OfflineRecognizer) {
+        var users = 0
+        var retired = false
+    }
+
+    private var owner: RecognizerOwner? = null
+    private var loadGeneration = 0L
     private val lock = Any()
     private val pcmAccum = ArrayList<Short>(16_000 * 4)
     private var lastSpeechAt = 0L
@@ -54,7 +63,13 @@ class SherpaInferenceEngine(
     override fun preferredWindowSamples(): Int = LIVE_WINDOW_SAMPLES
 
     override suspend fun load(modelFile: File): Boolean = withContext(Dispatchers.IO) {
-        release()
+        val retired: OfflineRecognizer?
+        val generation = synchronized(lock) {
+            loadGeneration++
+            retired = retireLocked()
+            loadGeneration
+        }
+        releaseRecognizer(retired)
         if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
             Log.w(TAG, "SenseVoice model missing or too small: ${modelFile.absolutePath}")
             return@withContext false
@@ -64,6 +79,7 @@ class SherpaInferenceEngine(
             Log.w(TAG, "ggml model present but sherpa needs ONNX SenseVoice; refusing ${modelFile.name}")
             return@withContext false
         }
+        var unpublished: OfflineRecognizer? = null
         return@withContext try {
             val tokens = ensureTokensBeside(modelFile)
             val config = OfflineRecognizerConfig(
@@ -82,16 +98,31 @@ class SherpaInferenceEngine(
                 decodingMethod = "greedy_search"
             )
             val rec = OfflineRecognizer(assetManager = null, config = config)
-            synchronized(lock) {
-                recognizer = rec
-                pcmAccum.clear()
+            unpublished = rec
+            val context = currentCoroutineContext()
+            val published = synchronized(lock) {
+                context.ensureActive()
+                if (generation != loadGeneration) {
+                    false
+                } else {
+                    owner = RecognizerOwner(rec)
+                    pcmAccum.clear()
+                    true
+                }
             }
-            Log.i(TAG, "Loaded SenseVoice from ${modelFile.absolutePath}")
-            true
+            if (published) {
+                unpublished = null
+                Log.i(TAG, "Loaded SenseVoice from ${modelFile.absolutePath}")
+            }
+            published
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to create OfflineRecognizer", t)
-            release()
             false
+        } finally {
+            // Construction can finish after release, a newer load, or cancellation.
+            releaseRecognizer(unpublished)
         }
     }
 
@@ -101,128 +132,134 @@ class SherpaInferenceEngine(
         forceFlush: Boolean
     ): CaptionResult? =
         withContext(Dispatchers.Default) {
-            val rec = synchronized(lock) { recognizer }
-            if (rec == null) {
+            val use = synchronized(lock) { owner?.also { it.users++ } }
+            if (use == null) {
                 lastMode = ""
-                return@withContext null
-            }
-            if (pcm16le.isEmpty()) {
-                lastMode = ""
-                return@withContext null
-            }
-
-            val now = System.currentTimeMillis()
-            val energy = rms(pcm16le)
-            val speechGate = if (playbackCapture) PLAYBACK_SPEECH_RMS else MIC_SPEECH_RMS
-            val speaking = energy >= speechGate
-            if (speaking) lastSpeechAt = now
-
-            val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
-            val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_SPEECH
-
-            val samples: ShortArray?
-            if (forceFlush) {
-                synchronized(lock) { pcmAccum.clear() }
-                samples = when {
-                    pcm16le.size >= minSamples -> pcm16le
-                    pcm16le.size >= minSamples / 2 -> pcm16le
-                    else -> null
-                }
-            } else {
-                val shouldFlush: Boolean
-                val chunk: ShortArray?
-                synchronized(lock) {
-                    for (s in pcm16le) pcmAccum.add(s)
-                    while (pcmAccum.size > MAX_SAMPLES) {
-                        pcmAccum.removeAt(0)
-                    }
-                    val n = pcmAccum.size
-                    shouldFlush = if (playbackCapture) {
-                        // Time-window flush only — muted volume must still caption.
-                        when {
-                            n >= MAX_SAMPLES -> true
-                            n >= minSamples -> true
-                            else -> false
-                        }
-                    } else {
-                        when {
-                            n >= MAX_SAMPLES -> true
-                            n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
-                            n >= flushAt -> true
-                            else -> false
-                        }
-                    }
-                    if (!shouldFlush) {
-                        chunk = null
-                    } else if (pcmAccum.size < minSamples / 2) {
-                        chunk = null
-                    } else {
-                        val arr = ShortArray(pcmAccum.size)
-                        for (i in pcmAccum.indices) arr[i] = pcmAccum[i]
-                        pcmAccum.clear()
-                        chunk = arr
-                    }
-                }
-                samples = chunk
-            }
-            val pcm = samples
-            if (pcm == null) {
-                lastMode = ""
-                return@withContext null
-            }
-            val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
-            if (rms(pcm) < discardGate) {
-                lastMode = ""
-                return@withContext null
-            }
-
-            val floats = FloatArray(pcm.size) { i -> pcm[i] / 32768.0f }
-            val stream = try {
-                rec.createStream()
-            } catch (t: Throwable) {
-                Log.e(TAG, "createStream failed", t)
                 return@withContext null
             }
             try {
-                stream.acceptWaveform(floats, sampleRateHz)
-                rec.decode(stream)
-                val result = rec.getResult(stream)
-                val text = AsrJunkFilter.sanitizeOrNull(result.text) ?: return@withContext null
-                // Language-agnostic hallucination gate: Latin-leaning session + sudden CJK dump
-                // is almost always SenseVoice collapsing non-CJK audio into zh/ja/ko. Drop it.
-                // Real CJK speech builds positive bias first and is kept. No per-language special case.
-                if (AsrJunkFilter.scriptFamilyOf(text) == AsrJunkFilter.ScriptFamily.CJK &&
-                    scriptBias < 0
-                ) {
-                    Log.i(TAG, "rejected CJK dump on Latin-biased session chars=${text.length}")
-                    lastMode = "auto-reject-cjk-dump"
+                val rec = use.recognizer
+                if (pcm16le.isEmpty()) {
+                    lastMode = ""
                     return@withContext null
                 }
-                val rawLang = result.lang.ifBlank { "auto" }
-                val lang = enrichLangFromScript(text, rawLang)
-                updateScriptBias(text)
-                // auto at load; bias tag helps logs when ZH→EN (target en, CJK speech).
-                lastMode = when {
-                    scriptBias >= 2 -> "auto-cjk-bias"
-                    else -> "auto-translate"
+
+                val now = System.currentTimeMillis()
+                val energy = rms(pcm16le)
+                val speechGate = if (playbackCapture) PLAYBACK_SPEECH_RMS else MIC_SPEECH_RMS
+                val speaking = energy >= speechGate
+                if (speaking) lastSpeechAt = now
+
+                val minSamples = if (playbackCapture) MIN_SAMPLES_PLAYBACK else MIN_SAMPLES_MIC
+                val flushAt = if (playbackCapture) FLUSH_AT_PLAYBACK else FLUSH_AT_SPEECH
+
+                val samples: ShortArray?
+                if (forceFlush) {
+                    synchronized(lock) { pcmAccum.clear() }
+                    samples = when {
+                        pcm16le.size >= minSamples -> pcm16le
+                        pcm16le.size >= minSamples / 2 -> pcm16le
+                        else -> null
+                    }
+                } else {
+                    val shouldFlush: Boolean
+                    val chunk: ShortArray?
+                    synchronized(lock) {
+                        for (s in pcm16le) pcmAccum.add(s)
+                        while (pcmAccum.size > MAX_SAMPLES) {
+                            pcmAccum.removeAt(0)
+                        }
+                        val n = pcmAccum.size
+                        shouldFlush = if (playbackCapture) {
+                            // Time-window flush only — muted volume must still caption.
+                            when {
+                                n >= MAX_SAMPLES -> true
+                                n >= minSamples -> true
+                                else -> false
+                            }
+                        } else {
+                            when {
+                                n >= MAX_SAMPLES -> true
+                                n >= minSamples && !speaking && (now - lastSpeechAt) > 400L -> true
+                                n >= flushAt -> true
+                                else -> false
+                            }
+                        }
+                        if (!shouldFlush) {
+                            chunk = null
+                        } else if (pcmAccum.size < minSamples / 2) {
+                            chunk = null
+                        } else {
+                            val arr = ShortArray(pcmAccum.size)
+                            for (i in pcmAccum.indices) arr[i] = pcmAccum[i]
+                            pcmAccum.clear()
+                            chunk = arr
+                        }
+                    }
+                    samples = chunk
                 }
-                val endMs = System.currentTimeMillis()
-                CaptionResult(
-                    text = text,
-                    language = lang,
-                    confidence = 0.85f,
-                    startMs = endMs - (pcm.size * 1000L / sampleRateHz),
-                    endMs = endMs,
-                    translatedText = null
-                )
-            } catch (t: Throwable) {
-                Log.e(TAG, "transcribe failed errorType=${t.javaClass.simpleName}")
-                null
-            } finally {
+                val pcm = samples
+                if (pcm == null) {
+                    lastMode = ""
+                    return@withContext null
+                }
+                val discardGate = if (playbackCapture) PLAYBACK_DISCARD_RMS else MIC_DISCARD_RMS
+                if (rms(pcm) < discardGate) {
+                    lastMode = ""
+                    return@withContext null
+                }
+
+                val floats = FloatArray(pcm.size) { i -> pcm[i] / 32768.0f }
+                val stream = try {
+                    rec.createStream()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "createStream failed", t)
+                    return@withContext null
+                }
                 try {
-                    stream.release()
-                } catch (_: Throwable) {
+                    stream.acceptWaveform(floats, sampleRateHz)
+                    rec.decode(stream)
+                    val result = rec.getResult(stream)
+                    val text = AsrJunkFilter.sanitizeOrNull(result.text) ?: return@withContext null
+                    // Language-agnostic hallucination gate: Latin-leaning session + sudden CJK dump
+                    // is almost always SenseVoice collapsing non-CJK audio into zh/ja/ko. Drop it.
+                    // Real CJK speech builds positive bias first and is kept. No per-language special case.
+                    if (AsrJunkFilter.scriptFamilyOf(text) == AsrJunkFilter.ScriptFamily.CJK &&
+                        scriptBias < 0
+                    ) {
+                        Log.i(TAG, "rejected CJK dump on Latin-biased session chars=${text.length}")
+                        lastMode = "auto-reject-cjk-dump"
+                        return@withContext null
+                    }
+                    val rawLang = result.lang.ifBlank { "auto" }
+                    val lang = enrichLangFromScript(text, rawLang)
+                    updateScriptBias(text)
+                    // auto at load; bias tag helps logs when ZH→EN (target en, CJK speech).
+                    lastMode = when {
+                        scriptBias >= 2 -> "auto-cjk-bias"
+                        else -> "auto-translate"
+                    }
+                    val endMs = System.currentTimeMillis()
+                    CaptionResult(
+                        text = text,
+                        language = lang,
+                        confidence = 0.85f,
+                        startMs = endMs - (pcm.size * 1000L / sampleRateHz),
+                        endMs = endMs,
+                        translatedText = null
+                    )
+                } catch (t: Throwable) {
+                    Log.e(TAG, "transcribe failed errorType=${t.javaClass.simpleName}")
+                    null
+                } finally {
+                    try {
+                        stream.release()
+                    } catch (_: Throwable) {
+                    }
                 }
+            } finally {
+                // Native stream cleanup above must finish before its recognizer is freed.
+                finishUse(use)
             }
         }
 
@@ -231,16 +268,37 @@ class SherpaInferenceEngine(
     }
 
     override fun release() {
-        synchronized(lock) {
-            try {
-                recognizer?.release()
-            } catch (_: Throwable) {
-            }
-            recognizer = null
-            pcmAccum.clear()
+        val retired = synchronized(lock) {
+            loadGeneration++
+            retireLocked()
         }
+        releaseRecognizer(retired)
+    }
+
+    /** Called with lock held; detaches immediately without waiting for native work. */
+    private fun retireLocked(): OfflineRecognizer? {
+        val old = owner
+        owner = null
+        old?.retired = true
+        pcmAccum.clear()
         lastMode = ""
         scriptBias = 0
+        return old?.takeIf { it.users == 0 }?.recognizer
+    }
+
+    private fun finishUse(use: RecognizerOwner) {
+        val retired = synchronized(lock) {
+            use.users--
+            if (use.retired && use.users == 0) use.recognizer else null
+        }
+        releaseRecognizer(retired)
+    }
+
+    private fun releaseRecognizer(recognizer: OfflineRecognizer?) {
+        try {
+            recognizer?.release()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun ensureTokensBeside(modelFile: File): File {

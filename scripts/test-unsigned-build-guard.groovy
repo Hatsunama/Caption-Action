@@ -35,7 +35,7 @@ int passed = 0
         def signed = (scenario == 'debug-signed' && name == 'debug') ||
                      (scenario == 'test-signed' && name == 'debugAndroidTest') ||
                      (scenario == 'release-signed' && name == 'release')
-        [name: name, applicationId: 'fixture.' + name, signingConfig: signed ? 'debug' : null,
+        [name: name, applicationId: [debug:'com.hatsunama.captionaction.debug', release:'com.hatsunama.captionaction', debugAndroidTest:'com.hatsunama.captionaction.debug.test'][name], signingConfig: signed ? 'debug' : null,
          isSigningReady: { signed || scenario == 'signing-ready' }]
     }
     def container = { rows -> [all: { Closure closure -> rows.each(closure) }] }
@@ -67,7 +67,7 @@ int passed = 0
     }
     boolean rejected = false
     try {
-        new GroovyShell(this.class.classLoader, new Binding([out: new PrintWriter(new StringWriter()), project: project, gradle: gradle, tasks: [register: { String name, Class type, Closure c -> assert name == "testUnsignedBuildGuard" }]])).evaluate(guard)
+        new GroovyShell(this.class.classLoader, new Binding([out: new PrintWriter(new StringWriter()), project: project, gradle: gradle, tasks: [register: { String name, Class type, Closure c -> assert name in ["testUnsignedBuildGuard", "testQaIdentityGuard"] }]])).evaluate(guard)
         callbacks.projects.call()
         callbacks.graph.call([allTasks: [task]])
     } catch (GradleException expected) {

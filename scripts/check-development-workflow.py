@@ -189,8 +189,9 @@ while True:time.sleep(1)
         upload = body.index('name: Preserve development and instrumentation APKs')
         self.assertLess(signature, upload)
         command = body[signature:].splitlines()[0]
-        self.assertIn('app/build/outputs/apk/debug/*.apk', command)
-        self.assertIn('app/build/outputs/apk/androidTest/debug/*.apk', command)
+        self.assertIn('ci-artifacts/isolated-qa/*.apk', command)
+        self.assertIn('cp app/build/outputs/apk/debug/app-debug-unsigned.apk ci-artifacts/isolated-qa/app-qa-unsigned.apk', body)
+        self.assertIn('cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk ci-artifacts/isolated-qa/app-qa-androidTest.apk', body)
         release = JOBS['final-release-artifacts']
         self.assertLess(release.index('scripts/verify-unsigned-apks.py'), release.index('name: Preserve unsigned artifacts'))
         self.assertLess(release.index('scripts/verify-unsigned-aabs.py'), release.index('name: Preserve unsigned artifacts'))
@@ -208,10 +209,26 @@ while True:time.sleep(1)
         self.assertNotIn(':app:prepareSolanaApk', tasks, 'Normal development runs must not package release APKs')
         self.assertTrue({':app:compileDebugKotlin', ':app:testDebugUnitTest', ':app:testReleaseUnitTest', ':app:lintDebug', ':app:lintRelease', ':app:assembleDebug', ':app:assembleDebugAndroidTest'} <= tasks)
         self.assertIn('app/build/outputs/apk/debug/', body)
-        self.assertIn('app/build/outputs/apk/androidTest/debug/*.apk', body)
+        self.assertIn('app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk', body)
         self.assertIn('name: caption-development-apks', body)
         self.assertIn('if-no-files-found: error', body)
         self.assertNotRegex(body, r'(?m)^    if:', 'Normal development checks must stay unconditional')
+
+    def test_isolated_qa_build_does_not_change_default_test_configuration(self):
+        body = JOBS['development-checks']
+        commands = [line.strip() for line in body.splitlines() if line.strip().startswith('./gradlew ')]
+        default = [line for line in commands if ':app:testDebugUnitTest' in line]
+        qa = [line for line in commands if ':app:assembleDebug ' in line]
+        self.assertEqual(1, len(default))
+        self.assertEqual(1, len(qa))
+        self.assertNotIn('caption.isolatedQa', default[0])
+        self.assertIn('-Pcaption.isolatedQa=true', qa[0])
+        self.assertNotIn('UnitTest', qa[0])
+        self.assertLess(body.index(default[0]), body.index(qa[0]))
+        self.assertIn('scripts/verify-qa-identity.py', body)
+        self.assertLess(body.index('scripts/verify-qa-identity.py'), body.index('cp app/build/outputs/apk/debug'))
+        self.assertIn('ci-provenance/qa-identities.json', body)
+        self.assertIn('ci-artifacts/isolated-qa/*.apk', body)
 
     def test_release_artifacts_require_deliberate_checkpoint(self):
         self.assertRegex(WORKFLOW, r'release_checkpoint:\n\s+description:.*\n\s+type: boolean\n\s+default: false')

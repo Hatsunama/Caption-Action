@@ -71,28 +71,38 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check-development-workflow.py 2>&1 | tee ci-logs/workflow-config.log
+          python3 scripts/test-qa-identity.py 2>&1 | tee ci-logs/qa-identity-fixtures.log
           python3 scripts/test-unsigned-artifacts.py 2>&1 | tee ci-logs/unsigned-artifact-fixtures.log
           python3 scripts/test-recorder-emulator-helper.py 2>&1 | tee ci-logs/emulator-helper-fixtures.log
           python3 scripts/check-orientation-resources.py 2>&1 | tee ci-logs/orientation-checks.log
           printf '%s\n' \
             '3ae35fd6e40bb419ef4d5a6cddc8baea7ac498e3d91f61b3b19ccfe502c9452b  app/src/main/java/com/hatsunama/refract/RefractBackgroundView.kt' \
             '4790b0f5976406755f9f2b72c5a390aad5746441f95591074382f28710e8f66d  app/src/main/java/com/hatsunama/refract/RefractSeed.kt' | sha256sum --check
-      - name: Full unit tests, lint and development APK only
+      - name: Full unit tests and lint with default package identities
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew :app:testUnsignedBuildGuard :app:compileDebugKotlin :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --max-workers=1 --no-parallel --stacktrace 2>&1 | tee ci-logs/gradle-development.log
+          ./gradlew :app:testUnsignedBuildGuard :app:testQaIdentityGuard :app:compileDebugKotlin :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:lintRelease --no-daemon --max-workers=1 --no-parallel --stacktrace 2>&1 | tee ci-logs/gradle-development.log
+      - name: Build isolated unsigned QA app and instrumentation APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew -Pcaption.isolatedQa=true :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --max-workers=1 --no-parallel --stacktrace 2>&1 | tee ci-logs/gradle-isolated-qa.log
+          python3 scripts/verify-qa-identity.py --aapt "$ANDROID_HOME/build-tools/35.0.0/aapt" --build-dir app/build > ci-provenance/qa-identities.json
+          mkdir -p ci-artifacts/isolated-qa
+          cp app/build/outputs/apk/debug/app-debug-unsigned.apk ci-artifacts/isolated-qa/app-qa-unsigned.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk ci-artifacts/isolated-qa/app-qa-androidTest.apk
       - name: Verify unsigned app and instrumentation APKs
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/verify-unsigned-apks.py --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk > ci-provenance/development-signatures.json
+          python3 scripts/verify-unsigned-apks.py --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" ci-artifacts/isolated-qa/*.apk > ci-provenance/development-signatures.json
       - name: Audit and checksum development APK
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/audit-package.py app/build/outputs/apk/debug/*.apk > ci-provenance/development-package-audit.json
-          sha256sum app/build/outputs/apk/debug/*.apk app/build/outputs/apk/androidTest/debug/*.apk > ci-provenance/SHA256SUMS
+          python3 scripts/audit-package.py ci-artifacts/isolated-qa/app-qa-unsigned.apk > ci-provenance/development-package-audit.json
+          sha256sum ci-artifacts/isolated-qa/*.apk > ci-provenance/SHA256SUMS
       - name: Preserve reports, logs and exact-commit provenance
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -110,8 +120,7 @@ jobs:
         with:
           name: caption-development-apks
           path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/androidTest/debug/*.apk
+            ci-artifacts/isolated-qa/*.apk
           if-no-files-found: error
           retention-days: 7
 

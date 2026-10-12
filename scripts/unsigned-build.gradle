@@ -30,8 +30,19 @@ gradle.projectsEvaluated {
         }
         checked[variant.name] = [applicationId: variant.applicationId, signingConfig: null, signingReady: false]
     }
+    def isolatedQaProperty = project.findProperty('caption.isolatedQa')?.toString()
+    if (!(isolatedQaProperty in [null, 'true', 'false'])) {
+        throw new GradleException('caption.isolatedQa must be exactly true or false')
+    }
+    def debugId = 'com.hatsunama.captionaction' + (isolatedQaProperty == 'true' ? '.qa' : '.debug')
     android.applicationVariants.all(record)
     android.testVariants.all(record)
+    def expectedIds = [debug: debugId, release: 'com.hatsunama.captionaction', debugAndroidTest: debugId + '.test']
+    expectedIds.each { name, expected ->
+        if (checked[name]?.applicationId != expected) {
+            throw new GradleException('Unexpected application identity for ' + name + ': ' + checked[name]?.applicationId)
+        }
+    }
     if (!checked.keySet().containsAll(['debug', 'release', 'debugAndroidTest'])) {
         throw new GradleException('Expected application and instrumentation variants were not verified')
     }
@@ -83,5 +94,16 @@ tasks.register('testUnsignedBuildGuard', JavaExec) {
     mainClass = 'groovy.ui.GroovyMain'
     maxHeapSize = '64m'
     args rootProject.file('scripts/test-unsigned-build-guard.groovy').absolutePath,
+         rootProject.file('scripts/unsigned-build.gradle').absolutePath
+}
+
+
+tasks.register('testQaIdentityGuard', JavaExec) {
+    group = 'verification'
+    description = 'Reject mismatched default and opt-in isolated QA app/test identities.'
+    classpath = files(fileTree(new File(gradle.gradleHomeDir, 'lib')) { include '**/*.jar' })
+    mainClass = 'groovy.ui.GroovyMain'
+    maxHeapSize = '64m'
+    args rootProject.file('scripts/test-qa-identity-guard.groovy').absolutePath,
          rootProject.file('scripts/unsigned-build.gradle').absolutePath
 }

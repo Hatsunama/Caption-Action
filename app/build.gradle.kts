@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Opt-in QA uses a separate install identity; never replace existing production/debug data.
+val isolatedQaProperty = providers.gradleProperty("caption.isolatedQa").orNull
+require(isolatedQaProperty == null || isolatedQaProperty == "true" || isolatedQaProperty == "false") {
+    "caption.isolatedQa must be exactly true or false"
+}
+val isolatedQa = isolatedQaProperty == "true"
+
 android {
     namespace = "com.hatsunama.captionaction"
     compileSdk = 36
@@ -34,7 +41,7 @@ android {
             isMinifyEnabled = false
             // Public development and instrumentation artifacts are signed only later on C.
             signingConfig = null
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = if (isolatedQa) ".qa" else ".debug"
         }
     }
 
