@@ -88,3 +88,17 @@ The fake Gradle boundary asserts the exact retention property on every invocatio
 claim is made that the separately uploaded development-job APK was device-tested.
 Controlled fixtures verify both acceleration branches, exact installed-byte
 capture, missing/split identity rejection and preservation of original failures.
+
+The first software-emulation setup run (`38256163631`, head
+`bb1f986ed787455ee19592ed6fb96e88414ef05a`) also passed the full unit/lint/build
+job, verified from raw JUnit reports (111 tests per variant, zero skipped or
+failed). It never started an emulator: the version command failed loading
+`libpulse.so.0`. This is a host-library prerequisite failure, not evidence about
+software-emulation performance. The workflow now logs the actual QEMU dependency
+list before and after installing only the missing official Ubuntu
+[`libpulse0` client library](https://packages.ubuntu.com/noble/libpulse0), without
+recommended packages, audio daemon configuration, microphone access or security
+permission changes. It records the installed package version and requires the
+real emulator version command to succeed before boot. A controlled fixture of
+the prior boot step reproduces exit 127, while the updated runtime step installs
+only that library when absent and skips installation when present.

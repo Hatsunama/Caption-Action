@@ -253,11 +253,25 @@ jobs:
           [[ -f "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/package.xml" ]] || missing+=('system-images;android-35;google_apis;x86_64')
           if (( ${#missing[@]} )); then sdkmanager "${missing[@]}" < /dev/null; fi
           sdkmanager --list_installed > ci-provenance/emulator-sdk-packages.txt
+      - name: Verify emulator host runtime and install only missing client library
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee ci-logs/emulator-host-runtime.log) 2>&1
+          QEMU="$ANDROID_HOME/emulator/qemu/linux-x86_64/qemu-system-x86_64"
+          export LD_LIBRARY_PATH="$ANDROID_HOME/emulator/lib64:$ANDROID_HOME/emulator/lib64/qt/lib:${LD_LIBRARY_PATH:-}"
+          ldd "$QEMU" > ci-provenance/emulator-ldd-before.txt
+          if ! dpkg-query -W -f='${db:Status-Status}' libpulse0 2>/dev/null | grep -qx installed; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libpulse0
+          fi
+          dpkg-query -W libpulse0 > ci-provenance/emulator-host-package.txt
+          ldd "$QEMU" > ci-provenance/emulator-ldd-after.txt
+          env -u LD_LIBRARY_PATH "$ANDROID_HOME/emulator/emulator" -version > ci-provenance/emulator-version.txt 2>&1
       - name: Boot compatible emulator and run real recorder flows
         shell: bash
         run: |
           set -euo pipefail
-          "$ANDROID_HOME/emulator/emulator" -version > ci-provenance/emulator-version.txt 2>&1
           printf 'no\n' | avdmanager create avd --force --name caption-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_2
           "$ANDROID_HOME/emulator/emulator" -avd caption-ci -accel "$EMULATOR_ACCEL" -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 2048 -cores 2 > ci-logs/emulator.log 2>&1 &
           EMULATOR_PID=$!

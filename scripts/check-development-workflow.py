@@ -57,8 +57,10 @@ class DevelopmentWorkflowTest(unittest.TestCase):
         self.assertIn('SECONDS + 600', body)
         self.assertIn('timeout --signal=TERM --kill-after=30s 1200', body)
         self.assertIn('emulator-acceleration.txt', body)
-        self.assertNotRegex(body, r'(?m)^\s+(sudo|chmod|chown|usermod) ')
+        self.assertNotRegex(body, r'(?m)^\s+(?:sudo )?(chmod|chown|usermod) ')
+        self.assertEqual(['apt-get update', 'apt-get install -y --no-install-recommends libpulse0'], re.findall(r'^\s+sudo (.*)$', body, re.M))
         self.assertIn('-version', body)
+        self.assertIn('env -u LD_LIBRARY_PATH \"$ANDROID_HOME/emulator/emulator\" -version', body)
 
     def test_acceleration_selection_records_both_modes_without_changing_permissions(self):
         match = re.search(r'      - name: Select existing acceleration.*?        run: \|\n(.*?)(?=      - |\Z)', JOBS['emulator-recorder'], re.S)
@@ -76,6 +78,46 @@ class DevelopmentWorkflowTest(unittest.TestCase):
                 self.assertIn('EMULATOR_ACCEL=' + ('on' if available == '1' else 'off'), settings)
                 self.assertEqual(available == '0', 'ANDROID_I_WANT_MY_TCG=yes' in settings)
                 self.assertTrue((root / 'ci-provenance/emulator-acceleration.txt').is_file())
+
+    def test_emulator_runtime_installs_only_missing_client_library_and_checks_version(self):
+        match = re.search(r'      - name: Verify emulator host runtime.*?        run: \|\n(.*?)(?=      - |\Z)', JOBS['emulator-recorder'], re.S)
+        if match is None:
+            match = re.search(r'      - name: Boot compatible emulator.*?        run: \|\n(.*?)(?=      - |\Z)', JOBS['emulator-recorder'], re.S)
+        self.assertIsNotNone(match)
+        script = ''.join(line[10:] + '\n' for line in match[1].splitlines())
+        for installed in (('0', '1') if 'Verify emulator host runtime' in JOBS['emulator-recorder'] else ('0',)):
+            with self.subTest(installed=installed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binaries = root / 'bin'
+                binaries.mkdir()
+                (root / 'ci-provenance').mkdir()
+                (root / 'ci-logs').mkdir()
+                emulator = root / 'sdk/emulator/emulator'
+                emulator.parent.mkdir(parents=True)
+                programs = {
+                    'sudo': '#!/bin/sh\nexec "$@"\n',
+                    'apt-get': '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\ncase "$*" in *install*) touch "$READY";; esac\n',
+                    'dpkg-query': '#!/bin/sh\nif test -f "$READY"; then echo installed; else exit 1; fi\n',
+                    'ldd': '#!/bin/sh\nif test -f "$READY"; then echo "libpulse.so.0 => /lib/libpulse.so.0"; else echo "libpulse.so.0 => not found"; fi\n',
+                }
+                for name, source in programs.items():
+                    path = binaries / name
+                    path.write_text(source)
+                    path.chmod(0o755)
+                emulator.write_text('#!/bin/sh\ntest -f "$READY" || exit 127\necho "fixture emulator version"\n')
+                emulator.chmod(0o755)
+                if installed == '1': (root / 'ready').touch()
+                env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ['PATH'],
+                           ANDROID_HOME=str(root / 'sdk'), READY=str(root / 'ready'), CALLS=str(root / 'calls'))
+                result = subprocess.run(['bash', '-c', script], cwd=root, env=env, capture_output=True, text=True, timeout=5)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn('fixture emulator version', (root / 'ci-provenance/emulator-version.txt').read_text())
+                self.assertNotIn('not found', (root / 'ci-provenance/emulator-ldd-after.txt').read_text())
+                if installed == '0':
+                    self.assertEqual(['update', 'install -y --no-install-recommends libpulse0'], (root / 'calls').read_text().splitlines())
+                    self.assertIn('not found', (root / 'ci-provenance/emulator-ldd-before.txt').read_text())
+                else:
+                    self.assertFalse((root / 'calls').exists())
 
     def test_default_job_builds_only_development_apk(self):
         body = JOBS.get('development-checks', JOBS.get('unsigned-build', ''))
