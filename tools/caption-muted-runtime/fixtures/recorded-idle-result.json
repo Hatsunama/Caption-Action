@@ -1,0 +1,266 @@
+{
+  "acceleration_check_passed": true,
+  "adb_loopback_verified": true,
+  "app_installed": false,
+  "capture_started": false,
+  "cleanup_errors": [],
+  "command_diagnostics": [
+    {
+      "command_label": "read_locale",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 1
+    },
+    {
+      "command_label": "read_fallback_locale",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 6
+    },
+    {
+      "command_label": "read_display_size",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 23
+    },
+    {
+      "command_label": "list_probe_package",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 0
+    },
+    {
+      "command_label": "audio_help",
+      "exit_code": 255,
+      "stderr_bytes": 0,
+      "stdout_bytes": 1731
+    },
+    {
+      "command_label": "audio_volume_min",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 40
+    },
+    {
+      "command_label": "audio_volume_max",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 41
+    },
+    {
+      "command_label": "audio_volume_read",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 37
+    },
+    {
+      "command_label": "media_session_volume_read",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 125
+    },
+    {
+      "command_label": "audio_volume_zero",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 46
+    },
+    {
+      "command_label": "audio_volume_read",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 37
+    },
+    {
+      "command_label": "media_session_volume_read",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 125
+    },
+    {
+      "command_label": "media_session_volume_read",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 125
+    },
+    {
+      "command_label": "read_projection_state",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 76
+    },
+    {
+      "command_label": "read_audio_state",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 22007
+    },
+    {
+      "command_label": "read_audio_policy",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 37798
+    },
+    {
+      "command_label": "read_media_sessions",
+      "exit_code": 0,
+      "stderr_bytes": 0,
+      "stdout_bytes": 1512
+    }
+  ],
+  "current_audio": {
+    "fixed_volume": {
+      "match_count": 1,
+      "status": "ok",
+      "value": false
+    },
+    "mode": {
+      "begin_count": 1,
+      "current_lines": [
+        "- Requested mode = MODE_NORMAL",
+        "- Actual mode = MODE_NORMAL",
+        "- Mode owner: ",
+        "   None",
+        "- Mode owner stack: ",
+        "   Empty"
+      ],
+      "end_count": 1,
+      "redacted_lines": 0,
+      "status": "ok"
+    },
+    "players": {
+      "activity_inference": "not_established",
+      "begin_count": 1,
+      "count": 2,
+      "current_lines": [
+        "(not logged)  AudioPlaybackConfiguration piid:167 deviceIds:[] type:android.media.SoundPool u/pid:1000/639 state:idle attr:AudioAttributes: usage=USAGE_ASSISTANCE_SONIFICATION content=CONTENT_TYPE_SONIFICATION flags=0x800 tags=[redacted] bundle=[redacted]",
+        "  AudioPlaybackConfiguration piid:175 deviceIds:[] type:android.media.SoundPool u/pid:10185/1007 state:idle attr:AudioAttributes: usage=USAGE_ASSISTANCE_SONIFICATION content=CONTENT_TYPE_SONIFICATION flags=0x800 tags=[redacted] bundle=[redacted]"
+      ],
+      "end_count": 1,
+      "players": [
+        {
+          "muted_flags": [
+            "none"
+          ],
+          "pid": 639,
+          "piid": 167,
+          "soundpool_state_reporting_incomplete": true,
+          "state": "idle",
+          "uid": 1000,
+          "usage": "USAGE_ASSISTANCE_SONIFICATION"
+        },
+        {
+          "muted_flags": [
+            "none"
+          ],
+          "pid": 1007,
+          "piid": 175,
+          "soundpool_state_reporting_incomplete": true,
+          "state": "idle",
+          "uid": 10185,
+          "usage": "USAGE_ASSISTANCE_SONIFICATION"
+        }
+      ],
+      "status": "ok",
+      "unknown_current_prefixes": [],
+      "unknown_lines": 0,
+      "unknown_prefixes_omitted": 0
+    },
+    "policy_outputs": {
+      "begin_count": 1,
+      "declared_count": 2,
+      "detail_line_count": 10,
+      "device_types": [
+        "AUDIO_DEVICE_OUT_SPEAKER",
+        "AUDIO_DEVICE_OUT_TELEPHONY_TX"
+      ],
+      "end_count": 1,
+      "entries": [
+        {
+          "ordinal": 1,
+          "port_id": 2
+        },
+        {
+          "ordinal": 1,
+          "port_id": null
+        },
+        {
+          "ordinal": 2,
+          "port_id": 5
+        },
+        {
+          "ordinal": 1,
+          "port_id": null
+        }
+      ],
+      "selected_route_not_established": true,
+      "status": "ok"
+    },
+    "recorders": {
+      "active_count": 0,
+      "begin_count": 1,
+      "count": 0,
+      "current_lines": [],
+      "end_count": 1,
+      "no_config_count": 0,
+      "status": "ok",
+      "system_only_sources_not_covered": true,
+      "unknown_lines": 0
+    },
+    "routes": {
+      "begin_count": 1,
+      "bluetooth_name_present": false,
+      "end_count": 1,
+      "main_type": 0,
+      "status": "ok",
+      "unknown_lines": 0
+    },
+    "sessions": {
+      "begin_count": 1,
+      "end_count": 1,
+      "priority_count": 1,
+      "priority_is_null": false,
+      "service_header": true,
+      "stack_counts": [
+        0
+      ],
+      "status": "ok",
+      "user_record_count": 1
+    }
+  },
+  "idle_guards": {
+    "audio_policy_sessions": "PLAYBACK_OBJECT_PRESENT_OR_UNKNOWN",
+    "projection": "verified"
+  },
+  "last_command_label": "read_media_sessions",
+  "page_size_verified": true,
+  "permissions_granted": false,
+  "runtime_pass": false,
+  "scope": "own-uid-platform-muted-capture",
+  "status": "IDLE_DIAGNOSTIC_STOPPED",
+  "volume_after": {
+    "audio": {
+      "max": 15,
+      "min": 0,
+      "value": 0
+    },
+    "media_session": {
+      "max": 15,
+      "min": 0,
+      "value": 0
+    }
+  },
+  "volume_before": {
+    "audio": {
+      "max": 15,
+      "min": 0,
+      "value": 5
+    },
+    "media_session": {
+      "max": 15,
+      "min": 0,
+      "value": 5
+    }
+  },
+  "volume_write_attempts": 1
+}

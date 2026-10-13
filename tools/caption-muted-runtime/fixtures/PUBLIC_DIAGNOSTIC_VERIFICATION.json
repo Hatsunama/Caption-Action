@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "kind": "public-diagnostic-artifact-verification",
+  "source_repository": "Hatsunama/Caption-Action",
+  "source_commit": "9a7fb09b778d3832580c3c24fb3cc0ab2e2811ce",
+  "source_tree": "d760d67a67a20a72ef410e15e6c812952239f943",
+  "source_archive_sha256": "228b4ddd5290e236111d6fdec93a6c0fe6dccd3d32cd14c34092d914eb54384c",
+  "source_archive_bytes": 17101,
+  "build_repository": "xMilo-At-Your-Side/Caption-Action-build",
+  "build_commit": "26e21807f77bdbf39eadba31009e3d159dd5a458",
+  "build_run_id": 38468514153,
+  "build_artifact_id": 11851100852,
+  "build_artifact_zip_sha256": "5dda60ffec98b05767f84d38898c8ef51baeb62c52295d1c0e8dc5ac95ed9481",
+  "unsigned_sha256": "dda71638acd519f8ec37c6a31738c63c4ffda664bdfff33e0003c5e7fb63761f",
+  "unsigned_bytes": 3701460,
+  "signed_sha256": "43e88278a61b5209aebf477ff1029aa2804c1a118b93e362b7dd9877334448cc",
+  "signed_bytes": 3712656,
+  "certificate_sha256": "2a0d37dc62eebed39bd08a9238c9255e26eb52a00143a02e0c6c473489985a21",
+  "signature_verified": true,
+  "payload_entries": 18,
+  "all_unsigned_payload_entries_unchanged": true
+}
