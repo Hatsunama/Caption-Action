@@ -90,7 +90,11 @@ class Runtime(unittest.TestCase):
                 if args==['getprop','persist.sys.locale']:return 'en-US'
                 if args==['wm','size']:return 'Physical size: 480x800'
                 if args==['pm','list','packages',c.PACKAGE]:return ''
-                if args==['cmd','media_session']:return MEDIA_HELP_STDOUT
+                if args==['cmd','audio']:return AUDIO_HELP_STDOUT
+                if args==['cmd','audio','get-min-volume','3']:return 'AudioManager.getStreamMinVolume(3) -> 0'
+                if args==['cmd','audio','get-max-volume','3']:return 'AudioManager.getStreamMaxVolume(3) -> 15'
+                if args==['cmd','audio','get-stream-volume','3']:return 'AudioManager.getStreamVolume(3) -> 0'
+                if args==['cmd','audio','set-volume','3','0']:trace.append('set-zero');return AUDIO_SET_ZERO_STDOUT
                 if args==['cmd','media_session','volume','--stream','3','--get']:return volume_get_stdout()
                 if args==['cmd','media_session','volume','--stream','3','--set','0']:trace.append('set-zero');return VOLUME_SET_ZERO_STDOUT
                 if args==['dumpsys','package',c.PACKAGE]:return packages.pop(0)
@@ -244,7 +248,11 @@ class CommandDiagnostics(unittest.TestCase):
         outputs={
             ('getprop','persist.sys.locale'):'',('getprop','ro.product.locale'):'en-US',
             ('wm','size'):'Physical size: 480x800',('pm','list','packages',c.PACKAGE):'',
-            ('cmd','media_session'):MEDIA_HELP_STDOUT,
+            ('cmd','audio'):AUDIO_HELP_STDOUT,
+            ('cmd','audio','get-min-volume','3'):'AudioManager.getStreamMinVolume(3) -> 0\n',
+            ('cmd','audio','get-max-volume','3'):'AudioManager.getStreamMaxVolume(3) -> 15\n',
+            ('cmd','audio','get-stream-volume','3'):'AudioManager.getStreamVolume(3) -> 0\n',
+            ('cmd','audio','set-volume','3','0'):AUDIO_SET_ZERO_STDOUT,
             ('cmd','media_session','volume','--stream','3','--get'):volume_get_stdout(),
             ('cmd','media_session','volume','--stream','3','--set','0'):VOLUME_SET_ZERO_STDOUT,
             ('dumpsys','media_projection'):'MEDIA PROJECTION MANAGER (dumpsys media_projection)\nMedia Projection: \nnull',
@@ -254,9 +262,9 @@ class CommandDiagnostics(unittest.TestCase):
                (('getprop','ro.product.locale'),'guest-precondition-fallback-locale'),
                (('wm','size'),'guest-precondition-display'),
                (('pm','list','packages',c.PACKAGE),'guest-precondition-package-absence'),
-               (('cmd','media_session'),'guest-precondition-volume-help'),
-               (('cmd','media_session','volume','--stream','3','--get'),'guest-precondition-volume-read'),
-               (('cmd','media_session','volume','--stream','3','--set','0'),'guest-precondition-volume-zero'),
+               (('cmd','audio'),'audio-diagnostic-help'),
+               (('cmd','media_session','volume','--stream','3','--get'),'audio-diagnostic-before-media'),
+               (('cmd','audio','set-volume','3','0'),'audio-diagnostic-single-zero'),
                (('dumpsys','media_projection'),'idle-projection-readback'),
                (('dumpsys','audio'),'idle-audio-readback'),
                (('dumpsys','media.audio_policy'),'idle-audio-policy-readback'),
@@ -267,7 +275,7 @@ class CommandDiagnostics(unittest.TestCase):
                 def command(argv,**kw):
                     self.assertEqual(argv[:6],[obj.adb,'-P','5038','-s','emulator-5556','shell'])
                     args=tuple(argv[6:]);calls.append(args)
-                    return subprocess.CompletedProcess([],2,'', 'unknown command: redacted') if args==failed else subprocess.CompletedProcess([],255 if args==('cmd','media_session') else 0,outputs[args],'')
+                    return subprocess.CompletedProcess([],2,'', 'unknown command: redacted') if args==failed else subprocess.CompletedProcess([],255 if args==('cmd','audio') else 0,outputs[args],'')
                 with patch.object(b.Probe,'execute'),patch.object(obj,'command',side_effect=command):
                     with self.assertRaises(c.Blocked):obj.prepare_guest(artifact)
                 self.assertEqual(obj.stage,stage);self.assertFalse(obj.installed)
@@ -275,7 +283,7 @@ class CommandDiagnostics(unittest.TestCase):
                 self.assertFalse(obj.result['runtime_pass']);artifact.recheck.assert_not_called()
 
     def test_checkout_revision_parent_does_not_retarget_signed_delivery(self):
-        self.assertEqual(r.CHECKOUT_PARENT,'9460569997d1cbfb880a8d23bccebb380445121a')
+        self.assertEqual(r.CHECKOUT_PARENT,'3473e5d405c680e0e71a05086ace8e52a8db1431')
         self.assertEqual(b.PROBE_PARENT,'4062451c315265c827161f7e3ac925ff8df39121')
         self.assertEqual(artifact_gate.DELIVERY_PARENT,b.PROBE_PARENT)
         with patch.object(artifact_gate,'require_approved_identity') as identity,patch.object(c,'require_ui_review'),patch.object(r.subprocess,'check_output',side_effect=['a'*40,r.CHECKOUT_PARENT]):
@@ -285,9 +293,11 @@ class CommandDiagnostics(unittest.TestCase):
     def test_modern_media_service_cli_and_only_zero_write(self):
         source=Path(r.__file__).read_text()
         self.assertNotIn("['media',",source)
-        self.assertIn("['cmd', 'media_session'], allowed_codes=(255,)",source)
+        self.assertIn("['cmd', 'audio'], allowed_codes=(255,)",source)
         self.assertIn("['cmd', 'media_session', 'volume', '--stream', '3', '--get']",source)
-        self.assertIn("['cmd', 'media_session', 'volume', '--stream', '3', '--set', '0']",source)
+        self.assertIn("self.shell(['cmd', 'audio', 'set-volume', '3', '0'])",source)
+        self.assertNotIn("self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--set'",source)
+        self.assertIn('LEGACY_VOLUME_SET_DISABLED',source)
         self.assertNotIn("'--adj'",source)
         self.assertIsNone(c.RECORD_AUDIO_UI);self.assertIsNone(c.PROJECTION_UI_STEPS);self.assertIsNone(c.ROOT_RUNTIME_REVIEW)
 
@@ -304,6 +314,14 @@ class Android16MediaFixture:
 
     def response(self, args):
         args=tuple(args);self.media_calls.append(args)
+        if args==('cmd','audio'):
+            return subprocess.CompletedProcess([],255,AUDIO_HELP_STDOUT,'')
+        for command,method,value in [('get-min-volume','getStreamMinVolume',0),('get-max-volume','getStreamMaxVolume',15),('get-stream-volume','getStreamVolume',self.volume)]:
+            if args==('cmd','audio',command,'3'):
+                return subprocess.CompletedProcess([],0,f'AudioManager.{method}(3) -> {value}\n','')
+        if args==('cmd','audio','set-volume','3','0'):
+            if self.setter_works:self.volume=0
+            return subprocess.CompletedProcess([],0,AUDIO_SET_ZERO_STDOUT,'')
         if args==('cmd','media_session'):
             return subprocess.CompletedProcess([],255,MEDIA_HELP_STDOUT,'')
         if args==('cmd','media_session','help'):
@@ -355,7 +373,7 @@ class MediaCommandContract(unittest.TestCase):
             def command(argv,**kwargs):
                 self.assertEqual(argv[:6],[obj.adb,'-P','5038','-s','emulator-5556','shell'])
                 args=tuple(argv[6:])
-                if args[:2]==('cmd','media_session'):return fixture.response(args)
+                if args[:1]==('cmd',):return fixture.response(args)
                 return subprocess.CompletedProcess([],0,outputs[args],'')
             with patch.object(b.Probe,'execute'),patch.object(obj,'command',side_effect=command):
                 if setter_works:
@@ -363,10 +381,10 @@ class MediaCommandContract(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(c.Blocked,'MEDIA_VOLUME_NOT_ZERO'):obj.prepare_guest(artifact)
             self.assertFalse(obj.installed);self.assertFalse(obj.result['runtime_pass'])
-            self.assertEqual(fixture.media_calls,[('cmd','media_session'),
-                ('cmd','media_session','volume','--stream','3','--get'),
-                ('cmd','media_session','volume','--stream','3','--set','0'),
-                ('cmd','media_session','volume','--stream','3','--get')])
+            expected=[command[1:] for command in r.AUDIO_DIAGNOSTIC_COMMANDS]
+            if setter_works:expected.append(('cmd','media_session','volume','--stream','3','--get'))
+            self.assertEqual(fixture.media_calls,expected)
+            self.assertEqual(obj.result['volume_write_attempts'],1)
             return obj
 
     def test_connected_source_help_get_set_and_zero_readback(self):
@@ -374,7 +392,37 @@ class MediaCommandContract(unittest.TestCase):
 
     def test_connected_set_without_effect_never_reaches_install(self):
         obj=self.connected(setter_works=False)
-        self.assertEqual(obj.stage,'idle-volume-readback')
+        self.assertEqual(obj.stage,'audio-diagnostic-after-media')
+
+    def test_shared_helper_releases_only_after_dual_zero_and_never_reruns(self):
+        for works in (False,True):
+            obj=self.connected(setter_works=works)
+            self.assertTrue(obj.mute_setup_started);self.assertEqual(obj.volume_write_attempts,1)
+            self.assertEqual(obj.audio_diagnostic_index,None if works else 8)
+            with patch.object(obj,'command') as command:
+                with self.assertRaisesRegex(c.Blocked,'MUTE_SETUP_ALREADY_STARTED'):obj.verified_mute_setup()
+                with self.assertRaisesRegex(c.Blocked,'MUTE_SETUP_ALREADY_STARTED'):obj.prepare_guest(Mock())
+                with self.assertRaises(c.Blocked):obj.shell(['cmd','audio','set-volume','3','0'])
+                with self.assertRaises(c.Blocked):obj.shell(['cmd','media_session','volume','--stream','3','--set','0'])
+                command.assert_not_called()
+            with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],0,'Success','')) as command:
+                if works:self.assertEqual(obj.adb_command(['install','--user','0','fixture.apk']),'Success')
+                else:
+                    with self.assertRaises(c.Blocked):obj.adb_command(['install','--user','0','fixture.apk'])
+                    command.assert_not_called()
+
+    def test_global_write_attempt_budget_survives_local_guard_or_result_reset(self):
+        obj=self.connected()
+        obj.audio_diagnostic_index=5
+        obj.result['volume_write_attempts']=0  # Presentation fields cannot reset the budget.
+        with patch.object(obj,'command') as command,self.assertRaisesRegex(c.Blocked,'VOLUME_WRITE_ALREADY_ATTEMPTED'):
+            obj.shell(['cmd','audio','set-volume','3','0'])
+        command.assert_not_called();self.assertEqual(obj.volume_write_attempts,1)
+
+    def test_discovery_preflight_requires_verified_audio_setup_review(self):
+        with patch.object(c,'AUDIO_DIAGNOSTIC_REVIEW',None),patch.object(artifact_gate,'require_approved_identity'),patch.object(r.subprocess,'check_output') as git:
+            with self.assertRaisesRegex(c.Blocked,'UNREVIEWED_AUDIO_DIAGNOSTIC'):r.preflight(Runtime().env(),'discover-record')
+            git.assert_not_called()
 
     def test_bare_help_is_only_255_exception(self):
         fixture=Android16MediaFixture()

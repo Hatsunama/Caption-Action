@@ -21,9 +21,9 @@ import artifact_gate
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 # Linear workflow revision parent, separate from the immutable signed delivery.
-CHECKOUT_PARENT = '9460569997d1cbfb880a8d23bccebb380445121a'
+CHECKOUT_PARENT = '3473e5d405c680e0e71a05086ace8e52a8db1431'
 
-# One finite diagnostic sequence. Only the sixth command mutates volume, once.
+# Shared verified mute sequence. Only the sixth command mutates volume, once.
 AUDIO_DIAGNOSTIC_COMMANDS = (
     ('shell', 'cmd', 'audio'),
     ('shell', 'cmd', 'audio', 'get-min-volume', '3'),
@@ -126,6 +126,7 @@ def preflight(env, mode='capture'):
         contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
     else:
         contract.require_discovery_review(mode, boot.PROBE_PARENT)
+    contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
     actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     parents = subprocess.check_output(['git', 'show', '-s', '--format=%P', 'HEAD'], text=True).strip()
     if actual != env.get('PROBE_COMMIT') or parents != CHECKOUT_PARENT:
@@ -146,6 +147,9 @@ class CaptureRun(boot.Probe):
         self.seq = 0
         self.verified_stopped = False
         self.audio_diagnostic_index = None
+        self.mute_setup_started = False
+        self.volume_write_attempts = 0
+        self.result['volume_write_attempts'] = 0
 
     def command(self, argv, *, timeout=5, max_output_bytes=262144):
         # Main-thread command bounds never extend the independent watchdog.
@@ -155,6 +159,8 @@ class CaptureRun(boot.Probe):
         if self.server.poll() is not None or self.emulator.poll() is not None:
             raise Blocked('OWNED_ADB_OR_EMULATOR_EXITED')
         self.result['last_command_label'] = safe_command_label(args)
+        if args[:4] == ['shell', 'cmd', 'media_session', 'volume'] and '--set' in args:
+            raise Blocked('LEGACY_VOLUME_SET_DISABLED')
         audio_command = args[:3] == ['shell', 'cmd', 'audio']
         if self.audio_diagnostic_index is not None:
             index = self.audio_diagnostic_index
@@ -178,7 +184,10 @@ class CaptureRun(boot.Probe):
         if 255 in allowed_codes and (not (media_help or audio_help) or allowed_codes != (255,)):
             raise Blocked('UNREVIEWED_NONZERO_EXIT_ALLOWANCE')
         if args == ['shell', 'cmd', 'audio', 'set-volume', '3', '0']:
-            self.result['volume_write_attempts'] += 1
+            if self.volume_write_attempts != 0:
+                raise Blocked('VOLUME_WRITE_ALREADY_ATTEMPTED')
+            self.volume_write_attempts += 1
+            self.result['volume_write_attempts'] = self.volume_write_attempts
         result = self.command([self.adb, '-P', PORT, '-s', SERIAL, *args], timeout=seconds)
         metadata = safe_command_metadata(args, result)
         if metadata['command_label'] in PRECONDITION_COMMAND_LABELS:
@@ -210,41 +219,56 @@ class CaptureRun(boot.Probe):
     def shell(self, args, **kwargs):
         return self.adb_command(['shell', *args], **kwargs)
 
+    def verified_mute_setup(self):
+        contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
+        if self.mute_setup_started or self.volume_write_attempts != 0:
+            raise Blocked('MUTE_SETUP_ALREADY_STARTED')
+        self.mute_setup_started = True  # Never reset, including uncertain failure.
+        self.audio_diagnostic_index = 0
+        previous_deadline = self.deadline
+        self.deadline = min(previous_deadline, time.monotonic() + 35)
+        self.result.update(volume_before={'audio': {}}, volume_after={})
+        try:
+            self.stage = 'audio-diagnostic-help'
+            self.shell(['cmd', 'audio'], allowed_codes=(255,))
+            before = self.result['volume_before']['audio']
+            for command, field in (('get-min-volume', 'min'), ('get-max-volume', 'max'), ('get-stream-volume', 'value')):
+                self.stage = 'audio-diagnostic-before-' + field
+                before[field] = contract.parse_audio_volume(command, self.shell(['cmd', 'audio', command, '3']))
+            self.stage = 'audio-diagnostic-before-media'
+            media = contract.parse_volume_state(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
+            self.result['volume_before']['media_session'] = media
+            if (before['min'] != 0 or before['max'] < 1 or not 0 <= before['value'] <= before['max'] or
+                    (before['min'], before['max']) != (media['min'], media['max'])):
+                raise Blocked('AUDIO_DIAGNOSTIC_RANGE_UNKNOWN')
+            self.stage = 'audio-diagnostic-single-zero'
+            self.shell(['cmd', 'audio', 'set-volume', '3', '0'])
+            self.stage = 'audio-diagnostic-after-audio'
+            value = contract.parse_audio_volume('get-stream-volume', self.shell(['cmd', 'audio', 'get-stream-volume', '3']))
+            self.result['volume_after']['audio'] = {'value': value, 'min': before['min'], 'max': before['max']}
+            self.stage = 'audio-diagnostic-after-media'
+            media = contract.parse_volume_state(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
+            self.result['volume_after']['media_session'] = media
+            if (media['min'], media['max']) != (before['min'], before['max']):
+                raise Blocked('AUDIO_DIAGNOSTIC_RANGE_CHANGED')
+            if value != 0 or media['value'] != 0:
+                raise Blocked('MEDIA_VOLUME_NOT_ZERO')
+        finally:
+            self.deadline = previous_deadline
+        # Release the local command guard only after both APIs independently read0.
+        # The permanent started flag and write count still forbid another setup/write.
+        self.audio_diagnostic_index = None
+
     def execute_audio_diagnostic(self):
         contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
-        if self.audio_diagnostic_index is not None:
-            raise Blocked('AUDIO_DIAGNOSTIC_ALREADY_STARTED')
+        if self.mute_setup_started:
+            raise Blocked('MUTE_SETUP_ALREADY_STARTED')
         super().execute()
-        self.deadline = min(self.deadline, time.monotonic() + 35)
-        self.audio_diagnostic_index = 0
         self.result.update(status='blocked', runtime_pass=False, diagnostic_mode='diagnose-volume',
-                           volume_write_attempts=0, app_installed=False, capture_started=False,
-                           permissions_granted=False, volume_before={'audio': {}}, volume_after={})
-        self.stage = 'audio-diagnostic-help'
-        self.shell(['cmd', 'audio'], allowed_codes=(255,))
-        before = self.result['volume_before']['audio']
-        for command, field in (('get-min-volume', 'min'), ('get-max-volume', 'max'), ('get-stream-volume', 'value')):
-            self.stage = 'audio-diagnostic-before-' + field
-            before[field] = contract.parse_audio_volume(command, self.shell(['cmd', 'audio', command, '3']))
-        self.stage = 'audio-diagnostic-before-media'
-        media = contract.parse_volume_state(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
-        self.result['volume_before']['media_session'] = media
-        if (before['min'] != 0 or before['max'] < 1 or not 0 <= before['value'] <= before['max'] or
-                (before['min'], before['max']) != (media['min'], media['max'])):
-            raise Blocked('AUDIO_DIAGNOSTIC_RANGE_UNKNOWN')
-        self.stage = 'audio-diagnostic-single-zero'
-        self.shell(['cmd', 'audio', 'set-volume', '3', '0'])
-        self.stage = 'audio-diagnostic-after-audio'
-        value = contract.parse_audio_volume('get-stream-volume', self.shell(['cmd', 'audio', 'get-stream-volume', '3']))
-        self.result['volume_after']['audio'] = {'value': value, 'min': before['min'], 'max': before['max']}
-        self.stage = 'audio-diagnostic-after-media'
-        media = contract.parse_volume_state(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
-        self.result['volume_after']['media_session'] = media
-        if (media['min'], media['max']) != (before['min'], before['max']):
-            raise Blocked('AUDIO_DIAGNOSTIC_RANGE_CHANGED')
-        if value != 0 or media['value'] != 0:
-            raise Blocked('MEDIA_VOLUME_NOT_ZERO')
-        # Zero here never authorizes app installation, permission UI or capture.
+                           app_installed=False, capture_started=False, permissions_granted=False)
+        self.verified_mute_setup()
+        # Terminal diagnostic mode cannot proceed to install/UI after a zero result.
+        self.audio_diagnostic_index = len(AUDIO_DIAGNOSTIC_COMMANDS)
         self.stage = 'audio-diagnostic-stop'
         self.result['status'] = 'audio-diagnostic-pending-host-cleanup'
 
@@ -327,6 +351,8 @@ class CaptureRun(boot.Probe):
         self.result['watchdog_disarmed_after_verified_stop'] = True
 
     def prepare_guest(self, artifact):
+        if self.mute_setup_started:
+            raise Blocked('MUTE_SETUP_ALREADY_STARTED')
         super().execute()
         self.result['runtime_pass'] = False
         self.result['status'] = 'blocked'  # A boot-only result is never a capture pass.
@@ -343,13 +369,7 @@ class CaptureRun(boot.Probe):
         self.stage = 'guest-precondition-package-absence'
         if self.shell(['pm', 'list', 'packages', PACKAGE]):
             raise Blocked('PROBE_ALREADY_INSTALLED_NOT_FRESH')
-        self.stage = 'guest-precondition-volume-help'
-        contract.verify_volume_help(self.shell(['cmd', 'media_session'], allowed_codes=(255,)))
-        self.stage = 'guest-precondition-volume-read'
-        contract.parse_volume(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
-        # The only system-volume mutation in this program is a decrease/set to zero.
-        self.stage = 'guest-precondition-volume-zero'
-        contract.verify_volume_set_zero(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--set', '0']))
+        self.verified_mute_setup()
         self.stage = 'guest-precondition-idle'
         self.assert_idle()
         artifact.recheck()

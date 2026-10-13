@@ -1,4 +1,4 @@
-name: Caption single-zero volume diagnostic (review-gated)
+name: Caption muted consent discovery (review-gated)
 on:
   push:
     branches: [probe/caption-muted-runtime-20261013]
@@ -11,7 +11,7 @@ concurrency:
   group: caption-muted-runtime
   cancel-in-progress: false
 jobs:
-  diagnostic:
+  discovery:
     if: >-
       github.event.repository.private == false &&
       github.event.repository.visibility == 'public' &&
@@ -39,8 +39,8 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Offline regression tests only
         run: python3 -m unittest discover -s tools/caption-muted-runtime -p 'test_*.py' -v
-      - name: Exact signed bytes, parent, receipt, official verifier and diagnostic review gate
-        run: python3 tools/caption-muted-runtime/capture_runtime.py --mode diagnose-volume --preflight-only
+      - name: Exact signed bytes, parent, receipt, official verifier and consent review gate
+        run: python3 tools/caption-muted-runtime/capture_runtime.py --mode discover-record --preflight-only
       - name: Install official Ubuntu emulator client-library prerequisite
         timeout-minutes: 3
         run: |
@@ -52,7 +52,7 @@ jobs:
           sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends --no-remove install libpulse0
           dpkg-query -W -f='${Package} ${Version} ${Status}\n' libpulse0
           rm -f "$RUNNER_TEMP/caption-muted-libpulse-uris.txt"
-      - name: Check one zero-volume attempt and stop before installation
-        run: python3 tools/caption-muted-runtime/capture_runtime.py --mode diagnose-volume
+      - name: Inspect RECORD_AUDIO dialog and stop without granting
+        run: python3 tools/caption-muted-runtime/capture_runtime.py --mode discover-record
       # No caches, uploads, test APK, application builds, keys or signing operations.
       # Aggregate scalar result only. All guest/home/SDK/raw evidence is destroyed.
