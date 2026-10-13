@@ -21,7 +21,7 @@ import artifact_gate
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 # Linear workflow revision parent, separate from the immutable signed delivery.
-CHECKOUT_PARENT = '3473e5d405c680e0e71a05086ace8e52a8db1431'
+CHECKOUT_PARENT = '931fda13d0784dfcaa81c9e1051b5b4931aa03be'
 
 # Shared verified mute sequence. Only the sixth command mutates volume, once.
 AUDIO_DIAGNOSTIC_COMMANDS = (
@@ -124,6 +124,8 @@ def preflight(env, mode='capture'):
         contract.require_ui_review()
     elif mode == 'diagnose-volume':
         contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
+    elif mode == 'diagnose-idle':
+        contract.require_idle_diagnostic_review(boot.PROBE_PARENT)
     else:
         contract.require_discovery_review(mode, boot.PROBE_PARENT)
     contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
@@ -272,13 +274,15 @@ class CaptureRun(boot.Probe):
         self.stage = 'audio-diagnostic-stop'
         self.result['status'] = 'audio-diagnostic-pending-host-cleanup'
 
-    def assert_idle(self):
+    def assert_idle(self, diagnostics_only=False):
         previous_stage = self.stage
         self.stage = 'idle-volume-readback'
         if contract.parse_volume(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get'])) != 0:
             raise Blocked('MEDIA_VOLUME_NOT_ZERO')
         self.stage = 'idle-projection-readback'
-        contract.verify_projection_idle(self.shell(['dumpsys', 'media_projection']))
+        projection = self.shell(['dumpsys', 'media_projection'])
+        if not diagnostics_only:
+            contract.verify_projection_idle(projection)
         self.stage = 'idle-audio-readback'
         audio = self.shell(['dumpsys', 'audio'])
         self.stage = 'idle-audio-policy-readback'
@@ -286,6 +290,17 @@ class CaptureRun(boot.Probe):
         self.stage = 'idle-media-session-readback'
         sessions = self.shell(['dumpsys', 'media_session'])
         self.stage = 'idle-audio-policy-session-validation'
+        if diagnostics_only:
+            self.result['current_audio'] = contract.current_audio_evidence(audio, policy, sessions)
+            guards = self.result['idle_guards'] = {}
+            for name, validator, values in (('projection', contract.verify_projection_idle, (projection,)),
+                    ('audio_policy_sessions', contract.verify_audio_idle, (audio, policy, sessions))):
+                try:
+                    validator(*values)
+                    guards[name] = 'verified'
+                except Blocked as error:
+                    guards[name] = str(error).split(':')[0][:100]
+            return  # Diagnostic outcomes can never authorize installation or capture.
         contract.verify_audio_idle(audio, policy, sessions)
         self.stage = previous_stage
 
@@ -350,7 +365,9 @@ class CaptureRun(boot.Probe):
             raise Blocked('WATCHDOG_DISARM_RECEIPT_INVALID')
         self.result['watchdog_disarmed_after_verified_stop'] = True
 
-    def prepare_guest(self, artifact):
+    def prepare_guest(self, artifact, diagnostics_only=False):
+        if diagnostics_only:
+            contract.require_idle_diagnostic_review(boot.PROBE_PARENT)
         if self.mute_setup_started:
             raise Blocked('MUTE_SETUP_ALREADY_STARTED')
         super().execute()
@@ -371,6 +388,13 @@ class CaptureRun(boot.Probe):
             raise Blocked('PROBE_ALREADY_INSTALLED_NOT_FRESH')
         self.verified_mute_setup()
         self.stage = 'guest-precondition-idle'
+        if diagnostics_only:
+            self.assert_idle(diagnostics_only=True)
+            self.audio_diagnostic_index = len(AUDIO_DIAGNOSTIC_COMMANDS)
+            self.result.update(status='idle-diagnostic-pending-host-cleanup', runtime_pass=False,
+                               app_installed=False, capture_started=False, permissions_granted=False)
+            self.stage = 'idle-diagnostic-stop'
+            return
         self.assert_idle()
         artifact.recheck()
         self.stage = 'install-exact-verified-probe'
@@ -503,6 +527,8 @@ class CaptureRun(boot.Probe):
             self.result['status'] = 'cleanup-failed'
         elif self.result['status'] == 'audio-diagnostic-pending-host-cleanup':
             self.result.update(status='AUDIO_DIAGNOSTIC_STOPPED', runtime_pass=False)
+        elif self.result['status'] == 'idle-diagnostic-pending-host-cleanup':
+            self.result.update(status='IDLE_DIAGNOSTIC_STOPPED', runtime_pass=False)
         elif self.result['status'] == 'discovery-stopped-pending-host-cleanup':
             self.result.update(status='DISCOVERY_STOPPED', runtime_pass=False, discovery_stopped_verified=True)
         elif self.result['status'] == 'capture-verified-pending-host-cleanup':
@@ -513,7 +539,7 @@ class CaptureRun(boot.Probe):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--preflight-only', action='store_true')
-    parser.add_argument('--mode', choices=('capture', 'diagnose-volume', *contract.DISCOVERY_MODES), default='capture')
+    parser.add_argument('--mode', choices=('capture', 'diagnose-volume', 'diagnose-idle', *contract.DISCOVERY_MODES), default='capture')
     args = parser.parse_args()
     preflight(os.environ, args.mode)
     # Concrete artifact-gate invocation is pinned alongside the final reviewed
@@ -541,6 +567,8 @@ def main():
                 run.execute_capture(artifact)
             elif args.mode == 'diagnose-volume':
                 run.execute_audio_diagnostic()
+            elif args.mode == 'diagnose-idle':
+                run.prepare_guest(artifact, diagnostics_only=True)
             else:
                 run.execute_discovery(artifact, args.mode)
         except Exception as error:
@@ -557,6 +585,8 @@ def main():
         print(json.dumps(run.result, sort_keys=True))
         if args.mode == 'diagnose-volume':
             return 0 if run.result['status'] == 'AUDIO_DIAGNOSTIC_STOPPED' else 1
+        if args.mode == 'diagnose-idle':
+            return 0 if run.result['status'] == 'IDLE_DIAGNOSTIC_STOPPED' else 1
         if args.mode in contract.DISCOVERY_MODES:
             return 0 if run.result.get('discovery_stopped_verified') and run.result['status'] == 'DISCOVERY_STOPPED' else 1
         return 0 if run.result.get('runtime_pass') and run.result['status'] == 'PASS' else 1

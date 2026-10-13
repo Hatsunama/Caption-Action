@@ -112,6 +112,134 @@ def verify_audio_idle(audio, policy, sessions):
     return True
 
 
+IDLE_DIAGNOSTIC_REVIEW = {'mode': 'diagnose-idle', 'parent': '4062451c315265c827161f7e3ac925ff8df39121', 'scope': 'current-audio-state-preinstall-no-ui'}
+
+
+def require_idle_diagnostic_review(parent):
+    if IDLE_DIAGNOSTIC_REVIEW != {'mode': 'diagnose-idle', 'parent': parent,
+                                 'scope': 'current-audio-state-preinstall-no-ui'}:
+        raise Blocked('UNREVIEWED_IDLE_DIAGNOSTIC')
+
+
+def _current_section(text, begin, end):
+    """Diagnostics only: exact source delimiters, never history or raw fallback."""
+    if len(text.encode()) > 262144:
+        return {'status': 'input_limit'}, None
+    starts, ends = list(re.finditer(begin, text, re.M)), list(re.finditer(end, text, re.M))
+    facts = {'begin_count': len(starts), 'end_count': len(ends)}
+    if len(starts) != 1 or len(ends) != 1 or ends[0].start() < starts[0].end():
+        return {**facts, 'status': 'missing_or_ambiguous'}, None
+    body = text[starts[0].end():ends[0].start()].strip('\n')
+    lines = [line for line in body.splitlines() if line.strip()]
+    if len(body.encode()) > 4096 or len(lines) > 64 or any(len(line.encode()) > 1024 for line in lines):
+        return {**facts, 'status': 'section_limit'}, None
+    if any(re.match(r'\s*Events? logs?:', line) for line in lines):
+        return {**facts, 'status': 'history_boundary_unknown'}, None
+    return {**facts, 'status': 'ok'}, lines
+
+
+def current_audio_evidence(audio, policy, sessions):
+    """Bounded preinstall evidence, never a substitute for verify_audio_idle.
+
+    Android16 current dump sections include inactive registered objects. In
+    particular SoundPool ignores ordinary state updates; idle is not a safety pass.
+    """
+    result = {}
+    for name, begin, end in (
+            ('mode', r'^Audio mode: *$', r'^Audio routes:$'),
+            ('routes', r'^Audio routes:$', r'^Other state:$'),
+            ('players', r'^  players:$', r'^  ducked players piids:$'),
+            ('recorders', r'^RecordActivityMonitor dump time: [^\n]+$',
+             r'^Events log: recording activity received by AudioService$')):
+        facts, lines = _current_section(audio, begin, end)
+        result[name] = facts
+        if lines is None:
+            continue
+        if name == 'mode':
+            facts['current_lines'] = [line for line in lines
+                                      if not re.match(r'\s+- (?:update time|Binder):', line)]
+            facts['redacted_lines'] = len(lines)-len(facts['current_lines'])
+        elif name == 'routes':
+            main = [re.fullmatch(r'  mMainType=0x([0-9a-f]{1,8})', line) for line in lines]
+            main = [match for match in main if match]
+            names = [line for line in lines if line.startswith('  mBluetoothName=')]
+            facts.update(main_type=int(main[0][1], 16) if len(main) == 1 else None,
+                         bluetooth_name_present=names[0] != '  mBluetoothName=null' if len(names) == 1 else None,
+                         unknown_lines=len(lines)-len(main)-len(names))
+        elif name == 'players':
+            players, safe_lines, unknown_prefixes = [], [], []
+            mute_flags = {'none', 'master', 'streamVolume', 'streamMute', 'opPlayAudio',
+                          'clientVolume', 'volumeShaper', 'portVolume', 'opControlAudio'}
+            for line in lines:
+                safe_prefix = line.split(' tags=', 1)[0].split(' bundle=', 1)[0]
+                match = re.match(r'^(?:\(not logged\))?  AudioPlaybackConfiguration piid:(-?[0-9]{1,10}) '
+                    r'deviceIds:\[[0-9, -]*\] type:(.{1,80}) u/pid:([0-9]{1,10})/([0-9]{1,10}) '
+                    r'state:([a-z ]{1,30}) attr:AudioAttributes: usage=(USAGE_[A-Z0-9_]{1,64}) ', line)
+                if not match or ' tags=' not in line:
+                    if re.match(r'^(?:\(not logged\))?  AudioPlaybackConfiguration\b', line):
+                        unknown_prefixes.append(safe_prefix[:256])
+                    continue
+                piid, player_type, uid, pid, state, usage = match.groups()
+                if state not in ('unknown', 'released', 'idle', 'started', 'paused', 'stopped'):
+                    unknown_prefixes.append(safe_prefix[:256])
+                    continue
+                muted = re.search(r' sessionId:-?[0-9]{1,10} mutedState:([A-Za-z ]{0,160}) '
+                    r'FormatInfo\{isSpatialized=(?:true|false), channelMask=0x[0-9a-f]{1,8}, sampleRate=[0-9]{1,10}\}$', line)
+                flags = muted[1].split() if muted else []
+                flags_known = bool(flags) and len(flags) == len(set(flags)) and not set(flags)-mute_flags and ('none' not in flags or flags == ['none'])
+                players.append({'piid': int(piid), 'uid': int(uid), 'pid': int(pid),
+                                'state': state, 'usage': usage,
+                                'muted_flags': flags if flags_known else None,
+                                'soundpool_state_reporting_incomplete': player_type == 'android.media.SoundPool'})
+                safe_lines.append(safe_prefix + ' tags=[redacted] bundle=[redacted]')
+            facts.update(count=len(players), players=players, unknown_lines=len(lines)-len(players),
+                         unknown_current_prefixes=unknown_prefixes[:8],
+                         unknown_prefixes_omitted=max(0, len(unknown_prefixes)-8),
+                         current_lines=safe_lines, activity_inference='not_established')
+        else:
+            entries = [re.fullmatch(r'riid (-?[0-9]{1,10}); active\? (true|false)', line) for line in lines]
+            entries = [match for match in entries if match]
+            safe_lines = [line.split(' -- effects client=', 1)[0] for line in lines
+                          if re.match(r'^(?:riid -?[0-9]+; active\? (?:true|false)$|  no config$|  session:-?[0-9]+ -- source client=)', line)]
+            facts.update(count=len(entries), active_count=sum(match[2] == 'true' for match in entries),
+                         no_config_count=lines.count('  no config'), current_lines=safe_lines,
+                         unknown_lines=len(lines)-len(safe_lines), system_only_sources_not_covered=True)
+    # SoundDoseHelper prints its history inside Other state. Never copy that span;
+    # extract only the exact consecutive source scalar block after that helper.
+    other = re.findall(r'^Other state:\n(.*?)^Audio policies:$', audio, re.M | re.S) if len(audio.encode()) <= 262144 else []
+    fixed = re.findall(r'^  mIsSingleVolume=(?:true|false)\n  mUseFixedVolume=(true|false)\n  mNotifAliasRing=(?:true|false)$',
+                       other[0], re.M) if len(other) == 1 else []
+    result['fixed_volume'] = {'match_count': len(fixed), 'status': 'ok' if len(fixed) == 1 else 'missing_or_ambiguous',
+                              'value': fixed[0] == 'true' if len(fixed) == 1 else None}
+    facts, lines = _current_section(policy, r'^ Available output devices \([0-9]{1,6}\):$',
+                                   r'^ Available input devices \([0-9]{1,6}\):$')
+    result['policy_outputs'] = facts
+    if lines is not None:
+        count = re.search(r'^ Available output devices \(([0-9]{1,6})\):$', policy, re.M)[1]
+        entries = []
+        for line in lines:
+            entry = re.match(r'^ +([0-9]{1,4})\. (?:Port ID: ([0-9]{1,10}); )?', line)
+            if entry:
+                # Reconstruct only fixed labels/numbers; names/addresses may have
+                # unescaped newlines, so never retain their continuation lines.
+                entries.append({'ordinal': int(entry[1]), 'port_id': int(entry[2]) if entry[2] else None})
+        facts.update(declared_count=int(count), device_types=re.findall(r'\{(AUDIO_DEVICE_OUT_[A-Z0-9_]+)(?:,|\})', '\n'.join(lines)),
+                     entries=entries, detail_line_count=len(lines),
+                     selected_route_not_established=True)
+    facts, lines = _current_section(sessions, r'^User Records:$',
+                                   r'^Audio playback \(lastly played comes first\)$')
+    result['sessions'] = facts
+    if len(sessions.encode()) <= 262144:
+        priority = re.findall(r'^Global priority session is ([^\n]*)$', sessions, re.M)
+        facts.update(service_header=sessions.startswith('MEDIA SESSION SERVICE (dumpsys media_session)\n'),
+                     priority_count=len(priority), priority_is_null=priority[0] == 'null' if len(priority) == 1 else None)
+    if lines is not None:
+        facts.update(user_record_count=sum(bool(re.match(r'^Record for full_user=[0-9]+', line)) for line in lines),
+                     stack_counts=[int(match[1]) for line in lines
+                                   if (match := re.fullmatch(r' *Sessions Stack - have ([0-9]{1,6}) sessions:', line))])
+    return result
+
+
 MEDIA_HELP_HEADER = 'usage: media_session [subcommand] [options]'
 MEDIA_HELP_OPTION_LINES = (
     'media_session volume:  the options are as follows: ',

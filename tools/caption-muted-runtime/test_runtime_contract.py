@@ -195,4 +195,104 @@ class AudioDiagnosticParsers(unittest.TestCase):
             with self.assertRaises(c.Blocked):c.verify_audio_set_zero(value)
 
 
+
+class CurrentAudioEvidence(unittest.TestCase):
+    def fixture(self):
+        player=('  AudioPlaybackConfiguration piid:17 deviceIds:[] type:android.media.SoundPool u/pid:1000/222 state:idle '
+                'attr:AudioAttributes: usage=USAGE_ASSISTANCE_SONIFICATION content=CONTENT_TYPE_SONIFICATION flags=0x0 '
+                'tags=private-tag bundle=private-bundle sessionId:4 mutedState:none FormatInfo{isSpatialized=false, channelMask=0x0, sampleRate=0}')
+        audio=audio_fixture().replace('  players:\n','  players:\n'+player+'\n')
+        audio=audio.replace('old historical event','private-history AudioPlaybackConfiguration piid:999')
+        sessions=sessions_fixture().replace('Sessions Stack - have 0 sessions:', 'User Records:\nRecord for full_user=0\n  Sessions Stack - have 0 sessions:')
+        sessions=sessions.replace('  User Records:', 'User Records:')
+        sessions+='Audio playback (lastly played comes first)\nprivate-history Sessions Stack - have 999 sessions:\n'
+        return audio,policy_fixture(),sessions
+
+    def test_current_all_sections_remain_visible_despite_player_failure(self):
+        audio,policy,sessions=self.fixture()
+        with self.assertRaisesRegex(c.Blocked,'PLAYBACK_OBJECT'):c.verify_audio_idle(audio,policy,sessions)
+        facts=c.current_audio_evidence(audio,policy,sessions)
+        self.assertEqual(facts['players']['count'],1)
+        self.assertEqual(facts['players']['players'][0]['state'],'idle')
+        self.assertEqual(facts['players']['players'][0]['muted_flags'],['none'])
+        self.assertEqual(facts['players']['players'][0]['uid'],1000)
+        self.assertEqual(facts['players']['players'][0]['usage'],'USAGE_ASSISTANCE_SONIFICATION')
+        self.assertEqual(facts['recorders']['count'],0)
+        self.assertEqual(facts['policy_outputs']['device_types'],['AUDIO_DEVICE_OUT_SPEAKER'])
+        self.assertEqual(facts['sessions']['stack_counts'],[0])
+        import json
+        result=json.dumps(facts)
+        for text in ('private-history','private-tag','private-bundle','1:00 PM'):
+            self.assertNotIn(text,result)
+
+    def test_exact_history_rows_and_outside_identifiers_cannot_become_current_facts(self):
+        audio,policy,sessions=self.fixture()
+        audio+='\nriid 999; active? true\n  no config\n  mUseFixedVolume=true\nprivate-account-content\n'
+        sessions+='  Sessions Stack - have 999 sessions:\nRecord for full_user=999\n'
+        facts=c.current_audio_evidence(audio,policy,sessions)
+        self.assertEqual(facts['recorders']['count'],0)
+        self.assertEqual(facts['sessions']['stack_counts'],[0])
+        self.assertEqual(facts['sessions']['user_record_count'],1)
+        self.assertIsNone(facts['fixed_volume']['value'])
+        import json
+        self.assertNotIn('private-account-content',json.dumps(facts));self.assertNotIn('999',json.dumps(facts))
+
+    def test_current_recording_and_policy_address_redaction(self):
+        audio,policy,sessions=self.fixture()
+        record=('riid 3; active? false\n  session:7 -- source client=MIC, dev=fmt -- uid:1000 '
+                '-- patch:0 -- pack:android -- format client=fmt, dev=fmt -- silenced:false '
+                '-- effects client=private-effect, dev=private-effect\n')
+        audio=audio.replace('RecordActivityMonitor dump time: 1:00 PM\n','RecordActivityMonitor dump time: 1:00 PM\n'+record)
+        policy=policy.replace('@:','@:private-device-address')
+        facts=c.current_audio_evidence(audio,policy,sessions)
+        self.assertEqual(facts['recorders']['count'],1);self.assertEqual(facts['recorders']['active_count'],0)
+        import json
+        self.assertNotIn('private-effect',json.dumps(facts));self.assertNotIn('private-device-address',json.dumps(facts))
+
+    def test_mode_timestamps_binder_and_unknown_player_attributes_are_redacted(self):
+        audio,policy,sessions=self.fixture()
+        audio=audio.replace('- Mode owner: \n   None','- Mode owner: \n  - Mode: MODE_IN_COMMUNICATION\n  - Binder: private-binder\n  - Pid: 222\n  - Uid: 1000\n  - update time: 10-13 12:00:00:000')
+        audio=audio.replace('state:idle','state:unreviewed')
+        facts=c.current_audio_evidence(audio,policy,sessions)
+        self.assertEqual(facts['mode']['redacted_lines'],2)
+        self.assertEqual(facts['players']['unknown_lines'],1)
+        self.assertIn('state:unreviewed',facts['players']['unknown_current_prefixes'][0])
+        import json
+        for hidden in ('private-binder','10-13 12:00','private-tag','private-bundle'):
+            self.assertNotIn(hidden,json.dumps(facts))
+
+    def test_player_muted_flags_are_allowlisted_without_activity_inference(self):
+        audio,policy,sessions=self.fixture()
+        for text,expected in [('streamVolume streamMute ',['streamVolume','streamMute']),
+                              ('clientVolume ',['clientVolume']),('unreviewedFlag ',None)]:
+            facts=c.current_audio_evidence(audio.replace('mutedState:none ', 'mutedState:'+text),policy,sessions)
+            self.assertEqual(facts['players']['players'][0]['muted_flags'],expected)
+            self.assertEqual(facts['players']['activity_inference'],'not_established')
+
+    def test_multiline_names_addresses_tags_and_embedded_sounddose_history(self):
+        audio,policy,sessions=self.fixture()
+        audio=audio.replace('mBluetoothName=null','mBluetoothName=private-route\nprivate-route-continuation')
+        audio=audio.replace('tags=private-tag','tags=private-tag\nprivate-tag-continuation')
+        audio=audio.replace('  mUseFixedVolume=false', 'Events log: sound dose\nprivate-sounddose-history\n  mIsSingleVolume=false\n  mUseFixedVolume=false\n  mNotifAliasRing=true\nAudio policies:')
+        policy=policy.replace('@:', '@:private-address\nprivate-address-continuation')
+        facts=c.current_audio_evidence(audio,policy,sessions)
+        self.assertTrue(facts['routes']['bluetooth_name_present'])
+        self.assertEqual(facts['routes']['unknown_lines'],1)
+        self.assertFalse(facts['fixed_volume']['value']);self.assertEqual(facts['fixed_volume']['status'],'ok')
+        import json
+        serialized=json.dumps(facts)
+        for hidden in ('private-route','private-tag','private-address','private-sounddose'):
+            self.assertNotIn(hidden,serialized)
+
+    def test_missing_duplicate_oversize_and_history_anchors_are_unknown(self):
+        audio,policy,sessions=self.fixture()
+        for changed in (audio.replace('  players:','  unknown:'),audio+'\n  players:\n',
+                        audio.replace('  players:\n','  players:\n'+'x'*5000+'\n')):
+            facts=c.current_audio_evidence(changed,policy,sessions)
+            self.assertNotEqual(facts['players']['status'],'ok')
+            self.assertNotIn('current_lines',facts['players'])
+        facts=c.current_audio_evidence(audio,policy.replace(' Available input devices',' Missing input devices'),sessions)
+        self.assertNotEqual(facts['policy_outputs']['status'],'ok')
+        self.assertEqual(facts['players']['count'],1)
+
 if __name__ == '__main__': unittest.main(verbosity=2)

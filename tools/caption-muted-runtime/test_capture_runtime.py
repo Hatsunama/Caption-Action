@@ -283,7 +283,7 @@ class CommandDiagnostics(unittest.TestCase):
                 self.assertFalse(obj.result['runtime_pass']);artifact.recheck.assert_not_called()
 
     def test_checkout_revision_parent_does_not_retarget_signed_delivery(self):
-        self.assertEqual(r.CHECKOUT_PARENT,'3473e5d405c680e0e71a05086ace8e52a8db1431')
+        self.assertEqual(r.CHECKOUT_PARENT,'931fda13d0784dfcaa81c9e1051b5b4931aa03be')
         self.assertEqual(b.PROBE_PARENT,'4062451c315265c827161f7e3ac925ff8df39121')
         self.assertEqual(artifact_gate.DELIVERY_PARENT,b.PROBE_PARENT)
         with patch.object(artifact_gate,'require_approved_identity') as identity,patch.object(c,'require_ui_review'),patch.object(r.subprocess,'check_output',side_effect=['a'*40,r.CHECKOUT_PARENT]):
@@ -633,5 +633,57 @@ class AudioDiagnostic(unittest.TestCase):
             self.assertEqual(obj.result['cleanup_errors'],['HOST_CLEANUP_UNVERIFIED'])
             self.assertNotIn('private',json.dumps(obj.result));self.assertNotIn('token=',json.dumps(obj.result))
 
+
+
+class IdleDiagnostic(unittest.TestCase):
+    def test_collects_later_guards_and_stops_preinstall_even_when_all_pass(self):
+        from test_runtime_contract import CurrentAudioEvidence,audio_fixture,policy_fixture,sessions_fixture
+        for players in (False,True):
+            with tempfile.TemporaryDirectory() as td:
+                obj=CommandDiagnostics().make_run(Path(td));artifact=Mock();trace=[];media=Android16MediaFixture()
+                audio,policy,sessions=CurrentAudioEvidence().fixture()
+                if not players:audio=audio_fixture()
+                values={('getprop','persist.sys.locale'):'en-US',('wm','size'):'Physical size: 480x800',
+                        ('pm','list','packages',c.PACKAGE):'',
+                        ('dumpsys','media_projection'):'MEDIA PROJECTION MANAGER (dumpsys media_projection)\nMedia Projection: \nnull',
+                        ('dumpsys','audio'):'Audio service state\n'+audio,('dumpsys','media.audio_policy'):'AudioPolicyManager state\n'+policy,('dumpsys','media_session'):sessions}
+                def command(argv,**kwargs):
+                    args=tuple(argv[6:]);trace.append(args)
+                    if args[:1]==('cmd',):return media.response(args)
+                    return subprocess.CompletedProcess([],0,values[args],'')
+                review={'mode':'diagnose-idle','parent':b.PROBE_PARENT,'scope':'current-audio-state-preinstall-no-ui'}
+                with patch.object(c,'IDLE_DIAGNOSTIC_REVIEW',review),patch.object(b.Probe,'execute'),patch.object(obj,'command',side_effect=command):
+                    obj.prepare_guest(artifact,diagnostics_only=True)
+                self.assertEqual(obj.result['status'],'idle-diagnostic-pending-host-cleanup')
+                self.assertEqual(obj.result['idle_guards']['audio_policy_sessions'],'PLAYBACK_OBJECT_PRESENT_OR_UNKNOWN' if players else 'verified')
+                self.assertIn('recorders',obj.result['current_audio']);self.assertIn('policy_outputs',obj.result['current_audio']);self.assertIn('sessions',obj.result['current_audio'])
+                self.assertEqual(obj.volume_write_attempts,1);self.assertFalse(obj.installed);artifact.recheck.assert_not_called()
+                self.assertFalse(obj.result['permissions_granted']);self.assertFalse(obj.result['capture_started'])
+                self.assertTrue(all(args[0] not in ('install','input','am','uiautomator') for args in trace))
+                with patch.object(obj,'command') as cmd,self.assertRaises(c.Blocked):obj.adb_command(['install','--user','0','fixture.apk'])
+                cmd.assert_not_called()
+                obj.emulator=None;obj.server=None
+                def cleanup():obj.result['cleanup_errors']=[];return True
+                with patch.object(b.Probe,'cleanup',side_effect=cleanup):obj.cleanup()
+                self.assertEqual(obj.result['status'],'IDLE_DIAGNOSTIC_STOPPED');self.assertFalse(obj.result['runtime_pass'])
+
+    def test_idle_diagnostic_cleanup_failure_is_not_a_stopped_result(self):
+        with tempfile.TemporaryDirectory() as td:
+            obj=CommandDiagnostics().make_run(Path(td));obj.emulator=None;obj.server=None
+            obj.result['status']='idle-diagnostic-pending-host-cleanup'
+            def cleanup():obj.result['cleanup_errors']=['private-failure'];return False
+            with patch.object(b.Probe,'cleanup',side_effect=cleanup):self.assertFalse(obj.cleanup())
+            self.assertEqual(obj.result['status'],'cleanup-failed');self.assertFalse(obj.result['runtime_pass'])
+            self.assertNotIn('private-failure',json.dumps(obj.result))
+
+    def test_idle_diagnostic_requires_separate_gate_before_boot(self):
+        with tempfile.TemporaryDirectory() as td:
+            obj=CommandDiagnostics().make_run(Path(td))
+            with patch.object(c,'IDLE_DIAGNOSTIC_REVIEW',None),patch.object(b.Probe,'execute') as boot,self.assertRaisesRegex(c.Blocked,'UNREVIEWED_IDLE_DIAGNOSTIC'):
+                obj.prepare_guest(Mock(),diagnostics_only=True)
+            boot.assert_not_called()
+            with patch.object(c,'IDLE_DIAGNOSTIC_REVIEW',None),patch.object(artifact_gate,'require_approved_identity'),patch.object(r.subprocess,'check_output') as git,self.assertRaises(c.Blocked):
+                r.preflight(Runtime().env(),'diagnose-idle')
+            git.assert_not_called()
 
 if __name__=='__main__':unittest.main(verbosity=2)
