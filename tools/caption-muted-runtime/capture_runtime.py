@@ -21,7 +21,19 @@ import artifact_gate
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 # Linear workflow revision parent, separate from the immutable signed delivery.
-CHECKOUT_PARENT = '1f7135f950676d3763e6a2791653ee3bb53b138a'
+CHECKOUT_PARENT = '9460569997d1cbfb880a8d23bccebb380445121a'
+
+# One finite diagnostic sequence. Only the sixth command mutates volume, once.
+AUDIO_DIAGNOSTIC_COMMANDS = (
+    ('shell', 'cmd', 'audio'),
+    ('shell', 'cmd', 'audio', 'get-min-volume', '3'),
+    ('shell', 'cmd', 'audio', 'get-max-volume', '3'),
+    ('shell', 'cmd', 'audio', 'get-stream-volume', '3'),
+    ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'),
+    ('shell', 'cmd', 'audio', 'set-volume', '3', '0'),
+    ('shell', 'cmd', 'audio', 'get-stream-volume', '3'),
+    ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'),
+)
 
 
 # Diagnostics are fixed labels/scalars only, never guest output or arguments.
@@ -31,6 +43,11 @@ _ADB_FIXED_LABELS = {
     ('shell', 'wm', 'size'): 'read_display_size',
     ('shell', 'pm', 'list', 'packages', PACKAGE): 'list_probe_package',
     ('shell', 'cmd', 'media_session'): 'media_session_help',
+    ('shell', 'cmd', 'audio'): 'audio_help',
+    ('shell', 'cmd', 'audio', 'get-min-volume', '3'): 'audio_volume_min',
+    ('shell', 'cmd', 'audio', 'get-max-volume', '3'): 'audio_volume_max',
+    ('shell', 'cmd', 'audio', 'get-stream-volume', '3'): 'audio_volume_read',
+    ('shell', 'cmd', 'audio', 'set-volume', '3', '0'): 'audio_volume_zero',
     ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'): 'media_session_volume_read',
     ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', '0'): 'media_session_volume_zero',
     ('shell', 'dumpsys', 'media_projection'): 'read_projection_state',
@@ -56,7 +73,8 @@ _ADB_DYNAMIC_SHAPES = {
 ADB_COMMAND_LABELS = frozenset((*_ADB_FIXED_LABELS.values(), *_ADB_DYNAMIC_SHAPES.values(), 'unrecognized_command'))
 PRECONDITION_COMMAND_LABELS = frozenset(('read_locale', 'read_fallback_locale', 'read_display_size',
     'list_probe_package', 'media_session_help', 'media_session_volume_read', 'media_session_volume_zero',
-    'read_projection_state', 'read_audio_state', 'read_audio_policy', 'read_media_sessions'))
+    'read_projection_state', 'read_audio_state', 'read_audio_policy', 'read_media_sessions',
+    'audio_help', 'audio_volume_min', 'audio_volume_max', 'audio_volume_read', 'audio_volume_zero'))
 COMMAND_DIAGNOSTIC_LIMIT = 24
 ADB_FAILURE_CLASSES = frozenset(('command_missing', 'permission_denied', 'unknown_command',
                                  'unexpected_stderr', 'nonzero_exit'))
@@ -104,6 +122,8 @@ def preflight(env, mode='capture'):
     artifact_gate.require_approved_identity(boot.PROBE_PARENT)
     if mode == 'capture':
         contract.require_ui_review()
+    elif mode == 'diagnose-volume':
+        contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
     else:
         contract.require_discovery_review(mode, boot.PROBE_PARENT)
     actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
@@ -125,6 +145,7 @@ class CaptureRun(boot.Probe):
         self.guest_identity = None
         self.seq = 0
         self.verified_stopped = False
+        self.audio_diagnostic_index = None
 
     def command(self, argv, *, timeout=5, max_output_bytes=262144):
         # Main-thread command bounds never extend the independent watchdog.
@@ -134,6 +155,16 @@ class CaptureRun(boot.Probe):
         if self.server.poll() is not None or self.emulator.poll() is not None:
             raise Blocked('OWNED_ADB_OR_EMULATOR_EXITED')
         self.result['last_command_label'] = safe_command_label(args)
+        audio_command = args[:3] == ['shell', 'cmd', 'audio']
+        if self.audio_diagnostic_index is not None:
+            index = self.audio_diagnostic_index
+            if index >= len(AUDIO_DIAGNOSTIC_COMMANDS) or tuple(args) != AUDIO_DIAGNOSTIC_COMMANDS[index]:
+                raise Blocked('AUDIO_DIAGNOSTIC_COMMAND_ORDER')
+            # Consume before dispatch: uncertain completion can never retry a write.
+            self.audio_diagnostic_index += 1
+        elif audio_command:
+            raise Blocked('AUDIO_COMMAND_OUTSIDE_DIAGNOSTIC')
+        audio_help = args == ['shell', 'cmd', 'audio']
         media_help = args == ['shell', 'cmd', 'media_session']
         media_volume = args in (
             ['shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'],
@@ -142,8 +173,12 @@ class CaptureRun(boot.Probe):
             raise Blocked('UNREVIEWED_MEDIA_HELP_EXIT_ALLOWANCE')
         if media_volume and allowed_codes != (0,):
             raise Blocked('UNREVIEWED_VOLUME_EXIT_ALLOWANCE')
-        if 255 in allowed_codes and (not media_help or allowed_codes != (255,)):
+        if audio_command and allowed_codes != ((255,) if audio_help else (0,)):
+            raise Blocked('UNREVIEWED_AUDIO_EXIT_ALLOWANCE')
+        if 255 in allowed_codes and (not (media_help or audio_help) or allowed_codes != (255,)):
             raise Blocked('UNREVIEWED_NONZERO_EXIT_ALLOWANCE')
+        if args == ['shell', 'cmd', 'audio', 'set-volume', '3', '0']:
+            self.result['volume_write_attempts'] += 1
         result = self.command([self.adb, '-P', PORT, '-s', SERIAL, *args], timeout=seconds)
         metadata = safe_command_metadata(args, result)
         if metadata['command_label'] in PRECONDITION_COMMAND_LABELS:
@@ -152,7 +187,7 @@ class CaptureRun(boot.Probe):
             if len(trace) > COMMAND_DIAGNOSTIC_LIMIT:
                 del trace[0]
                 self.result['command_diagnostics_dropped'] = self.result.get('command_diagnostics_dropped', 0) + 1
-        if result.returncode not in allowed_codes or result.stderr.strip() or ((media_help or media_volume) and result.stderr != ''):
+        if result.returncode not in allowed_codes or result.stderr.strip() or ((media_help or media_volume or audio_command) and result.stderr != ''):
             self.result.setdefault('command_failure', safe_command_failure(args, result, allowed_codes))
             raise Blocked('SCOPED_ADB_COMMAND_FAILED')
         stdout = result.stdout.replace('\r', '')
@@ -164,10 +199,54 @@ class CaptureRun(boot.Probe):
             contract.parse_volume(stdout)
         elif args == ['shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', '0']:
             contract.verify_volume_set_zero(stdout)
+        elif audio_help:
+            contract.verify_audio_help(stdout)
+        elif audio_command and args[3] == 'set-volume':
+            contract.verify_audio_set_zero(stdout)
+        elif audio_command:
+            contract.parse_audio_volume(args[3], stdout)
         return stdout.strip()
 
     def shell(self, args, **kwargs):
         return self.adb_command(['shell', *args], **kwargs)
+
+    def execute_audio_diagnostic(self):
+        contract.require_audio_diagnostic_review(boot.PROBE_PARENT)
+        if self.audio_diagnostic_index is not None:
+            raise Blocked('AUDIO_DIAGNOSTIC_ALREADY_STARTED')
+        super().execute()
+        self.deadline = min(self.deadline, time.monotonic() + 35)
+        self.audio_diagnostic_index = 0
+        self.result.update(status='blocked', runtime_pass=False, diagnostic_mode='diagnose-volume',
+                           volume_write_attempts=0, app_installed=False, capture_started=False,
+                           permissions_granted=False, volume_before={'audio': {}}, volume_after={})
+        self.stage = 'audio-diagnostic-help'
+        self.shell(['cmd', 'audio'], allowed_codes=(255,))
+        before = self.result['volume_before']['audio']
+        for command, field in (('get-min-volume', 'min'), ('get-max-volume', 'max'), ('get-stream-volume', 'value')):
+            self.stage = 'audio-diagnostic-before-' + field
+            before[field] = contract.parse_audio_volume(command, self.shell(['cmd', 'audio', command, '3']))
+        self.stage = 'audio-diagnostic-before-media'
+        media = contract.parse_volume_state(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
+        self.result['volume_before']['media_session'] = media
+        if (before['min'] != 0 or before['max'] < 1 or not 0 <= before['value'] <= before['max'] or
+                (before['min'], before['max']) != (media['min'], media['max'])):
+            raise Blocked('AUDIO_DIAGNOSTIC_RANGE_UNKNOWN')
+        self.stage = 'audio-diagnostic-single-zero'
+        self.shell(['cmd', 'audio', 'set-volume', '3', '0'])
+        self.stage = 'audio-diagnostic-after-audio'
+        value = contract.parse_audio_volume('get-stream-volume', self.shell(['cmd', 'audio', 'get-stream-volume', '3']))
+        self.result['volume_after']['audio'] = {'value': value, 'min': before['min'], 'max': before['max']}
+        self.stage = 'audio-diagnostic-after-media'
+        media = contract.parse_volume_state(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
+        self.result['volume_after']['media_session'] = media
+        if (media['min'], media['max']) != (before['min'], before['max']):
+            raise Blocked('AUDIO_DIAGNOSTIC_RANGE_CHANGED')
+        if value != 0 or media['value'] != 0:
+            raise Blocked('MEDIA_VOLUME_NOT_ZERO')
+        # Zero here never authorizes app installation, permission UI or capture.
+        self.stage = 'audio-diagnostic-stop'
+        self.result['status'] = 'audio-diagnostic-pending-host-cleanup'
 
     def assert_idle(self):
         previous_stage = self.stage
@@ -393,10 +472,17 @@ class CaptureRun(boot.Probe):
                 errors.append('OWN_GUEST_DESTROY_UNVERIFIED')
         if self.control is not None:
             os.close(self.control); self.control = None
-        ok = super().cleanup()
+        try:
+            ok = super().cleanup()
+        finally:
+            # The inherited helper retains exception strings internally. Never
+            # publish those paths/messages, including if cleanup itself raises.
+            self.result['cleanup_errors'] = ['HOST_CLEANUP_UNVERIFIED'] if self.result.get('cleanup_errors') else []
         self.result['cleanup_errors'].extend(errors)
         if errors or not ok:
             self.result['status'] = 'cleanup-failed'
+        elif self.result['status'] == 'audio-diagnostic-pending-host-cleanup':
+            self.result.update(status='AUDIO_DIAGNOSTIC_STOPPED', runtime_pass=False)
         elif self.result['status'] == 'discovery-stopped-pending-host-cleanup':
             self.result.update(status='DISCOVERY_STOPPED', runtime_pass=False, discovery_stopped_verified=True)
         elif self.result['status'] == 'capture-verified-pending-host-cleanup':
@@ -407,7 +493,7 @@ class CaptureRun(boot.Probe):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--preflight-only', action='store_true')
-    parser.add_argument('--mode', choices=('capture', *contract.DISCOVERY_MODES), default='capture')
+    parser.add_argument('--mode', choices=('capture', 'diagnose-volume', *contract.DISCOVERY_MODES), default='capture')
     args = parser.parse_args()
     preflight(os.environ, args.mode)
     # Concrete artifact-gate invocation is pinned alongside the final reviewed
@@ -433,6 +519,8 @@ def main():
         try:
             if args.mode == 'capture':
                 run.execute_capture(artifact)
+            elif args.mode == 'diagnose-volume':
+                run.execute_audio_diagnostic()
             else:
                 run.execute_discovery(artifact, args.mode)
         except Exception as error:
@@ -447,6 +535,8 @@ def main():
                 run.result.update(status='cleanup-failed', runtime_pass=False)
             shutil.rmtree(evidence)  # No UI/dumpsys/raw collector files persisted/uploaded.
         print(json.dumps(run.result, sort_keys=True))
+        if args.mode == 'diagnose-volume':
+            return 0 if run.result['status'] == 'AUDIO_DIAGNOSTIC_STOPPED' else 1
         if args.mode in contract.DISCOVERY_MODES:
             return 0 if run.result.get('discovery_stopped_verified') and run.result['status'] == 'DISCOVERY_STOPPED' else 1
         return 0 if run.result.get('runtime_pass') and run.result['status'] == 'PASS' else 1

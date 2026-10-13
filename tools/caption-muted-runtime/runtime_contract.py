@@ -1,5 +1,6 @@
 """Strict, pure parsers. Unknown or incomplete evidence is never a pass."""
 import math
+import hashlib
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -134,7 +135,7 @@ def verify_volume_help(text):
         raise Blocked('UNSUPPORTED_VOLUME_CLI')
 
 
-def parse_volume(text):
+def parse_volume_state(text):
     # VolumeCtrl logs each parsed option in argv order, then the connection, then
     # getStreamVolume. No unrelated/missing/reordered/error stdout is accepted.
     pattern = re.escape(VOLUME_GET_PREFIX) + r'\[V\] volume is (\d{1,10}) in range \[(\d{1,10})\.\.(\d{1,10})\]\n?'
@@ -144,7 +145,44 @@ def parse_volume(text):
     value, minimum, maximum = map(int, match.groups())
     if minimum != 0 or maximum < 1 or not 0 <= value <= maximum:
         raise Blocked('VOLUME_RANGE_UNKNOWN')
-    return value
+    return {'value': value, 'min': minimum, 'max': maximum}
+
+
+def parse_volume(text):
+    return parse_volume_state(text)['value']
+
+
+# Android16 AudioManagerShellCommand.onHelp, exact source-derived stdout.
+AUDIO_HELP_SHA256 = '53dccfa4e56a6efca32efcb478e07e001702531576f101dc532a2b85362300a6'
+AUDIO_DIAGNOSTIC_REVIEW = {'mode': 'diagnose-volume', 'parent': '4062451c315265c827161f7e3ac925ff8df39121', 'scope': 'single-zero-no-install-ui-capture'}
+
+
+def require_audio_diagnostic_review(parent):
+    if AUDIO_DIAGNOSTIC_REVIEW != {'mode': 'diagnose-volume', 'parent': parent,
+                                   'scope': 'single-zero-no-install-ui-capture'}:
+        raise Blocked('UNREVIEWED_AUDIO_DIAGNOSTIC')
+
+
+def verify_audio_help(text):
+    if len(text.encode()) != 1731 or hashlib.sha256(text.encode()).hexdigest() != AUDIO_HELP_SHA256:
+        raise Blocked('UNSUPPORTED_AUDIO_CLI')
+
+
+def parse_audio_volume(command, text):
+    methods = {'get-min-volume': 'getStreamMinVolume', 'get-max-volume': 'getStreamMaxVolume',
+               'get-stream-volume': 'getStreamVolume'}
+    if command not in methods:
+        raise Blocked('UNREVIEWED_AUDIO_VOLUME_READ')
+    match = re.fullmatch(re.escape('AudioManager.' + methods[command] + '(3) -> ') + r'([0-9]{1,10})\n?', text)
+    if match is None or int(match[1]) > 2147483647:
+        raise Blocked('AUDIO_VOLUME_READ_FORMAT_UNKNOWN')
+    return int(match[1])
+
+
+def verify_audio_set_zero(text):
+    if text not in ('calling AudioManager.setStreamVolume(3, 0, 0)',
+                    'calling AudioManager.setStreamVolume(3, 0, 0)\n'):
+        raise Blocked('AUDIO_SET_ZERO_FORMAT_UNKNOWN')
 
 
 def verify_volume_set_zero(text):

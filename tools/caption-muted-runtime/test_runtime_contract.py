@@ -9,6 +9,10 @@ import runtime_contract as c
 # Reconstructed from full Android16 MediaShellCommand.onHelp + VolumeCtrl.USAGE.
 # Source VolumeCtrl SHA256:8663f6736f0ede8d6869b902d09865271cfccd680ae70f11a629ec4bec639926
 MEDIA_HELP_STDOUT = 'usage: media_session [subcommand] [options]\n       media_session dispatch KEY\n       media_session list-sessions\n       media_session monitor <tag>\n       media_session volume [options]\n       media_session expire-temp-engaged-sessions\n\nmedia_session dispatch: dispatch a media key to the system.\n                KEY may be: play, pause, play-pause, mute, headsethook,\n                stop, next, previous, rewind, record, fast-forward.\nmedia_session list-sessions: print a list of the current sessions.\nmedia_session monitor: monitor updates to the specified session.\n                       Use the tag from list-sessions.\nmedia_session volume:  the options are as follows: \n\t\t--stream STREAM selects the stream to control, see AudioManager.STREAM_*\n\t\t                controls AudioManager.STREAM_MUSIC if no stream is specified\n\t\t--set INDEX     sets the volume index value\n\t\t--adj DIRECTION adjusts the volume, use raise|same|lower for the direction\n\t\t--get           outputs the current volume\n\t\t--show          shows the UI during the volume change\n\texamples:\n\t\tadb shell media volume --show --stream 3 --set 11\n\t\tadb shell media volume --stream 0 --adj lower\n\t\tadb shell media volume --stream 3 --get\n\nmedia_session expire-temp-engaged-sessions: Expires any ongoing\n                timers for media sessions in a temporary user-engaged\n                state.\n\n'
+# AudioManagerShellCommand android16-release SHA25634f20619184f26489469a3abc4dd5ac21dd909edad74fe33af43061755ce8377
+AUDIO_HELP_STDOUT = 'Audio manager commands:\n  help\n    Print this help text.\n\n  set-surround-format-enabled SURROUND_FORMAT IS_ENABLED\n    Enables/disabled the SURROUND_FORMAT based on IS_ENABLED\n  get-is-surround-format-enabled SURROUND_FORMAT\n    Returns if the SURROUND_FORMAT is enabled\n  set-encoded-surround-mode SURROUND_SOUND_MODE\n    Sets the encoded surround sound mode to SURROUND_SOUND_MODE\n  get-encoded-surround-mode\n    Returns the encoded surround sound mode\n  set-sound-dose-value\n    Sets the current sound dose value\n  get-sound-dose-value\n    Returns the current sound dose value\n  reset-sound-dose-timeout\n    Resets the sound dose timeout used for momentary exposure\n  set-ringer-mode NORMAL|SILENT|VIBRATE\n    Sets the Ringer mode to one of NORMAL|SILENT|VIBRATE\n  set-volume STREAM_TYPE VOLUME_INDEX\n    Sets the volume for STREAM_TYPE to VOLUME_INDEX\n  get-min-volume STREAM_TYPE\n    Gets the min volume for STREAM_TYPE\n  get-max-volume STREAM_TYPE\n    Gets the max volume for STREAM_TYPE\n  get-stream-volume STREAM_TYPE\n    Gets the volume for STREAM_TYPE\n  set-device-volume STREAM_TYPE VOLUME_INDEX NATIVE_DEVICE_TYPE\n    Sets for NATIVE_DEVICE_TYPE the STREAM_TYPE volume to VOLUME_INDEX\n  adj-mute STREAM_TYPE\n    mutes the STREAM_TYPE\n  adj-unmute STREAM_TYPE\n    unmutes the STREAM_TYPE\n  adj-volume STREAM_TYPE <RAISE|LOWER|MUTE|UNMUTE>\n    Adjusts the STREAM_TYPE volume given the specified direction\n  set-group-volume GROUP_ID VOLUME_INDEX\n    Sets the volume for GROUP_ID to VOLUME_INDEX\n  adj-group-volume GROUP_ID <RAISE|LOWER|MUTE|UNMUTE>\n    Adjusts the group volume for GROUP_ID given the specified direction\n  set-enable-hardening <1|0>\n    Enables full audio hardening enforcement, disabling any exemptions\n'
+AUDIO_SET_ZERO_STDOUT = 'calling AudioManager.setStreamVolume(3, 0, 0)\n'
+
 VOLUME_SET_ZERO_STDOUT = ('[V] will control stream=3 (STREAM_MUSIC)\n'
                           '[V] will set volume to index=0\n'
                           '[V] Connecting to AudioService\n')
@@ -166,6 +170,29 @@ class Consent(unittest.TestCase):
         bad=c.UiSpec('com.android.systemui','com.android.systemui/.Projection',target,(c.LABEL,),(target,),'entire-screen')
         with patch.object(c,'ROOT_RUNTIME_REVIEW','fixture'),patch.object(c,'RECORD_AUDIO_UI',record),patch.object(c,'PROJECTION_UI_STEPS',(bad,)):
             with self.assertRaisesRegex(c.Blocked,'BROADER_PROJECTION'):c.require_ui_review()
+
+
+
+class AudioDiagnosticParsers(unittest.TestCase):
+    def test_full_source_help_and_fixed_reads(self):
+        c.verify_audio_help(AUDIO_HELP_STDOUT)
+        self.assertEqual(len(AUDIO_HELP_STDOUT.encode()),1731)
+        for command,method in [('get-min-volume','getStreamMinVolume'),('get-max-volume','getStreamMaxVolume'),('get-stream-volume','getStreamVolume')]:
+            self.assertEqual(c.parse_audio_volume(command,f'AudioManager.{method}(3) -> 7\n'),7)
+        c.verify_audio_set_zero(AUDIO_SET_ZERO_STDOUT)
+        self.assertEqual(c.parse_volume_state(volume_get_stdout(7)),{'value':7,'min':0,'max':15})
+
+    def test_unknown_empty_extra_malformed_channels_are_not_supported(self):
+        for value in ('',AUDIO_HELP_STDOUT+'private',AUDIO_HELP_STDOUT.replace('get-min-volume','other'),AUDIO_HELP_STDOUT*2):
+            with self.assertRaises(c.Blocked):c.verify_audio_help(value)
+        for value in ('','AudioManager.getStreamVolume(3) -> -1\n','AudioManager.getStreamVolume(0) -> 7\n',
+                      'AudioManager.getStreamVolume(3) -> 2147483648\n',
+                      'AudioManager.getStreamVolume(3) -> 7\nprivate',
+                      'AudioManager.getStreamVolume(3) -> 7\n\n'):
+            with self.assertRaises(c.Blocked):c.parse_audio_volume('get-stream-volume',value)
+        with self.assertRaises(c.Blocked):c.parse_audio_volume('private-command','private')
+        for value in ('',AUDIO_SET_ZERO_STDOUT+'private',AUDIO_SET_ZERO_STDOUT.replace('3, 0','3, 1')):
+            with self.assertRaises(c.Blocked):c.verify_audio_set_zero(value)
 
 
 if __name__ == '__main__': unittest.main(verbosity=2)

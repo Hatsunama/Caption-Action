@@ -5,7 +5,7 @@ import json
 import subprocess
 import unittest
 from test_runtime_contract import (good_metrics, package_fixture, MEDIA_HELP_STDOUT,
-                                   VOLUME_SET_ZERO_STDOUT, volume_get_stdout)
+                                   VOLUME_SET_ZERO_STDOUT, volume_get_stdout, AUDIO_HELP_STDOUT, AUDIO_SET_ZERO_STDOUT)
 from unittest.mock import Mock, patch
 import artifact_gate
 import capture_runtime as r
@@ -275,7 +275,7 @@ class CommandDiagnostics(unittest.TestCase):
                 self.assertFalse(obj.result['runtime_pass']);artifact.recheck.assert_not_called()
 
     def test_checkout_revision_parent_does_not_retarget_signed_delivery(self):
-        self.assertEqual(r.CHECKOUT_PARENT,'1f7135f950676d3763e6a2791653ee3bb53b138a')
+        self.assertEqual(r.CHECKOUT_PARENT,'9460569997d1cbfb880a8d23bccebb380445121a')
         self.assertEqual(b.PROBE_PARENT,'4062451c315265c827161f7e3ac925ff8df39121')
         self.assertEqual(artifact_gate.DELIVERY_PARENT,b.PROBE_PARENT)
         with patch.object(artifact_gate,'require_approved_identity') as identity,patch.object(c,'require_ui_review'),patch.object(r.subprocess,'check_output',side_effect=['a'*40,r.CHECKOUT_PARENT]):
@@ -440,6 +440,150 @@ class MediaCommandContract(unittest.TestCase):
             for args,output in cases:
                 with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],0,output,'')):
                     with self.assertRaises(c.Blocked):obj.shell(args)
+
+
+
+class AudioDiagnostic(unittest.TestCase):
+    # Full source-backed output fixture; no SDK/ADB/emulator is executed.
+    def run_fixture(self, *, minimum=0, maximum=15, initial=7, after=0, media_after=None, fault=None):
+        td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup)
+        obj=CommandDiagnostics().make_run(Path(td.name));trace=[]
+        replies=[(255,AUDIO_HELP_STDOUT,''),
+                 (0,f'AudioManager.getStreamMinVolume(3) -> {minimum}\n',''),
+                 (0,f'AudioManager.getStreamMaxVolume(3) -> {maximum}\n',''),
+                 (0,f'AudioManager.getStreamVolume(3) -> {initial}\n',''),
+                 (0,volume_get_stdout(initial,minimum,maximum),''),
+                 (0,AUDIO_SET_ZERO_STDOUT,''),
+                 (0,f'AudioManager.getStreamVolume(3) -> {after}\n',''),
+                 (0,volume_get_stdout(after if media_after is None else media_after,minimum,maximum),'')]
+        if fault is not None:replies[fault[0]]=fault[1]
+        def command(argv,**kw):
+            trace.append(tuple(argv[6:]));index=len(trace)-1
+            return subprocess.CompletedProcess([], *replies[index])
+        error=None
+        review={'mode':'diagnose-volume','parent':b.PROBE_PARENT,'scope':'single-zero-no-install-ui-capture'}
+        with patch.object(b.Probe,'execute'),patch.object(c,'AUDIO_DIAGNOSTIC_REVIEW',review),patch.object(obj,'command',side_effect=command),patch.object(obj,'prepare_guest',side_effect=AssertionError('install path')):
+            try:obj.execute_audio_diagnostic()
+            except c.Blocked as e:error=str(e)
+        return obj,trace,error
+
+    def test_connected_single_write_both_readbacks_then_stop(self):
+        obj,trace,error=self.run_fixture()
+        self.assertIsNone(error)
+        self.assertEqual(trace,[('cmd','audio'),('cmd','audio','get-min-volume','3'),
+            ('cmd','audio','get-max-volume','3'),('cmd','audio','get-stream-volume','3'),
+            ('cmd','media_session','volume','--stream','3','--get'),('cmd','audio','set-volume','3','0'),
+            ('cmd','audio','get-stream-volume','3'),('cmd','media_session','volume','--stream','3','--get')])
+        self.assertEqual(obj.result['volume_before'],{'audio':{'value':7,'min':0,'max':15},'media_session':{'value':7,'min':0,'max':15}})
+        self.assertEqual(obj.result['volume_after']['audio']['value'],0)
+        self.assertEqual(obj.result['volume_after']['media_session']['value'],0)
+        self.assertEqual(obj.result['volume_write_attempts'],1)
+        self.assertEqual(obj.result['status'],'audio-diagnostic-pending-host-cleanup')
+        self.assertFalse(obj.result['runtime_pass']);self.assertFalse(obj.installed)
+        self.assertFalse(obj.result['capture_started']);self.assertFalse(obj.result['permissions_granted'])
+        with patch.object(obj,'command') as command,self.assertRaises(c.Blocked):
+            obj.shell(['cmd','audio','set-volume','3','0'])
+        command.assert_not_called()
+
+    def test_bad_support_range_and_prewrite_errors_never_write(self):
+        for params in ({'minimum':1},{'maximum':0},{'initial':16},
+                       {'fault':(0,(0,'',''))},{'fault':(0,(255,AUDIO_HELP_STDOUT,' '))},
+                       {'fault':(1,(0,'AudioManager.getStreamMinVolume(3) -> 0\nprivate token',''))},
+                       {'fault':(3,(1,'','Permission Denial private@example.invalid'))}):
+            with self.subTest(params=params):
+                obj,trace,error=self.run_fixture(**params)
+                self.assertIsNotNone(error);self.assertEqual(obj.result['volume_write_attempts'],0)
+                self.assertFalse(any('set-volume' in command for command in trace))
+                self.assertFalse(obj.installed);self.assertNotIn('private',json.dumps(obj.result))
+
+    def test_nonzero_after_reads_both_then_stops_without_retry(self):
+        for a,m in [(7,7),(0,7),(7,0)]:
+            obj,trace,error=self.run_fixture(after=a,media_after=m)
+            self.assertEqual(error,'MEDIA_VOLUME_NOT_ZERO');self.assertEqual(len(trace),8)
+            self.assertEqual(obj.result['volume_write_attempts'],1)
+            self.assertEqual(obj.result['volume_after']['audio']['value'],a)
+            self.assertEqual(obj.result['volume_after']['media_session']['value'],m)
+            self.assertFalse(obj.result['runtime_pass']);self.assertFalse(obj.installed)
+
+    def test_set_error_or_malformed_return_never_retries(self):
+        private='secret-token /private/path private@example.invalid'
+        for response in [(1,'',private),(0,AUDIO_SET_ZERO_STDOUT,private),(0,'', ''),(0,AUDIO_SET_ZERO_STDOUT+private,'')]:
+            obj,trace,error=self.run_fixture(fault=(5,response))
+            self.assertIsNotNone(error);self.assertEqual(len(trace),6)
+            self.assertEqual(obj.result['volume_write_attempts'],1)
+            self.assertNotIn(private,json.dumps(obj.result));self.assertFalse(obj.installed)
+
+    def test_every_command_failure_stops_before_next_command(self):
+        for index in range(8):
+            obj,trace,error=self.run_fixture(fault=(index,(9,'private-stdout','private-stderr')))
+            self.assertIsNotNone(error);self.assertEqual(len(trace),index+1)
+            self.assertLessEqual(obj.result['volume_write_attempts'],1)
+            self.assertFalse(obj.installed);self.assertNotIn('private-',json.dumps(obj.result))
+
+    def test_diagnostic_gate_none_cannot_boot_or_enable_capture(self):
+        td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup)
+        obj=CommandDiagnostics().make_run(Path(td.name))
+        with patch.object(c,'AUDIO_DIAGNOSTIC_REVIEW',None):
+            with patch.object(b.Probe,'execute') as boot,self.assertRaisesRegex(c.Blocked,'UNREVIEWED_AUDIO_DIAGNOSTIC'):
+                obj.execute_audio_diagnostic()
+            boot.assert_not_called()
+            with patch.object(artifact_gate,'require_approved_identity'),patch.object(r.subprocess,'check_output') as git,self.assertRaises(c.Blocked):
+                r.preflight(Runtime().env(),'diagnose-volume')
+            git.assert_not_called()
+        self.assertIsNone(c.ROOT_RUNTIME_REVIEW)
+
+    def test_diagnostic_gate_is_exact_mode_parent_and_scope(self):
+        approved={'mode':'diagnose-volume','parent':b.PROBE_PARENT,'scope':'single-zero-no-install-ui-capture'}
+        with patch.object(c,'AUDIO_DIAGNOSTIC_REVIEW',approved):
+            c.require_audio_diagnostic_review(b.PROBE_PARENT)
+            with self.assertRaises(c.Blocked):c.require_audio_diagnostic_review('a'*40)
+        for key,value in [('mode','capture'),('scope','anything')]:
+            with patch.object(c,'AUDIO_DIAGNOSTIC_REVIEW',{**approved,key:value}),self.assertRaises(c.Blocked):
+                c.require_audio_diagnostic_review(b.PROBE_PARENT)
+
+    def test_no_out_of_sequence_or_nonzero_mutation_can_dispatch(self):
+        td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup)
+        for args in (['install','--user','0','private.apk'],['shell','input','tap','1','1'],
+                     ['shell','cmd','audio','set-volume','3','1'],
+                     ['shell','cmd','media_session','volume','--stream','3','--set','0'],
+                     ['shell','cmd','audio','set-volume','3','0']):
+            obj=CommandDiagnostics().make_run(Path(td.name));obj.audio_diagnostic_index=0
+            with patch.object(obj,'command') as command,self.assertRaises(c.Blocked):obj.adb_command(args)
+            command.assert_not_called()
+
+    def test_timeout_during_single_set_consumes_attempt_and_cannot_retry(self):
+        td=tempfile.TemporaryDirectory();self.addCleanup(td.cleanup)
+        obj=CommandDiagnostics().make_run(Path(td.name));obj.audio_diagnostic_index=5
+        obj.result['volume_write_attempts']=0
+        with patch.object(obj,'command',side_effect=c.Blocked('COMMAND_TIMEOUT_OR_OUTPUT_LIMIT')) as command:
+            with self.assertRaises(c.Blocked):obj.shell(['cmd','audio','set-volume','3','0'])
+            with self.assertRaisesRegex(c.Blocked,'COMMAND_ORDER'):obj.shell(['cmd','audio','set-volume','3','0'])
+        self.assertEqual(command.call_count,1);self.assertEqual(obj.result['volume_write_attempts'],1)
+        self.assertEqual(obj.result['last_command_label'],'audio_volume_zero')
+
+    def test_host_cleanup_required_and_failure_cannot_pass(self):
+        for failed in (False,True):
+            obj,_,error=self.run_fixture();self.assertIsNone(error)
+            obj.emulator=None;obj.server=None
+            def cleanup():obj.result['cleanup_errors']=[];return not failed
+            with patch.object(b.Probe,'cleanup',side_effect=cleanup):obj.cleanup()
+            self.assertEqual(obj.result['status'],'cleanup-failed' if failed else 'AUDIO_DIAGNOSTIC_STOPPED')
+            self.assertFalse(obj.result['runtime_pass'])
+
+    def test_inherited_cleanup_exception_text_is_redacted_even_if_it_raises(self):
+        for raises in (False, True):
+            obj,_,error=self.run_fixture();self.assertIsNone(error)
+            obj.emulator=None;obj.server=None
+            def cleanup():
+                obj.result['cleanup_errors']=['private@example.invalid /private/secret token=abc']
+                if raises:raise RuntimeError('private exception path')
+                return False
+            with patch.object(b.Probe,'cleanup',side_effect=cleanup):
+                if raises:
+                    with self.assertRaises(RuntimeError):obj.cleanup()
+                else:self.assertFalse(obj.cleanup())
+            self.assertEqual(obj.result['cleanup_errors'],['HOST_CLEANUP_UNVERIFIED'])
+            self.assertNotIn('private',json.dumps(obj.result));self.assertNotIn('token=',json.dumps(obj.result))
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

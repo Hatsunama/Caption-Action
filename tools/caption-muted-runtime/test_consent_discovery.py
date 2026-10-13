@@ -160,10 +160,11 @@ class DiscoveryFlow(unittest.TestCase):
             with patch.object(obj.kvm,'release',side_effect=RuntimeError('fixture')):self.assertFalse(obj.cleanup())
             self.assertEqual(obj.result['status'],'cleanup-failed');self.assertFalse(obj.result['runtime_pass'])
 
-    def test_workflow_selects_only_first_stage_and_existing_signed_delivery_paths(self):
+    def test_workflow_selects_only_diagnostic_and_existing_signed_delivery_paths(self):
         text=(r.ROOT/'.github/workflows/caption-muted-runtime.yml').read_text()
-        self.assertEqual(text.count('capture_runtime.py --mode discover-record'),2)
+        self.assertEqual(text.count('capture_runtime.py --mode diagnose-volume'),2)
         self.assertNotIn('--mode capture',text);self.assertNotIn('--mode discover-projection',text)
+        self.assertNotIn('--mode discover-record',text)
         source=Path(r.__file__).read_text()
         self.assertIn("ROOT / 'tools/muted-capture-probe/artifacts/caption-muted-platform-probe-signed.apk'",source)
         self.assertIn("ROOT / 'tools/muted-capture-probe/SIGNING_RECEIPT.json'",source)
