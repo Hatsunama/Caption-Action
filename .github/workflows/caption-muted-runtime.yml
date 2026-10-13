@@ -1,0 +1,58 @@
+name: Caption muted consent discovery (review-gated)
+on:
+  push:
+    branches: [probe/caption-muted-runtime-20261013]
+    paths:
+      - .github/workflows/caption-muted-runtime.yml
+      - tools/caption-muted-runtime/**
+permissions:
+  contents: read
+concurrency:
+  group: caption-muted-runtime
+  cancel-in-progress: false
+jobs:
+  discovery:
+    if: >-
+      github.event.repository.private == false &&
+      github.event.repository.visibility == 'public' &&
+      github.repository == 'Hatsunama/Caption-Action' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/probe/caption-muted-runtime-20261013'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PROBE_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+      PROBE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+      PROBE_COMMIT: ${{ github.sha }}
+      PROBE_CELL: api36
+    steps:
+      - name: Checkout exact reviewed commit without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/caption-muted-runtime
+            tools/muted-capture-probe
+            .github/workflows/caption-muted-runtime.yml
+          sparse-checkout-cone-mode: false
+      - name: Offline regression tests only
+        run: python3 -m unittest discover -s tools/caption-muted-runtime -p 'test_*.py' -v
+      - name: Exact signed bytes, parent, receipt, official verifier and consent review gate
+        run: python3 tools/caption-muted-runtime/capture_runtime.py --mode discover-record --preflight-only
+      - name: Install official Ubuntu emulator client-library prerequisite
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          sudo -n apt-get -q update
+          apt-cache policy libpulse0
+          sudo -n apt-get --print-uris -y --no-install-recommends --no-remove install libpulse0 > "$RUNNER_TEMP/caption-muted-libpulse-uris.txt"
+          python3 -c 'import os,sys; from pathlib import Path; sys.path.insert(0,"tools/caption-muted-runtime"); import boot_probe; print("OFFICIAL_UBUNTU_PACKAGE_URLS", boot_probe.verify_ubuntu_package_uris((Path(os.environ["RUNNER_TEMP"])/"caption-muted-libpulse-uris.txt").read_text()))'
+          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends --no-remove install libpulse0
+          dpkg-query -W -f='${Package} ${Version} ${Status}\n' libpulse0
+          rm -f "$RUNNER_TEMP/caption-muted-libpulse-uris.txt"
+      - name: Inspect RECORD_AUDIO dialog and stop without granting
+        run: python3 tools/caption-muted-runtime/capture_runtime.py --mode discover-record
+      # No caches, uploads, test APK, application builds, keys or signing operations.
+      # Aggregate scalar result only. All guest/home/SDK/raw evidence is destroyed.
