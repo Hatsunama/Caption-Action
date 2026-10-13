@@ -19,8 +19,6 @@ jobs:
       run:
         shell: bash
         working-directory: diagnostics/capture-probe
-    env:
-      GRADLE_USER_HOME: ${{ runner.temp }}/caption-probe-gradle
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -29,6 +27,7 @@ jobs:
       - name: Verify reviewed source and capacity
         run: |
           set -euo pipefail
+          echo "GRADLE_USER_HOME=$RUNNER_TEMP/caption-probe-gradle" >> "$GITHUB_ENV"
           sha256sum --check SOURCE_SHA256SUMS
           python3 - <<'PY'
           from pathlib import Path
