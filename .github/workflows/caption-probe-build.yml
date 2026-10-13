@@ -1,0 +1,74 @@
+name: Caption synthetic probe unsigned validation
+on:
+  push:
+    branches: [probe/caption-early-stop-build-20261013]
+    paths:
+      - diagnostics/capture-probe/**
+      - .github/workflows/caption-probe-build.yml
+permissions:
+  contents: read
+concurrency:
+  group: caption-probe-build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'Hatsunama/Caption-Action' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+        working-directory: diagnostics/capture-probe
+    env:
+      GRADLE_USER_HOME: ${{ runner.temp }}/caption-probe-gradle
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: diagnostics/capture-probe
+      - name: Verify reviewed source and capacity
+        run: |
+          set -euo pipefail
+          sha256sum --check SOURCE_SHA256SUMS
+          python3 - <<'PY'
+          from pathlib import Path
+          mem = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+          assert int(mem['MemAvailable'].split()[0]) >= 4718592, 'Need 4.5 GiB available RAM; no retry or larger runner'
+          PY
+          python3 scripts/check-probe-contract.py
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '8.13'
+          cache-disabled: true
+      - name: Configure isolated Android SDK
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=$RUNNER_TEMP/caption-probe-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$RUNNER_TEMP/caption-probe-sdk" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/caption-probe-sdk/licenses"
+          # Reuse only the standard Android SDK agreement already approved for Caption.
+          printf '%s\n' '24333f8a63b6825ea9c5514f83c2829b004d1fee' > "$RUNNER_TEMP/caption-probe-sdk/licenses/android-sdk-license"
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          accept-android-sdk-licenses: false
+          packages: ''
+      - name: Install exact required SDK packages without new acceptance
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' < /dev/null
+      - name: Full Gradle unit tests, unsigned debug assembly, debug lint
+        run: gradle :app:testDebugUnitTest :app:assembleDebug :app:lintDebug --no-daemon --no-build-cache --max-workers=1 --stacktrace
+      - name: Verbatim lifecycle fixture and 32-test suite
+        run: python3 scripts/test_launch_lifecycle.py ci
+      - name: Verify complete results and unsigned candidate
+        run: python3 scripts/verify-ci-results.py
+      - name: Preserve textual diagnostic evidence in the run log
+        if: always()
+        run: |
+          for f in evidence/early-stop-ci/compile.txt evidence/early-stop-ci/tests.txt evidence/early-stop-ci/receipt.json app/build/reports/lint-results-debug.txt; do
+            if [ -f "$f" ]; then printf '\n--- %s ---\n' "$f"; cat "$f"; fi
+          done
+      # Artifact upload deliberately absent until included storage capacity is verified.
+      # No secrets, signing, install, runtime/device, cache, production build or deployment.

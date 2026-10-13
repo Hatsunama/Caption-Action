@@ -1,0 +1,75 @@
+package com.hatsunama.captionaction.captureprobe
+
+import kotlinx.coroutines.*
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.CoroutineContext
+
+// Test-only platform stand-ins. Lifecycle source is inserted verbatim, not rewritten.
+class QueuedDispatcher : CoroutineDispatcher() {
+    private val queue = java.util.ArrayDeque<Runnable>()
+    override fun dispatch(context: CoroutineContext, block: Runnable) { queue.add(block) }
+    fun drain() { while (queue.isNotEmpty()) queue.removeFirst().run() }
+    fun size() = queue.size
+}
+object ProbeState { var running = false; var status = "" }
+object Log {
+    val published = mutableListOf<String>()
+    fun i(tag: String, message: String) { published.add(message) }
+    fun e(tag: String, message: String) {}
+}
+class Handler {
+    var armed = false
+    fun post(callback: Any) { armed = true }
+    fun removeCallbacks(callback: Any) { armed = false }
+}
+class Audio { var armed = false
+    fun registerAudioDeviceCallback(callback: Any, handler: Handler) { armed = true }
+    fun unregisterAudioDeviceCallback(callback: Any) { armed = false }
+}
+class Deadline { var armed = false
+    fun schedule(action: () -> Unit, delay: Long, unit: TimeUnit) { armed = true }
+    fun shutdownNow() { armed = false }
+}
+class Intent { fun getIntExtra(key: String, default: Int) = default }
+class Speaker(val id: Int = 1)
+class MediaProjection {
+    var stopped = 0; var failStop = false
+    open class Callback { open fun onStop() {} }
+    fun registerCallback(callback: Callback, handler: Handler) {}
+    fun stop() { stopped++; if (failStop) error("injected projection teardown failure") }
+}
+class MediaProjectionManager {
+    var acquired = 0
+    val projection = MediaProjection()
+    fun getMediaProjection(code: Int, consent: Intent): MediaProjection { acquired++; return projection }
+}
+open class Service { open fun onDestroy() {} }
+/* ACTUAL_OPT_IN */
+class LaunchFixture(dispatcher: CoroutineDispatcher) : Service() {
+    val scope = CoroutineScope(SupervisorJob() + dispatcher)
+    val handler = Handler(); val audio = Audio(); val deadline = Deadline()
+    var projection: MediaProjection? = null
+    var active = false; var safetyArmed = false; var finished = false
+    val phaseSequence = ProbePhaseSequence()
+    var speakerId = -1
+    val reports = mutableListOf<String>()
+    val devices = Any(); val volumeGuard = Any()
+    val manager = MediaProjectionManager()
+    var audioSetups = 0; var stopCalls = 0; var failAudioRelease = false; var complete = false
+    val START_NOT_STICKY = 2
+    fun safeRoute() = true
+    fun hardAbort(reason: String): Nothing = error(reason)
+    fun getSystemService(type: Class<MediaProjectionManager>) = manager
+    fun stopSelf() { stopCalls++ }
+    suspend fun runPhase(mp: MediaProjection, speaker: Speaker, phase: ProbePhase): Boolean {
+        audioSetups++; phaseSequence.beginPhase()
+        try { if (!complete) awaitCancellation() } finally { phaseSequence.finishPhase(!failAudioRelease) }
+        return true
+    }
+    fun start(): Int {
+        if (active) return START_NOT_STICKY
+        val intent = Intent(); val consent = Intent(); val speaker = Speaker()
+/* ACTUAL_START */
+    }
+/* ACTUAL_DESTROY */
+}
