@@ -111,19 +111,47 @@ def verify_audio_idle(audio, policy, sessions):
     return True
 
 
+MEDIA_HELP_HEADER = 'usage: media_session [subcommand] [options]'
+MEDIA_HELP_OPTION_LINES = (
+    'media_session volume:  the options are as follows: ',
+    '\t\t--stream STREAM selects the stream to control, see AudioManager.STREAM_*',
+    '\t\t                controls AudioManager.STREAM_MUSIC if no stream is specified',
+    '\t\t--set INDEX     sets the volume index value',
+    '\t\t--get           outputs the current volume',
+)
+VOLUME_CONTROL_PREFIX = '[V] will control stream=3 (STREAM_MUSIC)\n'
+VOLUME_GET_PREFIX = VOLUME_CONTROL_PREFIX + '[V] will get volume\n[V] Connecting to AudioService\n'
+VOLUME_SET_ZERO_LINES = VOLUME_CONTROL_PREFIX + '[V] will set volume to index=0\n[V] Connecting to AudioService'
+
+
 def verify_volume_help(text):
-    for required in ('--stream STREAM', 'AudioManager.STREAM_MUSIC', '--set INDEX', '--get'):
-        if required not in text:
-            raise Blocked('UNSUPPORTED_VOLUME_CLI')
+    # Bare cmd media_session only: Android16 prints this on stdout and returns-1
+    # (shell255). The caller independently requires empty stderr and that status.
+    lines = text.splitlines()
+    if (len(text.encode()) > 8192 or not text.startswith(MEDIA_HELP_HEADER + '\n') or
+            lines.count(MEDIA_HELP_HEADER) != 1 or
+            any(lines.count(line) != 1 for line in MEDIA_HELP_OPTION_LINES)):
+        raise Blocked('UNSUPPORTED_VOLUME_CLI')
 
 
 def parse_volume(text):
-    if '[E]' in text or 'Error' in text:
-        raise Blocked('VOLUME_READBACK_ERROR')
-    value, minimum, maximum = exactly(r'\[V\] volume is (\d+) in range \[(\d+)\.\.(\d+)\]', text)
-    if int(minimum) != 0 or int(maximum) < 1 or not 0 <= int(value) <= int(maximum):
+    # VolumeCtrl logs each parsed option in argv order, then the connection, then
+    # getStreamVolume. No unrelated/missing/reordered/error stdout is accepted.
+    pattern = re.escape(VOLUME_GET_PREFIX) + r'\[V\] volume is (\d{1,10}) in range \[(\d{1,10})\.\.(\d{1,10})\]\n?'
+    match = re.fullmatch(pattern, text)
+    if match is None:
+        raise Blocked('VOLUME_READBACK_FORMAT_UNKNOWN')
+    value, minimum, maximum = map(int, match.groups())
+    if minimum != 0 or maximum < 1 or not 0 <= value <= maximum:
         raise Blocked('VOLUME_RANGE_UNKNOWN')
-    return int(value)
+    return value
+
+
+def verify_volume_set_zero(text):
+    # This proves only the exact CLI path/output. An independent subsequent get
+    # must still read0; a successful setter return alone is never mute evidence.
+    if re.fullmatch(re.escape(VOLUME_SET_ZERO_LINES) + r'\n?', text) is None:
+        raise Blocked('VOLUME_SET_ZERO_FORMAT_UNKNOWN')
 
 
 def verify_package(text, *, stopped=None, permission=None):

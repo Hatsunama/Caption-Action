@@ -6,6 +6,20 @@ from unittest.mock import patch
 import runtime_contract as c
 
 
+# Reconstructed from full Android16 MediaShellCommand.onHelp + VolumeCtrl.USAGE.
+# Source VolumeCtrl SHA256:8663f6736f0ede8d6869b902d09865271cfccd680ae70f11a629ec4bec639926
+MEDIA_HELP_STDOUT = 'usage: media_session [subcommand] [options]\n       media_session dispatch KEY\n       media_session list-sessions\n       media_session monitor <tag>\n       media_session volume [options]\n       media_session expire-temp-engaged-sessions\n\nmedia_session dispatch: dispatch a media key to the system.\n                KEY may be: play, pause, play-pause, mute, headsethook,\n                stop, next, previous, rewind, record, fast-forward.\nmedia_session list-sessions: print a list of the current sessions.\nmedia_session monitor: monitor updates to the specified session.\n                       Use the tag from list-sessions.\nmedia_session volume:  the options are as follows: \n\t\t--stream STREAM selects the stream to control, see AudioManager.STREAM_*\n\t\t                controls AudioManager.STREAM_MUSIC if no stream is specified\n\t\t--set INDEX     sets the volume index value\n\t\t--adj DIRECTION adjusts the volume, use raise|same|lower for the direction\n\t\t--get           outputs the current volume\n\t\t--show          shows the UI during the volume change\n\texamples:\n\t\tadb shell media volume --show --stream 3 --set 11\n\t\tadb shell media volume --stream 0 --adj lower\n\t\tadb shell media volume --stream 3 --get\n\nmedia_session expire-temp-engaged-sessions: Expires any ongoing\n                timers for media sessions in a temporary user-engaged\n                state.\n\n'
+VOLUME_SET_ZERO_STDOUT = ('[V] will control stream=3 (STREAM_MUSIC)\n'
+                          '[V] will set volume to index=0\n'
+                          '[V] Connecting to AudioService\n')
+
+
+def volume_get_stdout(value=0, minimum=0, maximum=15):
+    return ('[V] will control stream=3 (STREAM_MUSIC)\n'
+            '[V] will get volume\n[V] Connecting to AudioService\n'
+            f'[V] volume is {value} in range [{minimum}..{maximum}]\n')
+
+
 def line(phase, rms='0.000', fraction='0.0000', peak=0):
     return f'{phase} result=PASS sourceFrames=96000 samples=64000 nonzero=0 rms={rms} peak={peak} toneFraction={fraction} sha256=' + 'a' * 64
 
@@ -106,8 +120,8 @@ class GuestState(unittest.TestCase):
             with self.assertRaises(c.Blocked): c.verify_projection_idle(bad)
 
     def test_volume_only_supported_and_zero_range(self):
-        c.verify_volume_help('--stream STREAM AudioManager.STREAM_MUSIC --set INDEX --get')
-        self.assertEqual(c.parse_volume('[V] volume is 0 in range [0..15]'),0)
+        c.verify_volume_help(MEDIA_HELP_STDOUT)
+        self.assertEqual(c.parse_volume(volume_get_stdout()),0)
         for bad in ('','[V] volume is 0 in range [1..15]','[E] failed\n[V] volume is 0 in range [0..15]',
                     '[V] volume is 0 in range [0..15]\n[V] volume is 1 in range [0..15]'):
             with self.assertRaises(c.Blocked): c.parse_volume(bad)

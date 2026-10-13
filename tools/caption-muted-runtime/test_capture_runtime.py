@@ -4,7 +4,8 @@ import tempfile
 import json
 import subprocess
 import unittest
-from test_runtime_contract import good_metrics, package_fixture
+from test_runtime_contract import (good_metrics, package_fixture, MEDIA_HELP_STDOUT,
+                                   VOLUME_SET_ZERO_STDOUT, volume_get_stdout)
 from unittest.mock import Mock, patch
 import artifact_gate
 import capture_runtime as r
@@ -24,7 +25,7 @@ class Runtime(unittest.TestCase):
             obj=r.CaptureRun(Path(td),Path(td));obj.adb='fixture-adb'
             obj.server=Mock(poll=Mock(return_value=None));obj.emulator=Mock(poll=Mock(return_value=None))
             with patch.object(obj,'command',side_effect=c.Blocked('COMMAND_TIMEOUT_OR_OUTPUT_LIMIT')):
-                with self.assertRaises(c.Blocked):obj.adb_command(['shell','cmd','media_session','help'])
+                with self.assertRaises(c.Blocked):obj.adb_command(['shell','cmd','media_session'],allowed_codes=(255,))
             self.assertEqual(obj.result['last_command_label'],'media_session_help')
             self.assertNotIn('fixture-adb',json.dumps(obj.result))
 
@@ -89,9 +90,9 @@ class Runtime(unittest.TestCase):
                 if args==['getprop','persist.sys.locale']:return 'en-US'
                 if args==['wm','size']:return 'Physical size: 480x800'
                 if args==['pm','list','packages',c.PACKAGE]:return ''
-                if args==['cmd','media_session','help']:return '--stream STREAM AudioManager.STREAM_MUSIC --set INDEX --get'
-                if args==['cmd','media_session','volume','--stream','3','--get']:return '[V] volume is 0 in range [0..15]'
-                if args==['cmd','media_session','volume','--stream','3','--set','0']:trace.append('set-zero');return ''
+                if args==['cmd','media_session']:return MEDIA_HELP_STDOUT
+                if args==['cmd','media_session','volume','--stream','3','--get']:return volume_get_stdout()
+                if args==['cmd','media_session','volume','--stream','3','--set','0']:trace.append('set-zero');return VOLUME_SET_ZERO_STDOUT
                 if args==['dumpsys','package',c.PACKAGE]:return packages.pop(0)
                 if args==['am','start','-W','-n',c.ACTIVITY]:return 'Status: ok'
                 if args==['pidof',c.PACKAGE]:return '234'
@@ -143,9 +144,9 @@ class CommandDiagnostics(unittest.TestCase):
                 obj=self.make_run(Path(td))
                 with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],code,out,err)):
                     with self.assertRaisesRegex(c.Blocked,'^SCOPED_ADB_COMMAND_FAILED$'):
-                        obj.shell(['cmd','media_session','help'])
+                        obj.shell(['cmd','media_session','volume','--stream','3','--get'])
                 self.assertEqual(obj.result['command_failure'],{
-                    'command_label':'media_session_help','exit_code':code,
+                    'command_label':'media_session_volume_read','exit_code':code,
                     'stdout_bytes':len(out.encode()),'stderr_bytes':len(err.encode()),'classification':expected})
                 self.assertFalse(obj.result['runtime_pass'])
 
@@ -157,7 +158,7 @@ class CommandDiagnostics(unittest.TestCase):
                (2,'','unrecognized option: private-value','unknown_command')]
         for code,out,err,expected in cases:
             with self.subTest(expected=expected):
-                result=r.safe_command_failure(['shell','cmd','media_session','help'],subprocess.CompletedProcess([],code,out,err))
+                result=r.safe_command_failure(['shell','cmd','media_session'],subprocess.CompletedProcess([],code,out,err))
                 self.assertEqual(result['classification'],expected)
                 serialized=json.dumps(result)
                 self.assertNotIn('private-command',serialized);self.assertNotIn('private-value',serialized)
@@ -216,7 +217,7 @@ class CommandDiagnostics(unittest.TestCase):
         from test_runtime_contract import audio_fixture,policy_fixture,sessions_fixture
         with tempfile.TemporaryDirectory() as td:
             obj=self.make_run(Path(td));obj.stage='guest-precondition-idle';observed=[]
-            values={('cmd','media_session','volume','--stream','3','--get'):'[V] volume is 0 in range [0..15]',
+            values={('cmd','media_session','volume','--stream','3','--get'):volume_get_stdout(),
                     ('dumpsys','media_projection'):'MEDIA PROJECTION MANAGER (dumpsys media_projection)\nMedia Projection: \nnull',
                     ('dumpsys','audio'):audio_fixture(),('dumpsys','media.audio_policy'):policy_fixture(),
                     ('dumpsys','media_session'):sessions_fixture()}
@@ -232,9 +233,9 @@ class CommandDiagnostics(unittest.TestCase):
     def test_first_failure_is_preserved(self):
         with tempfile.TemporaryDirectory() as td:
             obj=self.make_run(Path(td))
-            for cmd,code in [(['shell','cmd','media_session','help'],127),(['uninstall',c.PACKAGE],3)]:
+            for cmd,code in [(['shell','cmd','media_session'],127),(['uninstall',c.PACKAGE],3)]:
                 with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],code,'','')):
-                    with self.assertRaises(c.Blocked):obj.adb_command(cmd)
+                    with self.assertRaises(c.Blocked):obj.adb_command(cmd,allowed_codes=(255,) if cmd==['shell','cmd','media_session'] else (0,))
             self.assertEqual(obj.result['command_failure']['command_label'],'media_session_help')
             self.assertEqual(obj.result['command_failure']['exit_code'],127)
 
@@ -243,9 +244,9 @@ class CommandDiagnostics(unittest.TestCase):
         outputs={
             ('getprop','persist.sys.locale'):'',('getprop','ro.product.locale'):'en-US',
             ('wm','size'):'Physical size: 480x800',('pm','list','packages',c.PACKAGE):'',
-            ('cmd','media_session','help'):'--stream STREAM AudioManager.STREAM_MUSIC --set INDEX --get',
-            ('cmd','media_session','volume','--stream','3','--get'):'[V] volume is 0 in range [0..15]',
-            ('cmd','media_session','volume','--stream','3','--set','0'):'',
+            ('cmd','media_session'):MEDIA_HELP_STDOUT,
+            ('cmd','media_session','volume','--stream','3','--get'):volume_get_stdout(),
+            ('cmd','media_session','volume','--stream','3','--set','0'):VOLUME_SET_ZERO_STDOUT,
             ('dumpsys','media_projection'):'MEDIA PROJECTION MANAGER (dumpsys media_projection)\nMedia Projection: \nnull',
             ('dumpsys','audio'):audio_fixture(),('dumpsys','media.audio_policy'):policy_fixture(),
             ('dumpsys','media_session'):sessions_fixture()}
@@ -253,7 +254,7 @@ class CommandDiagnostics(unittest.TestCase):
                (('getprop','ro.product.locale'),'guest-precondition-fallback-locale'),
                (('wm','size'),'guest-precondition-display'),
                (('pm','list','packages',c.PACKAGE),'guest-precondition-package-absence'),
-               (('cmd','media_session','help'),'guest-precondition-volume-help'),
+               (('cmd','media_session'),'guest-precondition-volume-help'),
                (('cmd','media_session','volume','--stream','3','--get'),'guest-precondition-volume-read'),
                (('cmd','media_session','volume','--stream','3','--set','0'),'guest-precondition-volume-zero'),
                (('dumpsys','media_projection'),'idle-projection-readback'),
@@ -266,7 +267,7 @@ class CommandDiagnostics(unittest.TestCase):
                 def command(argv,**kw):
                     self.assertEqual(argv[:6],[obj.adb,'-P','5038','-s','emulator-5556','shell'])
                     args=tuple(argv[6:]);calls.append(args)
-                    return subprocess.CompletedProcess([],2,'', 'unknown command: redacted') if args==failed else subprocess.CompletedProcess([],0,outputs[args],'')
+                    return subprocess.CompletedProcess([],2,'', 'unknown command: redacted') if args==failed else subprocess.CompletedProcess([],255 if args==('cmd','media_session') else 0,outputs[args],'')
                 with patch.object(b.Probe,'execute'),patch.object(obj,'command',side_effect=command):
                     with self.assertRaises(c.Blocked):obj.prepare_guest(artifact)
                 self.assertEqual(obj.stage,stage);self.assertFalse(obj.installed)
@@ -274,7 +275,7 @@ class CommandDiagnostics(unittest.TestCase):
                 self.assertFalse(obj.result['runtime_pass']);artifact.recheck.assert_not_called()
 
     def test_checkout_revision_parent_does_not_retarget_signed_delivery(self):
-        self.assertEqual(r.CHECKOUT_PARENT,'2c795b70f3cd32b458d9e7346a2f039c7ce04d8a')
+        self.assertEqual(r.CHECKOUT_PARENT,'1f7135f950676d3763e6a2791653ee3bb53b138a')
         self.assertEqual(b.PROBE_PARENT,'4062451c315265c827161f7e3ac925ff8df39121')
         self.assertEqual(artifact_gate.DELIVERY_PARENT,b.PROBE_PARENT)
         with patch.object(artifact_gate,'require_approved_identity') as identity,patch.object(c,'require_ui_review'),patch.object(r.subprocess,'check_output',side_effect=['a'*40,r.CHECKOUT_PARENT]):
@@ -284,11 +285,161 @@ class CommandDiagnostics(unittest.TestCase):
     def test_modern_media_service_cli_and_only_zero_write(self):
         source=Path(r.__file__).read_text()
         self.assertNotIn("['media',",source)
-        self.assertIn("['cmd', 'media_session', 'help']",source)
+        self.assertIn("['cmd', 'media_session'], allowed_codes=(255,)",source)
         self.assertIn("['cmd', 'media_session', 'volume', '--stream', '3', '--get']",source)
         self.assertIn("['cmd', 'media_session', 'volume', '--stream', '3', '--set', '0']",source)
         self.assertNotIn("'--adj'",source)
         self.assertIsNone(c.RECORD_AUDIO_UI);self.assertIsNone(c.PROJECTION_UI_STEPS);self.assertIsNone(c.ROOT_RUNTIME_REVIEW)
+
+
+class Android16MediaFixture:
+    """Source-connected fake only; returns both channels and Android shell status.
+
+    MediaShellCommand.onCommand returns-1 for missing/literal/unknown commands;
+    shell observes255. VolumeCtrl invalid set calls showError and returns normally,
+    so onCommand returns0 despite help on stdout and an error on stderr.
+    """
+    def __init__(self, initial=7, setter_works=True):
+        self.volume=initial;self.setter_works=setter_works;self.media_calls=[]
+
+    def response(self, args):
+        args=tuple(args);self.media_calls.append(args)
+        if args==('cmd','media_session'):
+            return subprocess.CompletedProcess([],255,MEDIA_HELP_STDOUT,'')
+        if args==('cmd','media_session','help'):
+            return subprocess.CompletedProcess([],255,MEDIA_HELP_STDOUT,"Error: unknown command 'help'\n")
+        if args==('cmd','media_session','volume','--stream','3','--get'):
+            return subprocess.CompletedProcess([],0,volume_get_stdout(self.volume),'')
+        if args==('cmd','media_session','volume','--stream','3','--set','0'):
+            if self.setter_works:self.volume=0
+            return subprocess.CompletedProcess([],0,VOLUME_SET_ZERO_STDOUT,'')
+        if args==('cmd','media_session','volume','--stream','3','--set','16'):
+            out=VOLUME_SET_ZERO_STDOUT.replace('index=0','index=16')+MEDIA_HELP_STDOUT
+            err='Error: invalid volume index 16 for stream 3 (should be in [0..15])\n'
+            return subprocess.CompletedProcess([],0,out,err)
+        if args==('cmd','media_session','volume','--stream','3','--bogus'):
+            return subprocess.CompletedProcess([],255,'[V] will control stream=3 (STREAM_MUSIC)\n'+MEDIA_HELP_STDOUT,
+                'java.lang.IllegalArgumentException: Unknown argument --bogus\n')
+        raise AssertionError('Unknown test fixture command')
+
+
+class MediaCommandContract(unittest.TestCase):
+    def make_run(self, root):
+        return CommandDiagnostics().make_run(root)
+
+    def test_source_fixture_byte_counts_and_channels(self):
+        fixture=Android16MediaFixture()
+        bare=fixture.response(['cmd','media_session'])
+        bad=fixture.response(['cmd','media_session','help'])
+        self.assertEqual((bare.returncode,len(bare.stdout.encode()),len(bare.stderr.encode())),(255,1366,0))
+        self.assertEqual((bad.returncode,len(bad.stdout.encode()),len(bad.stderr.encode())),(255,1366,30))
+        get=fixture.response(['cmd','media_session','volume','--stream','3','--get'])
+        self.assertEqual(get.stdout.splitlines(),['[V] will control stream=3 (STREAM_MUSIC)',
+            '[V] will get volume','[V] Connecting to AudioService','[V] volume is 7 in range [0..15]'])
+        zero=fixture.response(['cmd','media_session','volume','--stream','3','--set','0'])
+        self.assertEqual(zero.stdout.splitlines(),['[V] will control stream=3 (STREAM_MUSIC)',
+            '[V] will set volume to index=0','[V] Connecting to AudioService'])
+        self.assertEqual((get.returncode,get.stderr,zero.returncode,zero.stderr),(0,'',0,''))
+
+    def connected(self, setter_works=True):
+        from test_runtime_contract import audio_fixture,policy_fixture,sessions_fixture
+        class CheckedBeforeInstall(Exception):pass
+        with tempfile.TemporaryDirectory() as td:
+            obj=self.make_run(Path(td));fixture=Android16MediaFixture(setter_works=setter_works)
+            outputs={('getprop','persist.sys.locale'):'en-US',('wm','size'):'Physical size: 480x800',
+                ('pm','list','packages',c.PACKAGE):'',
+                ('dumpsys','media_projection'):'MEDIA PROJECTION MANAGER (dumpsys media_projection)\nMedia Projection: \nnull',
+                ('dumpsys','audio'):'Audio service state\n'+audio_fixture(),('dumpsys','media.audio_policy'):'AudioPolicyManager state\n'+policy_fixture(),
+                ('dumpsys','media_session'):sessions_fixture()}
+            artifact=Mock();artifact.recheck.side_effect=CheckedBeforeInstall
+            def command(argv,**kwargs):
+                self.assertEqual(argv[:6],[obj.adb,'-P','5038','-s','emulator-5556','shell'])
+                args=tuple(argv[6:])
+                if args[:2]==('cmd','media_session'):return fixture.response(args)
+                return subprocess.CompletedProcess([],0,outputs[args],'')
+            with patch.object(b.Probe,'execute'),patch.object(obj,'command',side_effect=command):
+                if setter_works:
+                    with self.assertRaises(CheckedBeforeInstall):obj.prepare_guest(artifact)
+                else:
+                    with self.assertRaisesRegex(c.Blocked,'MEDIA_VOLUME_NOT_ZERO'):obj.prepare_guest(artifact)
+            self.assertFalse(obj.installed);self.assertFalse(obj.result['runtime_pass'])
+            self.assertEqual(fixture.media_calls,[('cmd','media_session'),
+                ('cmd','media_session','volume','--stream','3','--get'),
+                ('cmd','media_session','volume','--stream','3','--set','0'),
+                ('cmd','media_session','volume','--stream','3','--get')])
+            return obj
+
+    def test_connected_source_help_get_set_and_zero_readback(self):
+        self.connected()
+
+    def test_connected_set_without_effect_never_reaches_install(self):
+        obj=self.connected(setter_works=False)
+        self.assertEqual(obj.stage,'idle-volume-readback')
+
+    def test_bare_help_is_only_255_exception(self):
+        fixture=Android16MediaFixture()
+        with tempfile.TemporaryDirectory() as td:
+            obj=self.make_run(Path(td))
+            with patch.object(obj,'command',return_value=fixture.response(['cmd','media_session'])):
+                text=obj.shell(['cmd','media_session'],allowed_codes=(255,));c.verify_volume_help(text)
+            for args in (['cmd','media_session','help'],['cmd','media_session','volume','--stream','3','--get']):
+                with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],255,MEDIA_HELP_STDOUT,'')):
+                    with self.assertRaises(c.Blocked):obj.shell(args,allowed_codes=(255,))
+            with patch.object(obj,'command',return_value=fixture.response(['cmd','media_session'])):
+                with self.assertRaises(c.Blocked):obj.shell(['cmd','media_session'],allowed_codes=(0,255))
+
+    def test_help_errors_and_invalid_set_zero_exit_are_rejected(self):
+        fixture=Android16MediaFixture()
+        cases=[(['cmd','media_session','help'],(0,)),
+               (['cmd','media_session','volume','--stream','3','--set','16'],(0,)),
+               (['cmd','media_session','volume','--stream','3','--bogus'],(0,))]
+        with tempfile.TemporaryDirectory() as td:
+            obj=self.make_run(Path(td))
+            for args,codes in cases:
+                result=fixture.response(args)
+                with patch.object(obj,'command',return_value=result):
+                    with self.assertRaises(c.Blocked):obj.shell(args,allowed_codes=codes)
+                self.assertFalse(obj.result['runtime_pass'])
+            invalid=fixture.response(cases[1][0])
+            self.assertEqual(invalid.returncode,0);self.assertTrue(invalid.stdout.endswith(MEDIA_HELP_STDOUT));self.assertTrue(invalid.stderr)
+
+    def test_bare_help_requires_exact_header_options_and_empty_stderr(self):
+        with tempfile.TemporaryDirectory() as td:
+            obj=self.make_run(Path(td))
+            for output,err in [(MEDIA_HELP_STDOUT,' '),(MEDIA_HELP_STDOUT,'\n'),
+                               (MEDIA_HELP_STDOUT.replace('usage: media_session','usage: other'),''),
+                               (MEDIA_HELP_STDOUT.replace('--stream STREAM','--stream UNKNOWN'),''),
+                               ('private-prefix\n'+MEDIA_HELP_STDOUT,''),(MEDIA_HELP_STDOUT+MEDIA_HELP_STDOUT,'')]:
+                with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],255,output,err)):
+                    with self.assertRaises(c.Blocked):obj.shell(['cmd','media_session'],allowed_codes=(255,))
+
+    def test_volume_commands_require_exit_zero_and_empty_stderr(self):
+        with tempfile.TemporaryDirectory() as td:
+            obj=self.make_run(Path(td))
+            for args,output in [(['cmd','media_session','volume','--stream','3','--get'],volume_get_stdout()),
+                                (['cmd','media_session','volume','--stream','3','--set','0'],VOLUME_SET_ZERO_STDOUT)]:
+                for stderr in (' ', '\n', 'Error: invalid volume'):
+                    with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],0,output,stderr)):
+                        with self.assertRaises(c.Blocked):obj.shell(args)
+                with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],1,output,'')) as command:
+                    with self.assertRaises(c.Blocked):obj.shell(args,allowed_codes=(1,))
+                    command.assert_not_called()
+
+    def test_volume_responses_require_complete_ordered_source_stdout(self):
+        with tempfile.TemporaryDirectory() as td:
+            obj=self.make_run(Path(td))
+            get=['cmd','media_session','volume','--stream','3','--get']
+            zero=['cmd','media_session','volume','--stream','3','--set','0']
+            cases=[(get,'[V] volume is 0 in range [0..15]\n'),
+                   (get,volume_get_stdout().replace('stream=3 (STREAM_MUSIC)','stream=0 (STREAM_VOICE_CALL)')),
+                   (get,volume_get_stdout().replace('[V] will get volume\n','')),
+                   (get,'\n'.join(reversed(volume_get_stdout().splitlines()))+'\n'),
+                   (get,'unrelated\n'+volume_get_stdout()),
+                   (zero,''),(zero,VOLUME_SET_ZERO_STDOUT.replace('index=0','index=1')),
+                   (zero,VOLUME_SET_ZERO_STDOUT+MEDIA_HELP_STDOUT)]
+            for args,output in cases:
+                with patch.object(obj,'command',return_value=subprocess.CompletedProcess([],0,output,'')):
+                    with self.assertRaises(c.Blocked):obj.shell(args)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

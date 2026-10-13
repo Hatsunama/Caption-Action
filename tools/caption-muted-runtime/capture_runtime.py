@@ -21,7 +21,7 @@ import artifact_gate
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 # Linear workflow revision parent, separate from the immutable signed delivery.
-CHECKOUT_PARENT = '2c795b70f3cd32b458d9e7346a2f039c7ce04d8a'
+CHECKOUT_PARENT = '1f7135f950676d3763e6a2791653ee3bb53b138a'
 
 
 # Diagnostics are fixed labels/scalars only, never guest output or arguments.
@@ -30,7 +30,7 @@ _ADB_FIXED_LABELS = {
     ('shell', 'getprop', 'ro.product.locale'): 'read_fallback_locale',
     ('shell', 'wm', 'size'): 'read_display_size',
     ('shell', 'pm', 'list', 'packages', PACKAGE): 'list_probe_package',
-    ('shell', 'cmd', 'media_session', 'help'): 'media_session_help',
+    ('shell', 'cmd', 'media_session'): 'media_session_help',
     ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'): 'media_session_volume_read',
     ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', '0'): 'media_session_volume_zero',
     ('shell', 'dumpsys', 'media_projection'): 'read_projection_state',
@@ -90,7 +90,7 @@ def safe_command_failure(args, result, allowed_codes=(0,)):
         classification = 'permission_denied'
     elif re.search(r'unknown (?:command|option)|unrecognized (?:command|option)', text):
         classification = 'unknown_command'
-    elif result.returncode in allowed_codes and result.stderr.strip():
+    elif result.returncode in allowed_codes and result.stderr:
         classification = 'unexpected_stderr'
     else:
         classification = 'nonzero_exit'
@@ -134,6 +134,16 @@ class CaptureRun(boot.Probe):
         if self.server.poll() is not None or self.emulator.poll() is not None:
             raise Blocked('OWNED_ADB_OR_EMULATOR_EXITED')
         self.result['last_command_label'] = safe_command_label(args)
+        media_help = args == ['shell', 'cmd', 'media_session']
+        media_volume = args in (
+            ['shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'],
+            ['shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', '0'])
+        if media_help and allowed_codes != (255,):
+            raise Blocked('UNREVIEWED_MEDIA_HELP_EXIT_ALLOWANCE')
+        if media_volume and allowed_codes != (0,):
+            raise Blocked('UNREVIEWED_VOLUME_EXIT_ALLOWANCE')
+        if 255 in allowed_codes and (not media_help or allowed_codes != (255,)):
+            raise Blocked('UNREVIEWED_NONZERO_EXIT_ALLOWANCE')
         result = self.command([self.adb, '-P', PORT, '-s', SERIAL, *args], timeout=seconds)
         metadata = safe_command_metadata(args, result)
         if metadata['command_label'] in PRECONDITION_COMMAND_LABELS:
@@ -142,10 +152,19 @@ class CaptureRun(boot.Probe):
             if len(trace) > COMMAND_DIAGNOSTIC_LIMIT:
                 del trace[0]
                 self.result['command_diagnostics_dropped'] = self.result.get('command_diagnostics_dropped', 0) + 1
-        if result.returncode not in allowed_codes or result.stderr.strip():
+        if result.returncode not in allowed_codes or result.stderr.strip() or ((media_help or media_volume) and result.stderr != ''):
             self.result.setdefault('command_failure', safe_command_failure(args, result, allowed_codes))
             raise Blocked('SCOPED_ADB_COMMAND_FAILED')
-        return result.stdout.replace('\r', '').strip()
+        stdout = result.stdout.replace('\r', '')
+        if media_help:
+            if result.returncode != 255:
+                raise Blocked('MEDIA_HELP_EXIT_CONTRACT')
+            contract.verify_volume_help(stdout)
+        elif args == ['shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get']:
+            contract.parse_volume(stdout)
+        elif args == ['shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', '0']:
+            contract.verify_volume_set_zero(stdout)
+        return stdout.strip()
 
     def shell(self, args, **kwargs):
         return self.adb_command(['shell', *args], **kwargs)
@@ -246,12 +265,12 @@ class CaptureRun(boot.Probe):
         if self.shell(['pm', 'list', 'packages', PACKAGE]):
             raise Blocked('PROBE_ALREADY_INSTALLED_NOT_FRESH')
         self.stage = 'guest-precondition-volume-help'
-        contract.verify_volume_help(self.shell(['cmd', 'media_session', 'help']))
+        contract.verify_volume_help(self.shell(['cmd', 'media_session'], allowed_codes=(255,)))
         self.stage = 'guest-precondition-volume-read'
         contract.parse_volume(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
         # The only system-volume mutation in this program is a decrease/set to zero.
         self.stage = 'guest-precondition-volume-zero'
-        self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--set', '0'])
+        contract.verify_volume_set_zero(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--set', '0']))
         self.stage = 'guest-precondition-idle'
         self.assert_idle()
         artifact.recheck()
