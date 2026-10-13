@@ -68,7 +68,7 @@ class DiscoveryContracts(unittest.TestCase):
             command.assert_not_called()
 
     def test_discovery_preflight_does_not_require_unknown_grant_selectors(self):
-        with patch.object(c,'DISCOVERY_REVIEW',approved('discover-record')),patch.object(artifact_gate,'require_approved_identity'),patch.object(r.subprocess,'check_output',side_effect=['a'*40,b.PROBE_PARENT]):
+        with patch.object(c,'DISCOVERY_REVIEW',approved('discover-record')),patch.object(artifact_gate,'require_approved_identity'),patch.object(r.subprocess,'check_output',side_effect=['a'*40,r.CHECKOUT_PARENT]):
             self.assertTrue(r.preflight(capture_tests.Runtime().env(),'discover-record'))
         self.assertIsNone(c.RECORD_AUDIO_UI);self.assertIsNone(c.PROJECTION_UI_STEPS)
 

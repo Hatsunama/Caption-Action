@@ -20,6 +20,81 @@ import artifact_gate
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+# Linear workflow revision parent, separate from the immutable signed delivery.
+CHECKOUT_PARENT = '2c795b70f3cd32b458d9e7346a2f039c7ce04d8a'
+
+
+# Diagnostics are fixed labels/scalars only, never guest output or arguments.
+_ADB_FIXED_LABELS = {
+    ('shell', 'getprop', 'persist.sys.locale'): 'read_locale',
+    ('shell', 'getprop', 'ro.product.locale'): 'read_fallback_locale',
+    ('shell', 'wm', 'size'): 'read_display_size',
+    ('shell', 'pm', 'list', 'packages', PACKAGE): 'list_probe_package',
+    ('shell', 'cmd', 'media_session', 'help'): 'media_session_help',
+    ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--get'): 'media_session_volume_read',
+    ('shell', 'cmd', 'media_session', 'volume', '--stream', '3', '--set', '0'): 'media_session_volume_zero',
+    ('shell', 'dumpsys', 'media_projection'): 'read_projection_state',
+    ('shell', 'dumpsys', 'audio'): 'read_audio_state',
+    ('shell', 'dumpsys', 'media.audio_policy'): 'read_audio_policy',
+    ('shell', 'dumpsys', 'media_session'): 'read_media_sessions',
+    ('shell', 'dumpsys', 'package', PACKAGE): 'read_probe_package',
+    ('shell', 'am', 'start', '-W', '-n', ACTIVITY): 'start_probe_activity',
+    ('shell', 'pidof', PACKAGE): 'read_probe_pid',
+    ('shell', 'ps', '-A', '-o', 'UID,PID,NAME'): 'read_process_identity',
+    ('shell', 'dumpsys', 'activity', 'services', PACKAGE): 'read_probe_service',
+    ('shell', 'dumpsys', 'activity', 'activities'): 'read_foreground_activity',
+    ('shell', 'dumpsys', 'window', 'windows'): 'read_foreground_window',
+    ('uninstall', PACKAGE): 'uninstall_probe',
+}
+_ADB_DYNAMIC_SHAPES = {
+    (('shell', 'uiautomator', 'dump'), 4): 'dump_ui_hierarchy',
+    (('exec-out', 'cat'), 3): 'read_ui_hierarchy',
+    (('shell', 'rm', '-f'), 4): 'remove_ui_hierarchy',
+    (('shell', 'input', 'tap'), 5): 'tap_reviewed_ui',
+    (('install', '--user', '0'), 4): 'install_probe',
+}
+ADB_COMMAND_LABELS = frozenset((*_ADB_FIXED_LABELS.values(), *_ADB_DYNAMIC_SHAPES.values(), 'unrecognized_command'))
+PRECONDITION_COMMAND_LABELS = frozenset(('read_locale', 'read_fallback_locale', 'read_display_size',
+    'list_probe_package', 'media_session_help', 'media_session_volume_read', 'media_session_volume_zero',
+    'read_projection_state', 'read_audio_state', 'read_audio_policy', 'read_media_sessions'))
+COMMAND_DIAGNOSTIC_LIMIT = 24
+ADB_FAILURE_CLASSES = frozenset(('command_missing', 'permission_denied', 'unknown_command',
+                                 'unexpected_stderr', 'nonzero_exit'))
+
+
+def safe_command_label(args):
+    # Input data never becomes a label, including malformed or unknown commands.
+    if not isinstance(args, (list, tuple)) or any(type(value) is not str for value in args):
+        return 'unrecognized_command'
+    command = tuple(args)
+    if command in _ADB_FIXED_LABELS:
+        return _ADB_FIXED_LABELS[command]
+    for (prefix, count), label in _ADB_DYNAMIC_SHAPES.items():
+        if len(command) == count and command[:len(prefix)] == prefix:
+            return label
+    return 'unrecognized_command'
+
+
+def safe_command_metadata(args, result):
+    return {'command_label': safe_command_label(args),
+            'exit_code': result.returncode if type(result.returncode) is int and -255 <= result.returncode <= 255 else None,
+            'stdout_bytes': len(result.stdout.encode('utf-8', errors='replace')),
+            'stderr_bytes': len(result.stderr.encode('utf-8', errors='replace'))}
+
+
+def safe_command_failure(args, result, allowed_codes=(0,)):
+    text = (result.stdout + '\n' + result.stderr).lower()
+    if result.returncode == 127 or re.search(r'(?:inaccessible or not found|command not found|: not found)(?:\s|$)', text):
+        classification = 'command_missing'
+    elif re.search(r'permission denied|permission denial|securityexception', text):
+        classification = 'permission_denied'
+    elif re.search(r'unknown (?:command|option)|unrecognized (?:command|option)', text):
+        classification = 'unknown_command'
+    elif result.returncode in allowed_codes and result.stderr.strip():
+        classification = 'unexpected_stderr'
+    else:
+        classification = 'nonzero_exit'
+    return {**safe_command_metadata(args, result), 'classification': classification}
 
 
 def preflight(env, mode='capture'):
@@ -33,7 +108,7 @@ def preflight(env, mode='capture'):
         contract.require_discovery_review(mode, boot.PROBE_PARENT)
     actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     parents = subprocess.check_output(['git', 'show', '-s', '--format=%P', 'HEAD'], text=True).strip()
-    if actual != env.get('PROBE_COMMIT') or parents != boot.PROBE_PARENT:
+    if actual != env.get('PROBE_COMMIT') or parents != CHECKOUT_PARENT:
         raise Blocked('EXACT_CHECKOUT_OR_DELIVERY_PARENT_MISMATCH')
     return True
 
@@ -58,8 +133,17 @@ class CaptureRun(boot.Probe):
     def adb_command(self, args, seconds=5, allowed_codes=(0,)):
         if self.server.poll() is not None or self.emulator.poll() is not None:
             raise Blocked('OWNED_ADB_OR_EMULATOR_EXITED')
+        self.result['last_command_label'] = safe_command_label(args)
         result = self.command([self.adb, '-P', PORT, '-s', SERIAL, *args], timeout=seconds)
+        metadata = safe_command_metadata(args, result)
+        if metadata['command_label'] in PRECONDITION_COMMAND_LABELS:
+            trace = self.result.setdefault('command_diagnostics', [])
+            trace.append(metadata)
+            if len(trace) > COMMAND_DIAGNOSTIC_LIMIT:
+                del trace[0]
+                self.result['command_diagnostics_dropped'] = self.result.get('command_diagnostics_dropped', 0) + 1
         if result.returncode not in allowed_codes or result.stderr.strip():
+            self.result.setdefault('command_failure', safe_command_failure(args, result, allowed_codes))
             raise Blocked('SCOPED_ADB_COMMAND_FAILED')
         return result.stdout.replace('\r', '').strip()
 
@@ -67,12 +151,21 @@ class CaptureRun(boot.Probe):
         return self.adb_command(['shell', *args], **kwargs)
 
     def assert_idle(self):
-        if contract.parse_volume(self.shell(['media', 'volume', '--stream', '3', '--get'])) != 0:
+        previous_stage = self.stage
+        self.stage = 'idle-volume-readback'
+        if contract.parse_volume(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get'])) != 0:
             raise Blocked('MEDIA_VOLUME_NOT_ZERO')
+        self.stage = 'idle-projection-readback'
         contract.verify_projection_idle(self.shell(['dumpsys', 'media_projection']))
-        contract.verify_audio_idle(self.shell(['dumpsys', 'audio']),
-                                   self.shell(['dumpsys', 'media.audio_policy']),
-                                   self.shell(['dumpsys', 'media_session']))
+        self.stage = 'idle-audio-readback'
+        audio = self.shell(['dumpsys', 'audio'])
+        self.stage = 'idle-audio-policy-readback'
+        policy = self.shell(['dumpsys', 'media.audio_policy'])
+        self.stage = 'idle-media-session-readback'
+        sessions = self.shell(['dumpsys', 'media_session'])
+        self.stage = 'idle-audio-policy-session-validation'
+        contract.verify_audio_idle(audio, policy, sessions)
+        self.stage = previous_stage
 
     def snapshot_ui(self):
         # Dump only the fresh disposable guest's installed hierarchy; no screenshots.
@@ -139,16 +232,27 @@ class CaptureRun(boot.Probe):
         super().execute()
         self.result['runtime_pass'] = False
         self.result['status'] = 'blocked'  # A boot-only result is never a capture pass.
-        self.stage = 'guest-preconditions'
-        locale = self.shell(['getprop', 'persist.sys.locale']) or self.shell(['getprop', 'ro.product.locale'])
-        if locale != 'en-US' or self.shell(['wm', 'size']) != 'Physical size: 480x800':
+        self.stage = 'guest-precondition-locale'
+        locale = self.shell(['getprop', 'persist.sys.locale'])
+        if not locale:
+            self.stage = 'guest-precondition-fallback-locale'
+            locale = self.shell(['getprop', 'ro.product.locale'])
+        if locale != 'en-US':
             raise Blocked('UNREVIEWED_LOCALE_OR_DISPLAY')
+        self.stage = 'guest-precondition-display'
+        if self.shell(['wm', 'size']) != 'Physical size: 480x800':
+            raise Blocked('UNREVIEWED_LOCALE_OR_DISPLAY')
+        self.stage = 'guest-precondition-package-absence'
         if self.shell(['pm', 'list', 'packages', PACKAGE]):
             raise Blocked('PROBE_ALREADY_INSTALLED_NOT_FRESH')
-        contract.verify_volume_help(self.shell(['media', 'help']))
-        contract.parse_volume(self.shell(['media', 'volume', '--stream', '3', '--get']))
+        self.stage = 'guest-precondition-volume-help'
+        contract.verify_volume_help(self.shell(['cmd', 'media_session', 'help']))
+        self.stage = 'guest-precondition-volume-read'
+        contract.parse_volume(self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--get']))
         # The only system-volume mutation in this program is a decrease/set to zero.
-        self.shell(['media', 'volume', '--stream', '3', '--set', '0'])
+        self.stage = 'guest-precondition-volume-zero'
+        self.shell(['cmd', 'media_session', 'volume', '--stream', '3', '--set', '0'])
+        self.stage = 'guest-precondition-idle'
         self.assert_idle()
         artifact.recheck()
         self.stage = 'install-exact-verified-probe'
