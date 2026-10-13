@@ -1,0 +1,25 @@
+{
+  "unsigned_artifact_commit": "893e8e06fc5f59914da194e65f72c105631a17cc",
+  "unsigned_sha256": "1d79341a02ea25673b2c406e8e2c901a9b6db60058bf326c314e2dbeaac267fd",
+  "source_archive_sha256_expected_from_review_receipt": "a898bd4c6b9bfd182b4d14ac99b829416adea7b798d986c13b24c36f6a5ee798",
+  "source_archive_independently_verified": false,
+  "signed_sha256": "583bf552e66564656e94d2f5c406b1d4235c82e72997aae634e90a301a077ccf",
+  "signed_bytes": 3757712,
+  "certificate_sha256": "2a0d37dc62eebed39bd08a9238c9255e26eb52a00143a02e0c6c473489985a21",
+  "signature_verified": true,
+  "signature_scheme_v3": true,
+  "unsigned_payload_entries": 18,
+  "all_unsigned_payload_entries_unchanged": true,
+  "package": "com.hatsunama.captionaction.captureprobe",
+  "version_code": 1,
+  "version_name": "0.1-head28ac",
+  "min_sdk": 29,
+  "target_sdk": 36,
+  "permissions": [
+    "android.permission.RECORD_AUDIO",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
+  ],
+  "runtime_executed": false,
+  "signing_key_created_or_exported": false
+}
