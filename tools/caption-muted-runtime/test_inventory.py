@@ -62,7 +62,7 @@ class PublishedBindingTests(unittest.TestCase):
  def test_approved_A_delivery_and_scope(self):
   ident=i.require_binding()
   self.assertEqual(ident['delivery_parent'],'8a976164b509ba5403bb3f371d88733ef19bf70b')
-  self.assertEqual(i.ROOT_INVENTORY_REVIEW['source_parent'],'893572ac39c32fdebd7bf7ecdc7652f545f4eb92')
+  self.assertEqual(i.ROOT_INVENTORY_REVIEW['source_parent'],'55d7d6b64b0a74589f891fd5e0bdf91b52377c16')
   self.assertNotEqual(i.ROOT_INVENTORY_REVIEW['source_parent'],ident['delivery_parent'])
   self.assertEqual(i.ROOT_INVENTORY_REVIEW['scope'],'own-dialog-no-grant-no-projection-no-capture')
   for row in i.DOWNLOAD_MANIFEST:self.assertIn('/'+ident['delivery_parent']+'/',row['url'])
@@ -77,10 +77,10 @@ class PublishedBindingTests(unittest.TestCase):
 
 class SuccessorSourceBinding(unittest.TestCase):
  def test_successor_changes_only_source_parent_not_assets(self):
-  self.assertEqual(i.ROOT_INVENTORY_REVIEW['source_parent'],'893572ac39c32fdebd7bf7ecdc7652f545f4eb92')
+  self.assertEqual(i.ROOT_INVENTORY_REVIEW['source_parent'],'55d7d6b64b0a74589f891fd5e0bdf91b52377c16')
   self.assertEqual(i.artifact_gate.DELIVERY_PARENT,'8a976164b509ba5403bb3f371d88733ef19bf70b')
   self.assertEqual(i.artifact_gate.SIGNED_IDENTITY['signed_sha256'],'43e88278a61b5209aebf477ff1029aa2804c1a118b93e362b7dd9877334448cc')
   self.assertEqual(i.artifact_gate.SIGNED_IDENTITY['receipt_sha256'],'e6f4917b4650d750582dd012edc2969c413cc71b209ddfc554b72a75dc55f60b')
   for row in i.DOWNLOAD_MANIFEST:
    self.assertIn('/8a976164b509ba5403bb3f371d88733ef19bf70b/',row['url'])
-   self.assertNotIn('/893572ac39c32fdebd7bf7ecdc7652f545f4eb92/',row['url'])
+   self.assertNotIn('/55d7d6b64b0a74589f891fd5e0bdf91b52377c16/',row['url'])

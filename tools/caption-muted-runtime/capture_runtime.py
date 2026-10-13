@@ -153,9 +153,10 @@ class CaptureRun(boot.Probe):
         self.volume_write_attempts = 0
         self.result['volume_write_attempts'] = 0
 
-    def command(self, argv, *, timeout=5, max_output_bytes=262144):
+    def command(self, argv, *, timeout=5, max_output_bytes=262144, stdin_fd=None, stdin_bytes=None):
         # Main-thread command bounds never extend the independent watchdog.
-        return run_bounded(argv, timeout=self.remaining(timeout), max_output_bytes=max_output_bytes, env=self.env)
+        options = {} if stdin_fd is None and stdin_bytes is None else {'stdin_fd': stdin_fd, 'stdin_bytes': stdin_bytes}
+        return run_bounded(argv, timeout=self.remaining(timeout), max_output_bytes=max_output_bytes, env=self.env, **options)
 
     def adb_command(self, args, seconds=5, allowed_codes=(0,)):
         if self.server.poll() is not None or self.emulator.poll() is not None:

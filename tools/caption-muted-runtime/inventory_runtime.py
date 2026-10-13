@@ -6,12 +6,12 @@ Execution still requires the separately reviewed organization workflow/commit.
 """
 import argparse, hashlib, io, json, os, pathlib, re, shutil, signal, subprocess, tarfile, tempfile, urllib.request
 import xml.etree.ElementTree as ET
-import artifact_gate, boot_probe as boot, runtime_contract as c, isolation, guest_transport, failure_diagnostics
+import artifact_gate, boot_probe as boot, runtime_contract as c, isolation, guest_transport, failure_diagnostics, install_adapter
 from capture_runtime import CaptureRun
 from safety_watchdog import run_bounded, owned_emulator_identity
 from boot_probe import Blocked
 HERE=pathlib.Path(__file__).resolve().parent
-ROOT_INVENTORY_REVIEW={'mode': 'record-audio-inventory', 'scope': 'own-dialog-no-grant-no-projection-no-capture', 'source_parent': '893572ac39c32fdebd7bf7ecdc7652f545f4eb92', 'signed_sha256': '43e88278a61b5209aebf477ff1029aa2804c1a118b93e362b7dd9877334448cc', 'unsigned_sha256': 'dda71638acd519f8ec37c6a31738c63c4ffda664bdfff33e0003c5e7fb63761f', 'source_sha256': '228b4ddd5290e236111d6fdec93a6c0fe6dccd3d32cd14c34092d914eb54384c', 'receipt_sha256': 'e6f4917b4650d750582dd012edc2969c413cc71b209ddfc554b72a75dc55f60b'}
+ROOT_INVENTORY_REVIEW={'mode': 'record-audio-inventory', 'scope': 'own-dialog-no-grant-no-projection-no-capture', 'source_parent': '55d7d6b64b0a74589f891fd5e0bdf91b52377c16', 'signed_sha256': '43e88278a61b5209aebf477ff1029aa2804c1a118b93e362b7dd9877334448cc', 'unsigned_sha256': 'dda71638acd519f8ec37c6a31738c63c4ffda664bdfff33e0003c5e7fb63761f', 'source_sha256': '228b4ddd5290e236111d6fdec93a6c0fe6dccd3d32cd14c34092d914eb54384c', 'receipt_sha256': 'e6f4917b4650d750582dd012edc2969c413cc71b209ddfc554b72a75dc55f60b'}
 DOWNLOAD_MANIFEST=[{'url': 'https://raw.githubusercontent.com/Hatsunama/Caption-Action/8a976164b509ba5403bb3f371d88733ef19bf70b/diagnostics/capture-probe-delivery/20261013/capture-probe-signed-diagnostic.apk', 'sha256': '43e88278a61b5209aebf477ff1029aa2804c1a118b93e362b7dd9877334448cc', 'size': 3712656, 'name': 'signed.apk'}, {'url': 'https://raw.githubusercontent.com/Hatsunama/Caption-Action/8a976164b509ba5403bb3f371d88733ef19bf70b/diagnostics/capture-probe-delivery/20261013/capture-probe-unsigned.apk', 'sha256': 'dda71638acd519f8ec37c6a31738c63c4ffda664bdfff33e0003c5e7fb63761f', 'size': 3701460, 'name': 'unsigned.apk'}, {'url': 'https://raw.githubusercontent.com/Hatsunama/Caption-Action/8a976164b509ba5403bb3f371d88733ef19bf70b/diagnostics/capture-probe-delivery/20261013/capture-probe-source.tar.gz', 'sha256': '228b4ddd5290e236111d6fdec93a6c0fe6dccd3d32cd14c34092d914eb54384c', 'size': 17101, 'name': 'source.tar.gz'}, {'url': 'https://raw.githubusercontent.com/Hatsunama/Caption-Action/8a976164b509ba5403bb3f371d88733ef19bf70b/diagnostics/capture-probe-delivery/20261013/PUBLIC_DIAGNOSTIC_VERIFICATION.json', 'sha256': 'e6f4917b4650d750582dd012edc2969c413cc71b209ddfc554b72a75dc55f60b', 'size': 1104, 'name': 'receipt.json'}]
 EXISTING_C_CERT='2a0d37dc62eebed39bd08a9238c9255e26eb52a00143a02e0c6c473489985a21'
 SOURCE_HASHES={
@@ -172,7 +172,7 @@ class InventoryRun(CaptureRun):
         self.stage='inventory-artifact-recheck'
         artifact.recheck();self.installed=True
         self.stage='inventory-install'
-        if self.adb_command(['install','--user','0',artifact.apk_path],seconds=45)!='Success':raise Blocked('INSTALL_NOT_VERIFIED')
+        install_adapter.install_verified(self,artifact)
         self.stage='inventory-artifact-recheck'
         artifact.recheck()
         self.stage='inventory-installed-identity'
@@ -252,7 +252,7 @@ def main():
         if run.result['status']=='DISCOVERY_STOPPED':run.result['status']='INVENTORY_STOPPED'
         good=run.result['status']=='INVENTORY_STOPPED'
         # Failure keeps only non-content scalars; no raw dumps/logs/URLs/paths.
-        result={k:run.result[k] for k in ('status','scope','runtime_pass','capture_started','permissions_granted','teardownVerified','reason','cleanup_errors','failure_stage','failure_operation','failure_errno') if k in run.result}
+        result={k:run.result[k] for k in ('status','scope','runtime_pass','capture_started','permissions_granted','teardownVerified','reason','cleanup_errors','failure_stage','failure_operation','failure_errno','install_exit_code','install_rejection') if k in run.result}
         if good:result.update(consent_dialog=run.result['consent_dialog'],isolation=run.result['isolation'])
         write_evidence(result,run.filtered_xml if good else None)
         print(json.dumps(result,sort_keys=True));return 0 if good else 1

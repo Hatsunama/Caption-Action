@@ -1,5 +1,7 @@
 """Independent deadline process; never imports or waits on the main log/UI parser."""
 import argparse
+import fcntl
+import stat
 import json
 import os
 from pathlib import Path
@@ -14,16 +16,28 @@ from runtime_contract import PACKAGE, PORT, SERIAL, verify_package
 WATCHDOG_SECONDS = 35.0
 
 
-def run_bounded(argv, *, timeout, max_output_bytes, env=None):
+def run_bounded(argv, *, timeout, max_output_bytes, env=None, stdin_fd=None, stdin_bytes=None):
     """Owned command group, bounded wall time and file-backed output (no pipe deadlock)."""
     if timeout <= 0 or timeout > 60 or not 0 < max_output_bytes <= 2 * 1024 * 1024:
         raise Blocked('INVALID_COMMAND_BOUND')
+    input_state = None
+    if stdin_fd is not None or stdin_bytes is not None:
+        if type(stdin_fd) is not int or stdin_fd < 0 or type(stdin_bytes) is not int or not 0 < stdin_bytes <= 16 * 1024 * 1024:
+            raise Blocked('INVALID_STDIN_DESCRIPTOR_BOUND')
+        try:
+            info = os.fstat(stdin_fd)
+            flags = fcntl.fcntl(stdin_fd, fcntl.F_GETFL)
+            if not stat.S_ISREG(info.st_mode) or flags & os.O_ACCMODE != os.O_RDONLY or info.st_size != stdin_bytes or os.lseek(stdin_fd, 0, os.SEEK_CUR) != 0:
+                raise Blocked('INVALID_STDIN_DESCRIPTOR_STATE')
+            input_state = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        except OSError as error:
+            raise Blocked('INVALID_STDIN_DESCRIPTOR_STATE') from error
     safe_env = env if env is not None else {k: os.environ[k] for k in ('PATH', 'JAVA_HOME', 'LANG') if k in os.environ}
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
-        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=output, stderr=error,
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL if stdin_fd is None else stdin_fd, stdout=output, stderr=error,
                                  env=safe_env, start_new_session=True)
-        deadline = time.monotonic() + timeout
         try:
+            deadline = time.monotonic() + timeout
             while child.poll() is None:
                 if os.fstat(output.fileno()).st_size + os.fstat(error.fileno()).st_size > max_output_bytes:
                     raise Blocked('BOUNDED_COMMAND_OUTPUT_LIMIT')
@@ -32,6 +46,10 @@ def run_bounded(argv, *, timeout, max_output_bytes, env=None):
                 time.sleep(.03)
             if os.fstat(output.fileno()).st_size + os.fstat(error.fileno()).st_size > max_output_bytes:
                 raise Blocked('BOUNDED_COMMAND_OUTPUT_LIMIT')
+            if input_state is not None:
+                info = os.fstat(stdin_fd)
+                if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != input_state:
+                    raise Blocked('STDIN_ARTIFACT_CHANGED')
             output.seek(0); error.seek(0)
             return subprocess.CompletedProcess(argv, child.returncode, output.read().decode('utf-8', 'strict'),
                                                error.read().decode('utf-8', 'strict'))

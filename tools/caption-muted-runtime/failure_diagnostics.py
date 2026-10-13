@@ -15,6 +15,7 @@ PHASES=frozenset(('unknown','preflight','package-metadata','package-installation
 # Only static labels are returned. Module/function names are lookup keys, never
 # copied from a traceback. Unrecognized frames and values map to 'unknown'.
 _OPERATIONS={
+ ('install_adapter','install_verified'):'verified-stdin-install',
  ('boot_probe','setup'):'host-setup',('boot_probe','acquire'):'kvm-access',
  ('boot_probe','command'):'kvm-command',('boot_probe','resources'):'host-resources',
  ('boot_probe','spawn'):'host-command-spawn',('boot_probe','run'):'host-command-wait',
@@ -42,6 +43,14 @@ _CLASSES={PermissionError:'PermissionError',FileNotFoundError:'FileNotFoundError
  ValueError:'ValueError',TypeError:'TypeError',RuntimeError:'RuntimeError'}
 # Frozen reviewed guard tokens; unknown tokens and all dynamic suffixes are omitted.
 GUARD_CODES=frozenset((
+ 'INVALID_STDIN_DESCRIPTOR_BOUND',
+ 'INVALID_STDIN_DESCRIPTOR_STATE',
+ 'STDIN_ARTIFACT_CHANGED',
+ 'INSTALL_STREAM_SIZE_UNVERIFIED',
+ 'INSTALL_STREAM_COMMAND_FAILED',
+ 'INSTALL_STREAM_STDERR_UNEXPECTED',
+ 'INSTALL_STREAM_SUCCESS_UNVERIFIED',
+ 'INSTALL_STREAM_INPUT_INCOMPLETE',
  'ADB_LISTENER_NOT_EXCLUSIVELY_IPV4_LOOPBACK',
  'ADB_SERVER_EXITED',
  'ADB_SERVER_EXITED_DURING_BOOT',
@@ -238,6 +247,8 @@ GUARD_CODES=frozenset((
 _CANONICAL_GUARD={code:code for code in GUARD_CODES}
 REASONS=frozenset(('GUARD_BLOCKED','UNEXPECTED_EXCEPTION',*_CLASSES.values(),*GUARD_CODES))
 FIELDS=frozenset(('failure_stage','failure_operation','failure_errno','reason'))
+INSTALL_FIELDS=frozenset(('install_exit_code','install_rejection'))
+INSTALL_REJECTIONS=frozenset(('unknown','package_rejected','transport_unavailable','output_contract'))
 
 def describe(error,stage):
     phase=stage if type(stage) is str and stage in PHASES else 'unknown'
@@ -257,8 +268,15 @@ def describe(error,stage):
 
 def validate_public_failure(facts):
     """Strict opt-in failure metadata schema for the independent upload guard."""
-    if facts.get('status') in ('BLOCKED','cleanup-failed') and set(facts)-FIELDS-{'status','scope','runtime_pass','capture_started','permissions_granted','cleanup_errors','teardownVerified'}:
+    if facts.get('status') in ('BLOCKED','cleanup-failed') and set(facts)-FIELDS-INSTALL_FIELDS-{'status','scope','runtime_pass','capture_started','permissions_granted','cleanup_errors','teardownVerified'}:
         raise ValueError('FAILURE_EXTRA_FIELDS')
+    install_present=INSTALL_FIELDS & set(facts)
+    if install_present:
+        if install_present!=INSTALL_FIELDS or facts.get('status') not in ('BLOCKED','cleanup-failed'):raise ValueError('INSTALL_METADATA_INCOMPLETE_OR_NONFAILURE')
+        code=facts['install_exit_code']
+        if code is not None and (type(code) is not int or not -255<=code<=255):raise ValueError('INSTALL_EXIT_CODE_INVALID')
+        category=facts['install_rejection']
+        if type(category) is not str or category not in INSTALL_REJECTIONS:raise ValueError('INSTALL_REJECTION_INVALID')
     present=FIELDS & set(facts)
     if not present:return  # Cleanup-only failures may have no originating exception metadata.
     if present!=FIELDS:raise ValueError('FAILURE_METADATA_INCOMPLETE')
