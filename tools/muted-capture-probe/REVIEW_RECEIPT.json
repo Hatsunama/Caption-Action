@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "scope": "Own-UID platform-only muted playback capture diagnostic; no production Live/ASR or cross-app acceptance",
+  "package": "com.hatsunama.captionaction.captureprobe",
+  "activity": ".ProbeActivity",
+  "repository": "Hatsunama/Caption-Action",
+  "base_commit": "6ecc3377d10b5ce32aa41c1fa7ca4735bd513cb5",
+  "source_sha256": "a898bd4c6b9bfd182b4d14ac99b829416adea7b798d986c13b24c36f6a5ee798",
+  "unsigned_apk_sha256": "1d79341a02ea25673b2c406e8e2c901a9b6db60058bf326c314e2dbeaac267fd",
+  "signing": "UNSIGNED; must be signed locally using an existing authorized key, never create or transfer a cloud signing key",
+  "runtime": "NOT RUN",
+  "host_checks": {
+    "jvm_tests": 21,
+    "lint_errors": 0,
+    "lint_warnings": 10
+  },
+  "permissions": [
+    "android.permission.RECORD_AUDIO",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
+  ],
+  "consent": "Official runtime RECORD_AUDIO permission and fresh system MediaProjection UI; no shell grants, appops override, hidden API or reused grant",
+  "planned_target": "API36 Google APIs x86_64 normal pages; disposable public standard GitHub runner",
+  "audio_safety": "System media index 0 throughout, emulator -no-audio, no host output or physical device; fail closed if route/progress requirements cannot be met",
+  "data": "Owned synthetic silence and 733Hz tone only; aggregate metrics, no PCM/screen images/user content",
+  "deadline": "Own process 30 seconds; independent ADB watchdog 35 seconds from before final capture consent; verify stopped state and destroy guest",
+  "delivery_only": "This branch adds no workflow and does not run CI, sign, install, or launch."
+}
