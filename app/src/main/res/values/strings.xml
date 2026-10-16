@@ -3,9 +3,9 @@
     <string name="app_name">Caption Action</string>
     <string name="tagline">Same Audio. A Brighter World.</string>
     <string name="privacy_promise">100% on-device · No cloud · No accounts · No ads</string>
-    <string name="start_live">Start Live Captions</string>
+    <string name="start_live">Start live captions</string>
     <string name="product_pick_label">Start live captions when you are ready</string>
-    <string name="product_live_cta">Live Captions — Continuous multilingual</string>
+    <string name="product_live_cta">Start live captions</string>
     <string name="product_live_blurb">whisper.cpp Tiny (language=auto) · all 18 Languages · any app · ML Kit MT to your target after ASR. EN→EN stays ASR-only (no MT wait).</string>
             <string name="product_live_gate_title">Live Captions</string>
     <string name="product_live_gate_body">Continuous multilingual captions over any app via whisper.cpp Tiny (auto). Covers the full Languages list; ML Kit translates to your target after ASR. EN→EN is the fast ASR-only path.</string>
@@ -69,7 +69,7 @@
     <string name="status_catching_up">Still listening — catching up…</string>
     <string name="status_no_audio_signal">No device audio signal</string>
     <string name="overlay_preview_hint">Pick a font here. Move and resize the box on the live overlay after Start.</string>
-    <string name="overlay_sample_text">Sample live caption</string>
+    <string name="overlay_sample_text">Start live captions</string>
     <string name="save">Save</string>
     <string name="home_status_ready">Ready when you are</string>
     <string name="settings_saved">Settings saved</string>

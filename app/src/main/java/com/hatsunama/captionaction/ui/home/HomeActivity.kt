@@ -264,11 +264,13 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun bindStartButton() {
-        findViewById<MaterialButton>(R.id.btnStartLive).setOnClickListener {
+        val startLive = View.OnClickListener {
             showModelGateThenStart {
                 lifecycleScope.launch { proceedAfterModelReady() }
             }
         }
+        findViewById<MaterialButton>(R.id.btnStartLive).setOnClickListener(startLive)
+        findViewById<MaterialButton>(R.id.previewSample).setOnClickListener(startLive)
     }
 
     private fun bindMicTranslatorButton() {
