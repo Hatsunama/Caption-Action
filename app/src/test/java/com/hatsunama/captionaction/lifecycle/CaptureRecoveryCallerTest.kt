@@ -178,7 +178,10 @@ class CaptureRecoveryCallerTest {
     @Test fun liveFailureCancelsActualPendingTranslationAndPreservesTranscriptAgainstLateCompletion() {
         val owner = service(); val expected = engine("live-pending-mt")
         inference(expected, "蓝色灯笼守护着海港的秘密。", "zh").allow(); drain().allow()
+        // Pending MT no longer holds ASR. Keep capture active for the failure-cancellation assertion.
+        val nextDrain = ControlledDrain().also { drains += it; RecoveryCaptureBoundary.drains.add(it) }
         complete(expected, start(owner, expected))
+        await("Live consumer must remain active in its next capture drain") { nextDrain.entered.count == 0L }
         await("actual SDK task is pending") { MlKitTaskBoundary.translators.firstOrNull()?.tasks?.size == 1 }
         val client = MlKitTaskBoundary.translators.single()
         val asr = (field(owner, "asrJob") as Job).also { jobs += it }
@@ -186,8 +189,16 @@ class CaptureRecoveryCallerTest {
         val file = File(recorder(owner).currentPath!!); val before = file.readBytes()
         val ownedJobs = (field(owner, "scope") as CoroutineScope).coroutineContext[Job]!!.children.toList()
         jobs += ownedJobs
+        await("readiness must settle, leaving actual MT and its presentation owned") {
+            (field(owner, "mtJobs") as List<*>).filterIsInstance<Job>().count { !it.isCompleted } == 2
+        }
+        val pendingMtJobs = (field(owner, "mtJobs") as List<*>).filterIsInstance<Job>().filter { !it.isCompleted }
+        assertEquals("actual MT and its presentation must be owned before capture fails", 2, pendingMtJobs.size)
         RecoveryCaptureBoundary.failures.single().invoke()
-        assertTrue(asr.isCancelled); assertNull(field(owner, "overlayView")); assertNull(field(owner, "translation"))
+        assertTrue(asr.isCancelled)
+        assertTrue("capture failure must cancel every pending MT/presentation job", pendingMtJobs.all { it.isCancelled })
+        nextDrain.allow()
+        assertNull(field(owner, "overlayView")); assertNull(field(owner, "translation"))
         assertFalse(recorder(owner).isRecording); assertEquals(1, expected.releases.get())
         assertEquals(0, client.closes.get()); assertFalse(client.tasks.single().task.isComplete)
         val oldText = view.findViewById<TextView>(R.id.captionPrimary).text.toString()

@@ -26,6 +26,9 @@ import com.hatsunama.captionaction.lifecycle.CallerPreparationOwnershipTest.Sett
 import com.hatsunama.captionaction.service.CaptionOverlayService
 import com.hatsunama.captionaction.ui.mic.MicTranslatorActivity
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -67,6 +70,7 @@ import org.robolectric.shadows.ShadowToast
         CallerPreparationOwnershipTest.ProjectionManagerBoundary::class,
         CallerPreparationOwnershipTest.ProjectionBoundary::class,
         CallerPreparationOwnershipTest.ImageReaderBoundary::class,
+        CallerPreparationOwnershipTest.RecorderAppendBoundary::class,
         MlKitTaskBoundary.TranslationFactory::class,
         MlKitTaskBoundary.IdentifierFactory::class,
         MlKitTaskBoundary.ModelManager::class
@@ -76,6 +80,7 @@ import org.robolectric.shadows.ShadowToast
         "com.hatsunama.captionaction.data.SettingsRepository",
         "com.hatsunama.captionaction.data.ModelCache",
         "com.hatsunama.captionaction.audio.AudioCapture",
+        "com.hatsunama.captionaction.data.SubtitleFileRecorder",
         "com.google.mlkit.nl.translate.Translation",
         "com.google.mlkit.nl.languageid.LanguageIdentification",
         "com.google.mlkit.common.model.RemoteModelManager"
@@ -121,6 +126,7 @@ class TranslationCallerLifetimeTest {
         val publishedAt: Any?
     )
 
+    private val appends = mutableListOf<CallerPreparationOwnershipTest.ControlledAppend>()
     private val engines = mutableListOf<ControlledEngine>()
     private val drains = mutableListOf<ControlledDrain>()
     private val inferences = mutableListOf<ControlledInference>()
@@ -132,6 +138,8 @@ class TranslationCallerLifetimeTest {
     private var nextStartId = 1
 
     @Before fun resetBoundaries() {
+        CallerPreparationOwnershipTest.RecorderAppendBoundary.nextAppend.set(null)
+        CallerPreparationOwnershipTest.RecorderAppendBoundary.nextStart.set(null)
         FactoryBoundary.planned.clear()
         CaptureBoundary.nextDrain.set(null)
         CaptureBoundary.extraDrains.clear()
@@ -144,6 +152,7 @@ class TranslationCallerLifetimeTest {
     }
 
     @After fun releaseFixture() {
+        appends.forEach { it.allow() }
         engines.forEach { it.allow() }
         drains.forEach { it.allow() }
         inferences.forEach { it.allow() }
@@ -263,11 +272,161 @@ class TranslationCallerLifetimeTest {
         assertEquals("an actual pending SDK task must retain its translator", 0, client.closes.get())
     }
 
+    private fun pendingPresentationWait(owner: ServiceOwner): Job? =
+        (field(owner.value, "mtJobs") as List<*>).filterIsInstance<Job>().firstOrNull { job ->
+            job !is Deferred<*> && job.children.any { it.javaClass.simpleName == "TimeoutCoroutine" }
+        }
+
+    private fun heldNextDrain(): ControlledDrain = ControlledDrain().also {
+        drains += it
+        CaptureBoundary.extraDrains.add(it)
+    }
+
+    @Test fun pendingChineseTranslationDoesNotBlockNextLivePcmDrain() {
+        assertPendingTranslationDoesNotBlockDrain("蓝色灯笼守护着海港的秘密。", "zh")
+    }
+
+    @Test fun pendingSameScriptTranslationDoesNotBlockNextLivePcmDrain() {
+        assertPendingTranslationDoesNotBlockDrain("La linterna azul protege nuestro puerto.", "es")
+    }
+
+    private fun assertPendingTranslationDoesNotBlockDrain(source: String, language: String) {
+        val owner = service()
+        val engine = plan("live-mt-cadence", source, language)
+        // The second drain is a barrier, not a simulated consumer or elapsed-time assertion.
+        val next = ControlledDrain().also { drains += it; CaptureBoundary.extraDrains.add(it) }
+        completePreparation(engine, start(owner, engine))
+        val pending = pendingService(owner, engine, 0)
+        val view = overlay(owner)
+        val before = snapshot(owner, view)
+        val file = File(recorder(owner).currentPath!!)
+        val beforeBytes = file.readBytes()
+
+        // The baseline suspends the ASR Job in its own withTimeoutOrNull child. The
+        // repaired consumer enters the next drain while a sibling presentation Job waits.
+        // Whichever boundary occurs establishes ordering; no timeout expiry is evidence.
+        drainMainUntil("consumer must reach its next drain or its owned MT timeout boundary") {
+            (next.entered.count == 0L && pendingPresentationWait(owner) != null) || pending.asr.children.any {
+                it.javaClass.simpleName == "TimeoutCoroutine"
+            }
+        }
+        assertEquals("pending MT presentation must not hold the Live PCM consumer", 0L, next.entered.count)
+        assertNotNull("presentation wait must still be pending when capture advances", pendingPresentationWait(owner))
+        assertFalse("no SDK completion was used to advance capture", pending.client.tasks.single().task.isComplete)
+        assertEquals("pending source must not replace the overlay", before, snapshot(owner, view))
+        assertArrayEquals("pending source must not append to transcript", beforeBytes, file.readBytes())
+
+        val translated = "The blue lantern protects our harbor."
+        pending.client.complete(translated)
+        drainMainUntil("translation must publish even while next PCM drain remains blocked") {
+            view.findViewById<TextView>(R.id.captionPrimary).text.toString().replace('\n', ' ') == translated
+        }
+        assertEquals(1L, next.proceed.count)
+        val recorded = file.readLines().filterNot { it.startsWith("#") || it.isBlank() }.joinToString(" ")
+        assertEquals("translated output must be recorded once", translated, recorded)
+        stop(owner)
+        assertTrue("STOP cancels the pending consumer", pending.asr.isCancelled)
+    }
+
+    @Test fun newerLiveCaptionSupersedesPendingPresentationWithinSameSession() {
+        val owner = service()
+        val engine = plan("live-mt-sequence", "蓝色灯笼守护着海港的秘密。", "zh")
+        val next = ControlledDrain(ShortArray(28_000) { 750 })
+            .also { drains += it; CaptureBoundary.extraDrains.add(it) }
+        val tail = ControlledDrain().also { drains += it; CaptureBoundary.extraDrains.add(it) }
+        completePreparation(engine, start(owner, engine))
+        val first = pendingService(owner, engine, 0)
+        drainMainUntil("consumer must reach next drain or its owned timeout") {
+            (next.entered.count == 0L && pendingPresentationWait(owner) != null) || first.asr.children.any { it.javaClass.simpleName == "TimeoutCoroutine" }
+        }
+        assertEquals("new audio must advance independently of old MT", 0L, next.entered.count)
+        assertNotNull("old timeout expiry must not establish successful scheduling", pendingPresentationWait(owner))
+        val firstJobs = (field(owner.value, "mtJobs") as List<*>).filterIsInstance<Job>().toList()
+        engine.inference = ControlledInference(
+            CaptionResult("La vela plateada llega al nuevo puerto.", "es", 1f, 1000L, 2000L)
+        ).also { inferences += it; it.allow() }
+        next.allow()
+        val secondClient = client(1)
+        drainMainUntil("second result must reach next capture boundary") { tail.entered.count == 0L }
+        val view = overlay(owner)
+        val before = snapshot(owner, view)
+        val file = File(recorder(owner).currentPath!!)
+        val bytes = file.readBytes()
+        first.client.complete("The retired lighthouse must never appear.")
+        drainMainUntil("old actual MT and presentation jobs must finish") { firstJobs.all { it.isCompleted } }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("old sequence must not replace current UI", before, snapshot(owner, view))
+        assertArrayEquals("old sequence must not record a superseded translation", bytes, file.readBytes())
+
+        val fresh = "The silver sail reaches the new harbor."
+        secondClient.complete(fresh)
+        drainMainUntil("latest sequence must publish") {
+            view.findViewById<TextView>(R.id.captionPrimary).text.toString().replace('\n', ' ') == fresh
+        }
+        assertEquals(fresh, file.readLines().filterNot { it.startsWith("#") || it.isBlank() }.joinToString(" "))
+        stop(owner)
+    }
+
+    @Test fun concurrentQuickTranslationsRecordInPublicationOrder() {
+        val owner = service()
+        val secondLockAttempt = CountDownLatch(1)
+        val attempts = AtomicInteger()
+        // Observe only lock entry; delegate the actual Mutex unchanged. The red
+        // pre-serialization candidate has no field and proves real reversed IO.
+        owner.value.javaClass.declaredFields.firstOrNull { it.name == "publicationTransition" }?.let { field ->
+            field.isAccessible = true
+            val actual = field.get(owner.value) as Mutex
+            field.set(owner.value, object : Mutex by actual {
+                override suspend fun lock(owner: Any?) {
+                    if (attempts.incrementAndGet() == 2) secondLockAttempt.countDown()
+                    actual.lock(owner)
+                }
+            })
+        }
+        val firstText = "The first blue lantern guards the harbor."
+        val secondText = "The second silver sail reaches the harbor."
+        val append = CallerPreparationOwnershipTest.ControlledAppend("lantern").also {
+            appends += it
+            CallerPreparationOwnershipTest.RecorderAppendBoundary.nextAppend.set(it)
+        }
+        val engine = plan("publication-order", "蓝色灯笼守护着海港的秘密。", "zh")
+        val next = ControlledDrain(ShortArray(28_000) { 750 })
+            .also { drains += it; CaptureBoundary.extraDrains.add(it) }
+        completePreparation(engine, start(owner, engine))
+        val first = pendingService(owner, engine, 0)
+        drainMainUntil("next PCM drain must be independent of pending MT") { next.entered.count == 0L }
+        first.client.complete(firstText)
+        drainMainUntil("first publication must claim sequence then pause before recorder IO") { append.entered.count == 0L }
+        val file = File(recorder(owner).currentPath!!)
+        assertFalse(file.readText().contains(firstText))
+        engine.inference = ControlledInference(
+            CaptionResult("La vela plateada llega al nuevo puerto.", "es", 1f, 1000L, 2000L)
+        ).also { inferences += it; it.allow() }
+        next.allow()
+        val second = client(1)
+        second.complete(secondText)
+        drainMainUntil("second publication must attempt serialization or expose reversed append") {
+            secondLockAttempt.count == 0L || file.readText().replace('\n', ' ').contains(secondText)
+        }
+        append.allow()
+        drainMainUntil("both actual publication jobs must finish") {
+            (field(owner.value, "mtJobs") as List<*>).filterIsInstance<Job>().all { it.isCompleted }
+        }
+        val recorded = file.readLines().filterNot { it.startsWith("#") || it.isBlank() }.joinToString(" ")
+        val visible = overlay(owner).findViewById<TextView>(R.id.captionPrimary).text.toString().replace('\n', ' ')
+        assertTrue("latest caption must remain last in the existing rolling display", visible.endsWith(secondText))
+        assertEquals("concurrent quick MT must record first caption before the newer rolling display", "$firstText $visible", recorded)
+        stop(owner)
+    }
+
     @Test fun replacementStartCancelsActualTranslationDeferredAndRetiresOnlyItsOwnClient() {
         val owner = service()
         val oldEngine = plan("old-service-mt", "蓝色灯笼守护着旧房间的秘密。")
+        val oldDrain = heldNextDrain()
         completePreparation(oldEngine, start(owner, oldEngine))
         val old = pendingService(owner, oldEngine, 0)
+        drainMainUntil("old consumer and presentation must both be pending") { oldDrain.entered.count == 0L && pendingPresentationWait(owner) != null }
+        val oldPresentation = pendingPresentationWait(owner)!!
         val oldFile = File(recorder(owner).currentPath!!)
         val oldBytes = oldFile.readBytes()
 
@@ -276,6 +435,8 @@ class TranslationCallerLifetimeTest {
         assertEquals("replacement ASR model load stays blocked for this assertion", 1L, freshEngine.proceed.count)
         assertTrue("new START must cancel the actual SDK-awaiting Deferred, not only its result applier", old.deferred.isCancelled)
         assertTrue("new START must cancel the retired ASR consumer", old.asr.isCancelled)
+        assertTrue("new START must cancel the tracked presentation", oldPresentation.isCancelled)
+        oldDrain.allow()
         assertPendingSdkRetained(old.client)
 
         completePreparation(freshEngine, preparation)
@@ -339,14 +500,19 @@ class TranslationCallerLifetimeTest {
     private fun assertServiceTeardownRetainsPendingTask(destroyDirectly: Boolean) {
         val owner = service()
         val engine = plan("retiring-service-mt", "蓝色灯笼守护着旧房间的秘密。")
+        val held = heldNextDrain()
         completePreparation(engine, start(owner, engine))
         val pending = pendingService(owner, engine, 0)
+        drainMainUntil("consumer and presentation must both be pending before teardown") { held.entered.count == 0L && pendingPresentationWait(owner) != null }
+        val presentation = pendingPresentationWait(owner)!!
         val view = overlay(owner)
         val file = File(recorder(owner).currentPath!!)
         val before = file.readBytes()
         if (destroyDirectly) owner.destroy() else stop(owner)
         assertTrue("teardown must cancel the actual SDK-awaiting Deferred", pending.deferred.isCancelled)
         assertTrue(pending.asr.isCancelled)
+        assertTrue("teardown must cancel the tracked presentation", presentation.isCancelled)
+        held.allow()
         assertPendingSdkRetained(pending.client)
         assertNull(field(owner.value, "translation"))
         assertNull(field(owner.value, "overlayView"))
