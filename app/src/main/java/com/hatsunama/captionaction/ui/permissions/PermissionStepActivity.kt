@@ -49,8 +49,13 @@ class PermissionStepActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (step == Step.OVERLAY && LiveCaptionStarter.canDrawOverlays(this)) {
-            advanceAfterOverlay()
+        // Settings can grant or revoke either required permission. Only refresh the
+        // explanation here; system prompts remain explicitly button-initiated.
+        when {
+            !LiveCaptionStarter.canDrawOverlays(this) -> goTo(Step.OVERLAY)
+            !LiveCaptionStarter.hasAudioPermission(this) -> goTo(Step.AUDIO)
+            step == Step.OVERLAY -> advanceAfterOverlay()
+            step == Step.AUDIO -> advanceAfterAudio()
         }
     }
 
@@ -85,7 +90,10 @@ class PermissionStepActivity : AppCompatActivity() {
                 title.setText(R.string.permission_audio_title)
                 body.setText(R.string.permission_audio_why)
                 primary.setText(R.string.permission_audio_action)
-                secondary.visibility = View.GONE
+                // Always offer recovery: a false rationale result cannot distinguish
+                // first ask from permanent denial, and Android may suppress retries.
+                secondary.visibility = View.VISIBLE
+                secondary.setText(R.string.permission_audio_settings_action)
                 hint.text = "Android requires this for playback capture — Caption Action never uses the microphone."
             }
             Step.NOTIFICATIONS -> {
@@ -145,6 +153,9 @@ class PermissionStepActivity : AppCompatActivity() {
 
     private fun onSecondary() {
         when (step) {
+            Step.AUDIO -> startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            )
             Step.NOTIFICATIONS -> goTo(Step.PROJECTION)
             else -> {}
         }
@@ -182,6 +193,12 @@ class PermissionStepActivity : AppCompatActivity() {
     }
 
     private fun finishWalkthrough() {
+        // Never mark setup ready using stale state if a grant was revoked.
+        if (LiveCaptionStarter.missingRequiredGrants(this)) {
+            resolveInitialStep()
+            render()
+            return
+        }
         lifecycleScope.launch {
             (application as CaptionActionApp).settings.update {
                 it.copy(permissionsWalkthroughComplete = true)

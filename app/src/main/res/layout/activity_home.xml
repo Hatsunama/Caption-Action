@@ -261,8 +261,10 @@
                     android:paddingVertical="12dp"
                     android:popupBackground="@color/ca_card_lavender" />
 
-                <TextView
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/previewSample"
+                    android:foreground="?attr/selectableItemBackground"
+                    android:textAllCaps="false"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="14dp"

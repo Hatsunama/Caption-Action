@@ -729,7 +729,15 @@ class CallerPreparationOwnershipTest {
         val ready = plan("privacy-live-mt").apply { this.inference = inference }
         complete(ready, start(owner, ready))
         val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
-        drainMainUntil("consumer must finish quick wait") { asr.isCompleted }
+        drainMainUntil("consumer must finish its available PCM") { asr.isCompleted }
+        if (late) {
+            // ASR completion no longer implies that presentation's prefer-wait expired.
+            // Observe the actual same-script fallback before releasing the MT boundary.
+            drainMainUntil("pending MT must publish the same-script fallback") {
+                (field(owner.value, "overlayView") as View).findViewById<TextView>(R.id.captionPrimary)
+                    .text.toString().replace('\n', ' ') == source
+            }
+        }
         TranslationBoundary.translationGate?.countDown()
         val expectedLog = if (late) "mt applied seq=" else "mt applied-quick"
         drainMainUntil("actual translation publication must finish") {
@@ -867,7 +875,11 @@ class CallerPreparationOwnershipTest {
         val before = text.text.toString()
         inference.allow()
         val asr = (field(owner.value, "asrJob") as Job).also { consumers += it }
-        drainMainUntil("script rejection must finish") { asr.isCompleted }
+        drainMainUntil("actual presentation must finish its script rejection") {
+            asr.isCompleted &&
+                org.robolectric.shadows.ShadowLog.getLogs().any { it.msg.contains("final script gate blocked") } &&
+                (field(owner.value, "mtJobs") as List<*>).filterIsInstance<Job>().all { it.isCompleted }
+        }
         assertEquals("rejected translation must not change visible caption", before, text.text.toString())
         val logs = org.robolectric.shadows.ShadowLog.getLogs().joinToString("\n") { it.msg + (it.throwable?.stackTraceToString() ?: "") }
         assertTrue(logs.contains("final script gate blocked"))

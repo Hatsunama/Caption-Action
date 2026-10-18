@@ -86,6 +86,8 @@ class CaptionOverlayService : Service() {
     private var preparationJob: Job? = null
     @Volatile private var preparationGeneration = 0L
     private val recordingTransition = Mutex()
+    // Compose, append and paint in publication order while ASR continues independently.
+    private val publicationTransition = Mutex()
     private data class CaptionSession(val generation: Long, val recordingPath: String?)
     private var mediaProjection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
@@ -697,36 +699,34 @@ class CaptionOverlayService : Service() {
                 }
             }
             trackMtJob(deferred, session.generation)
-            // Slightly longer prefer-wait when holding wrong-script source off the overlay.
-            val preferWait = if (holdWrongScript) MT_PREFER_WAIT_WRONG_SCRIPT_MS else MT_PREFER_WAIT_MS
-            val quick = withTimeoutOrNull(preferWait) { deferred.await() }
-            if (seq != captionSeq) {
-                Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (superseded during wait)")
-                continue
-            }
-            if (quick != null && !quick.translatedText.isNullOrBlank()) {
-                publishCaption(quick, dualNow, seq, appendSubtitle = true, targetLang = targetLang, session = session)
-                Log.i(
-                    DIAG_TAG,
-                    "mt applied-quick seq=$seq translatedChars=${quick.translatedText.orEmpty().length}"
-                )
-            } else if (holdWrongScript) {
-                // Language-agnostic: NEVER flash wrong-script ASR while MT pending.
-                Log.i(DIAG_TAG, "holding wrong-script source pending MT seq=$seq")
-                val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            // Presentation may wait for MT; PCM consumption must not. Register before
+            // starting so STOP/replacement owns both SDK-awaiting and presentation jobs.
+            val presentation = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                val preferWait = if (holdWrongScript) MT_PREFER_WAIT_WRONG_SCRIPT_MS else MT_PREFER_WAIT_MS
+                val quick = withTimeoutOrNull(preferWait) { deferred.await() }
+                if (seq != captionSeq) {
+                    Log.i(DIAG_TAG, "mt skipped seq=$seq latest=$captionSeq (superseded during wait)")
+                    return@launch
+                }
+                if (quick != null && !quick.translatedText.isNullOrBlank()) {
+                    publishCaption(quick, dualNow, seq, appendSubtitle = true, targetLang = targetLang, session = session)
+                    Log.i(
+                        DIAG_TAG,
+                        "mt applied-quick seq=$seq translatedChars=${quick.translatedText.orEmpty().length}"
+                    )
+                } else if (holdWrongScript) {
+                    // Never flash wrong-script source while MT is pending.
+                    Log.i(DIAG_TAG, "holding wrong-script source pending MT seq=$seq")
                     val policy = quick ?: deferred.await()
                     applyMtResult(policy, dualNow, seq, allowSourceAppend = false, targetLang = targetLang, session = session)
-                }
-                trackMtJob(job, session.generation)
-            } else {
-                // Same-script timeout: paint source, then swap when MT arrives.
-                publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false, targetLang = targetLang, session = session)
-                val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                } else {
+                    // Same-script timeout: paint source, then swap when MT arrives.
+                    publishCaption(raw, dualNow = false, seq = seq, appendSubtitle = false, targetLang = targetLang, session = session)
                     val policy = quick ?: deferred.await()
                     applyMtResult(policy, dualNow, seq, allowSourceAppend = true, targetLang = targetLang, session = session)
                 }
-                trackMtJob(job, session.generation)
             }
+            trackMtJob(presentation, session.generation)
         }
     }
 
@@ -825,53 +825,55 @@ class CaptionOverlayService : Service() {
         targetLang: String,
         session: CaptionSession
     ) {
-        if (seq != captionSeq) {
-            Log.i(DIAG_TAG, "publish skipped seq=$seq latest=$captionSeq")
-            return
-        }
-        val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
-            result,
-            dualNow,
-            targetLang
-        )
-        // Final script gate: never paint blank or wrong-script primary when target is set.
-        if (primaryRaw.isBlank()) {
-            Log.i(DIAG_TAG, "publishCaption blocked empty/wrong-script primary seq=$seq")
-            return
-        }
-        if (targetLang.isNotBlank() &&
-            AsrJunkFilter.shouldHoldSourceOffOverlay(primaryRaw, targetLang)
-        ) {
-            Log.i(
-                DIAG_TAG,
-                "publishCaption final script gate blocked seq=$seq primaryChars=${primaryRaw.length}"
+        publicationTransition.withLock {
+            if (seq != captionSeq) {
+                Log.i(DIAG_TAG, "publish skipped seq=$seq latest=$captionSeq")
+                return
+            }
+            val (primaryRaw, secondaryRaw) = CaptionDisplay.primaryAndSecondary(
+                result,
+                dualNow,
+                targetLang
             )
-            return
-        }
-        // Dual off / EN-only: never show source as secondary.
-        val secondary = if (dualNow) secondaryRaw else null
-        val output = withContext(Dispatchers.Main) {
-            if (!isCurrentSession(session) || seq != captionSeq) return@withContext null
-            val primary = composer.compose(primaryRaw)
-            val append = appendSubtitle && session.recordingPath != null && subtitleAppendSeq != seq
-            if (append) subtitleAppendSeq = seq
-            primary to append
-        } ?: return
-        val primary = output.first
-        if (output.second) {
-            // A START can occur after the Main commit. The recorder validates the captured
-            // unique path under its own lock, so old work cannot append to a new transcript.
-            withContext(Dispatchers.IO) {
-                subtitleRecorder.appendCaptionForSession(session.recordingPath!!, primary, secondary)
+            // Final script gate: never paint blank or wrong-script primary when target is set.
+            if (primaryRaw.isBlank()) {
+                Log.i(DIAG_TAG, "publishCaption blocked empty/wrong-script primary seq=$seq")
+                return
             }
-        }
-        withContext(Dispatchers.Main) {
-            if (!isCurrentSession(session) || seq != captionSeq) {
-                Log.i(DIAG_TAG, "mt/ui skipped seq=$seq latest=$captionSeq (seq mismatch on main)")
-                return@withContext
+            if (targetLang.isNotBlank() &&
+                AsrJunkFilter.shouldHoldSourceOffOverlay(primaryRaw, targetLang)
+            ) {
+                Log.i(
+                    DIAG_TAG,
+                    "publishCaption final script gate blocked seq=$seq primaryChars=${primaryRaw.length}"
+                )
+                return
             }
-            setSessionStatus(null, loading = false)
-            updateCaption(primary, secondary)
+            // Dual off / EN-only: never show source as secondary.
+            val secondary = if (dualNow) secondaryRaw else null
+            val output = withContext(Dispatchers.Main) {
+                if (!isCurrentSession(session) || seq != captionSeq) return@withContext null
+                val primary = composer.compose(primaryRaw)
+                val append = appendSubtitle && session.recordingPath != null && subtitleAppendSeq != seq
+                if (append) subtitleAppendSeq = seq
+                primary to append
+            } ?: return
+            val primary = output.first
+            if (output.second) {
+                // A START can occur after the Main commit. The recorder validates the captured
+                // unique path under its own lock, so old work cannot append to a new transcript.
+                withContext(Dispatchers.IO) {
+                    subtitleRecorder.appendCaptionForSession(session.recordingPath!!, primary, secondary)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (!isCurrentSession(session) || seq != captionSeq) {
+                    Log.i(DIAG_TAG, "mt/ui skipped seq=$seq latest=$captionSeq (seq mismatch on main)")
+                    return@withContext
+                }
+                setSessionStatus(null, loading = false)
+                updateCaption(primary, secondary)
+            }
         }
     }
 
