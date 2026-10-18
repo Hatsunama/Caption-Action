@@ -32,8 +32,8 @@ import kotlinx.coroutines.withContext
  *
  * Language:
  * - [setSourceLanguage] non-empty (Mic From): `language=<code>, translate=false`
- *   (`mic-source-*`); bypasses en-direct / auto bias. Live must leave source empty.
- * - Empty source (Live): EN target + !dual → en-direct bias / auto-translate-en;
+ *   (`mic-source-*`); bypasses auto detection / translation. Live must leave source empty.
+ * - Empty source (Live): EN target + !dual → auto-translate-en;
  *   dual / non-EN → auto + ML Kit. Home Input is an MT hint only, not a Whisper lock.
  */
 class WhisperCppInferenceEngine(
@@ -49,7 +49,6 @@ class WhisperCppInferenceEngine(
         var freeScheduled = false
         val pcmAccum = ArrayList<Short>(16_000 * 4)
         var lastSpeechAt = 0L
-        var enDirectBias = 1
     }
     private var model: NativeModel? = null
     private var generation = 0L
@@ -262,7 +261,6 @@ class WhisperCppInferenceEngine(
 
             val explicitSource = normalizeLang(sourceLanguage)
             val enTargetSingle = target == "en" && !dualSubtitles
-            val useEnDirect = enTargetSingle && owner.enDirectBias >= 0
             val language: String
             val translate: Boolean
             when {
@@ -274,11 +272,7 @@ class WhisperCppInferenceEngine(
                     translate = false
                     publishMode(owner, "mic-source-$explicitSource")
                 }
-                useEnDirect -> {
-                    language = "en"
-                    translate = false
-                    publishMode(owner, "en-direct")
-                }
+                // Target selects the output task, never the spoken source language.
                 enTargetSingle -> {
                     language = "auto"
                     translate = true
@@ -301,26 +295,13 @@ class WhisperCppInferenceEngine(
             )
             currentCoroutineContext().ensureActive()
             if (synchronized(lock) { model !== owner }) return null
-            if (text == null) {
-                // Speech-ish window but no usable text → nudge away from en-direct.
-                if (enTargetSingle && windowRms >= discardGate * 2f) {
-                    owner.enDirectBias = (owner.enDirectBias - 1).coerceAtLeast(-3)
-                }
-                return null
-            }
-            if (enTargetSingle) {
-                owner.enDirectBias = if (looksMostlyLatin(text)) {
-                    (owner.enDirectBias + 1).coerceAtMost(3)
-                } else {
-                    (owner.enDirectBias - 2).coerceAtLeast(-3)
-                }
-            }
+            if (text == null) return null
 
             CaptionResult(
                 text = text,
                 language = when {
                     explicitSource.isNotEmpty() -> explicitSource
-                    useEnDirect || (enTargetSingle && translate) -> "en"
+                    enTargetSingle && translate -> "en"
                     else -> "auto"
                 },
                 confidence = 0.8f,
@@ -480,13 +461,6 @@ class WhisperCppInferenceEngine(
             i += step
         }
         return kotlin.math.sqrt(sum / n.coerceAtLeast(1)).toFloat()
-    }
-
-    private fun looksMostlyLatin(text: String): Boolean {
-        val letters = text.filter { it.isLetter() }
-        if (letters.isEmpty()) return false
-        val latin = letters.count { it in 'a'..'z' || it in 'A'..'Z' }
-        return latin * 100 / letters.length >= 70
     }
 
     private fun normalizeLang(code: String): String {

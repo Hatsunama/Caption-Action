@@ -25,6 +25,9 @@
     <string name="permission_audio_title">Device audio access</string>
     <string name="permission_audio_why">Caption Action captions sounds playing on your device (videos, games, media) — never your microphone. Android still requires this permission for screen-audio capture. Audio never leaves your phone.</string>
     <string name="permission_audio_action">Allow device audio</string>
+    <string name="permission_audio_settings_action">Open app permission settings</string>
+    <string name="permission_mic_recovery_title">Microphone access</string>
+    <string name="permission_mic_recovery_body">Allow microphone access in app settings to use Mic Translator. Then return and tap Mic Translator again.</string>
     <string name="permission_notif_title">Notifications</string>
     <string name="permission_notif_why">A quiet notification keeps the live session running in the background.</string>
     <string name="permission_notif_action">Allow notifications</string>

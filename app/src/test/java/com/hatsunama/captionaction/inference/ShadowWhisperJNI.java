@@ -18,13 +18,14 @@ public class ShadowWhisperJNI {
     static volatile boolean failTranscription;
     static volatile CountDownLatch secondEntry;
     static volatile String language;
+    static volatile boolean translationRequested;
     static volatile long lastHandle;
     static AtomicLong handles;
     static LinkedBlockingQueue<Long> freeEvents;
     static void reset() {
         secondEntry = null;
         handles = new AtomicLong(41); freeEvents = new LinkedBlockingQueue<>();
-        freed = new CountDownLatch(1); language = null; lastHandle = 0;
+        freed = new CountDownLatch(1); language = null; translationRequested = false; lastHandle = 0;
         entered = new CountDownLatch(1); proceed = new CountDownLatch(1);
         loadEntered = new CountDownLatch(1); loadProceed = new CountDownLatch(0);
         frees = new AtomicInteger(); active = new AtomicInteger();
@@ -44,7 +45,7 @@ public class ShadowWhisperJNI {
         loadEntered.countDown(); await(gate); return handle;
     }
     @Implementation protected String nativeTranscribe(long handle, String path, String lang, boolean translate, int threads) {
-        lastHandle = handle; language = lang;
+        lastHandle = handle; language = lang; translationRequested = translate;
         int call = calls.incrementAndGet(); int n = active.incrementAndGet(); peak.accumulateAndGet(n, Math::max);
         if (call == 2 && secondEntry != null) secondEntry.countDown();
         entered.countDown();

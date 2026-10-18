@@ -4,6 +4,8 @@ import android.graphics.Typeface
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.LayoutInflater
@@ -52,6 +54,7 @@ class HomeActivity : AppCompatActivity() {
     private var modelGateDialog: AlertDialog? = null
     private var closeModelGate: (() -> Unit)? = null
     private var startingDialog: AlertDialog? = null
+    private var micPermissionRecoveryDialog: AlertDialog? = null
     private var mtPrepareJob: Job? = null
     private var mtEngine: MlKitTranslationEngine? = null
     private data class MtRequest(val target: String, val sources: Set<String>)
@@ -95,7 +98,7 @@ class HomeActivity : AppCompatActivity() {
         if (granted) {
             startActivity(Intent(this, MicTranslatorActivity::class.java))
         } else {
-            Toast.makeText(this, getString(R.string.error_permission), Toast.LENGTH_LONG).show()
+            showMicPermissionRecovery()
         }
     }
 
@@ -147,6 +150,8 @@ class HomeActivity : AppCompatActivity() {
         mtEngine = null
         modelGateDialog?.dismiss()
         dismissStartingDialog()
+        micPermissionRecoveryDialog?.dismiss()
+        micPermissionRecoveryDialog = null
         super.onDestroy()
     }
 
@@ -535,6 +540,20 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
+
+    private fun showMicPermissionRecovery() {
+        if (isFinishing || isDestroyed) return
+        micPermissionRecoveryDialog?.dismiss()
+        micPermissionRecoveryDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.permission_mic_recovery_title)
+            .setMessage(R.string.permission_mic_recovery_body)
+            .setPositiveButton(R.string.permission_audio_settings_action) { _, _ ->
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+        // Settings return never opens the microphone; the user retries the entry.
+    }
 
     private fun openMicTranslatorAfterAudioPerm() {
         val granted = ContextCompat.checkSelfPermission(

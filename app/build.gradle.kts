@@ -58,6 +58,12 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // Bound Robolectric resource caches across multi-SDK test classes.
+            it.maxHeapSize = "768m"
+            it.maxParallelForks = 1
+            it.forkEvery = 10
+        }
     }
     lint {
         checkReleaseBuilds = true
